@@ -1,0 +1,62 @@
+# ===========================================================================
+# CivicAgent — repository root ignore rules (apply at any depth unless noted).
+# ===========================================================================
+
+# --- Environment & secrets: NEVER commit these ---
+.env
+.env.*
+# ...but do keep the safe env templates:
+!.env.example
+!**/.env.example
+!.env.docker.example
+!frontend/.env.local.example
+
+# --- Secrets / DB dumps / keys ---
+*.pem
+*.key
+*.crt
+*.sql.gz
+*.sql.bak
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+.coverage
+*.egg-info/
+build/
+
+# --- Node / frontend ---
+node_modules/
+.next/
+/out/
+/dist/
+/build/
+*.tsbuildinfo
+
+# --- Test / coverage ---
+/coverage/
+coverage/
+.vitest/
+
+# --- Local runtime artifacts ---
+backend/uploads/
+uploads/
+
+# --- Logs & scratch (production logs go to the container log driver) ---
+*.log
+*.err.log
+minio-data/
+AppData/
+opencode-test/
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,133 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+import L from "leaflet";
+import { BrainCircuit } from "lucide-react";
+import "leaflet/dist/leaflet.css";
+import { riskTierColor } from "@/lib/hotspot-api";
+import type { HotspotPredictions } from "@/lib/hotspot-api";
+
+function halfStep(values: number[]): number {
+  const uniq = [...new Set(values)].sort((a, b) => a - b);
+  if (uniq.length < 2) return 0.005;
+  let min = Infinity;
+  for (let i = 1; i < uniq.length; i += 1) {
+    const d = uniq[i] - uniq[i - 1];
+    if (d > 0 && d < min) min = d;
+  }
+  return min === Infinity ? 0.005 : min / 2;
+}
+
+function cellPopup(cell: HotspotPredictions["cells"][number], horizon: number): string {
+  const ward = cell.ward_code
+    ? `<br/>Ward: ${cell.ward_code}${cell.ward_name ? ` (${cell.ward_name})` : ""}`
+    : "";
+  return (
+    `<strong>${cell.cell_id}</strong><br/>` +
+    `Risk: ${(cell.risk_score * 100).toFixed(1)}% (${cell.tier})<br/>` +
+    `Expected incidents: ${cell.expected_volume.toFixed(1)}<br/>` +
+    `Observed (7d): ${cell.trailing7}${ward}<br/>` +
+    `<small>AI prediction for the next ${horizon} days &mdash; validate before dispatch.</small>`
+  );
+}
+
+export default function PredictiveHotspotMapCanvas({
+  predictions,
+}: {
+  predictions: HotspotPredictions;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const layerRef = useRef<L.LayerGroup | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+    const map = L.map(containerRef.current, {
+      center: [17.45, 78.42],
+      zoom: 13,
+      scrollWheelZoom: false,
+    });
+    mapRef.current = map;
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors",
+    }).addTo(map);
+    layerRef.current = L.layerGroup().addTo(map);
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      layerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = layerRef.current;
+    if (!map || !layer || predictions.cells.length === 0) return;
+    layer.clearLayers();
+
+    const lats = predictions.cells.map((c) => c.latitude);
+    const lons = predictions.cells.map((c) => c.longitude);
+    const halfLat = halfStep(lats);
+    const halfLon = halfStep(lons);
+
+    for (const cell of predictions.cells) {
+      const color = riskTierColor(cell.tier);
+      const bounds: L.LatLngBoundsExpression = [
+        [cell.latitude - halfLat, cell.longitude - halfLon],
+        [cell.latitude + halfLat, cell.longitude + halfLon],
+      ];
+      const rect = L.rectangle(bounds, {
+        color,
+        weight: 1,
+        fillColor: color,
+        fillOpacity: 0.3,
+      });
+      rect.bindPopup(cellPopup(cell, predictions.horizon_days));
+      rect.addTo(layer);
+    }
+
+    map.fitBounds(
+      L.latLngBounds([
+        [Math.min(...lats) - halfLat, Math.min(...lons) - halfLon],
+        [Math.max(...lats) + halfLat, Math.max(...lons) + halfLon],
+      ]).pad(0.05)
+    );
+  }, [predictions]);
+
+  const high = predictions.cells.filter((c) => c.tier === "high").length;
+  const medium = predictions.cells.filter((c) => c.tier === "medium").length;
+  const low = predictions.cells.filter((c) => c.tier === "low").length;
+
+  return (
+    <div className="relative z-0 h-[420px] w-full">
+      <div ref={containerRef} className="h-full w-full" />
+      <div className="absolute bottom-3 right-3 z-[500] rounded-lg border border-border-soft bg-surface/95 p-3 shadow-sm">
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ai-700">
+          <BrainCircuit className="h-3.5 w-3.5" />
+          AI-predicted risk
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-700">
+          <span
+            className="inline-block h-3 w-3 rounded-sm"
+            style={{ backgroundColor: riskTierColor("high") }}
+          />
+          High (&ge;50%) &middot; {high}
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
+          <span
+            className="inline-block h-3 w-3 rounded-sm"
+            style={{ backgroundColor: riskTierColor("medium") }}
+          />
+          Medium (&ge;25%) &middot; {medium}
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-xs text-slate-700">
+          <span
+            className="inline-block h-3 w-3 rounded-sm"
+            style={{ backgroundColor: riskTierColor("low") }}
+          />
+          Low &middot; {low}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,141 @@
+# ===========================================================================
+# CivicAgent — production Compose stack.
+# Services: frontend, backend, postgres, redis.
+#
+# Usage:
+#   cd infrastructure
+#   cp .env.docker.example .env            # then fill in JWT_SECRET etc.
+#   docker compose up -d --build
+#
+# (Alternatively pass your repo root .env:  docker compose --env-file ../.env up -d)
+#
+# Environments:
+#   docker-compose.dev.yml  ->  development (hot reload, debug, demo seed)
+#   docker-compose.test.yml ->  test (backend pytest, frontend vitest)
+#   this file               ->  production baseline
+# ===========================================================================
+
+name: civicagent
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---- PostgreSQL (PostGIS + pgvector) -------------------------------------
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: civicagent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-civicagent}
+      POSTGRES_USER: ${POSTGRES_USER:-civicagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-civicagent}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Enables postgis + pgvector extensions ahead of the alembic migrations.
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-civicagent} -d ${POSTGRES_DB:-civicagent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging: *default-logging
+
+  # ---- Redis ----------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: civicagent-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+
+  # ---- Backend API -----------------------------------------------------------
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: runner
+    image: civicagent/backend:latest
+    container_name: civicagent-backend
+    restart: unless-stopped
+    environment:
+      # Keep the password URL-encoded in the DSN (e.g. '#' -> %23).
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-civicagent}:${POSTGRES_PASSWORD:-civicagent}@postgres:5432/${POSTGRES_DB:-civicagent}}
+      REDIS_URL: redis://redis:6379/0
+      # Required — never ship with the placeholder default. Compose fails fast
+      # if JWT_SECRET is missing from the environment file.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set (see infrastructure/.env.docker.example)}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      DEBUG: ${DEBUG:-false}
+      # Demo seed is OFF for production. Enable only in dev/test overrides.
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # Object storage: "local" writes to the uploads_data volume. To use
+      # S3/MinIO instead, set STORAGE_BACKEND=s3 plus the S3_* vars from
+      # backend/.env.example and bring the optional minio service up.
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_DIR: /app/uploads
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-civicagent-uploads}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+      EMAIL_FROM: ${EMAIL_FROM:-CivicAgent <no-reply@civicagent.local>}
+      NOTIFICATIONS_EMAIL_ENABLED: ${NOTIFICATIONS_EMAIL_ENABLED:-false}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 5
+    logging: *default-logging
+
+  # ---- Frontend ---------------------------------------------------------------
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # Inlined into the browser bundle at build time. Must be a URL the
+        # visitor's browser can reach. Override when deploying behind a domain.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    image: civicagent/frontend:latest
+    container_name: civicagent-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    logging: *default-logging
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:

@@ -1,0 +1,34 @@
+# OPTIONAL containerized PostgreSQL (PostGIS + pgvector).
+# ONLY use this if you explicitly want a Docker database instead of the local
+# PostgreSQL service. It is exposed on host port 5433 to avoid conflicting with
+# a local PostgreSQL listening on 5432.
+#
+# Start:  docker compose -f docker-compose.postgres.yml up -d
+# Stop:   docker compose -f docker-compose.postgres.yml down
+#
+# Then point DATABASE_URL at host port 5433.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: civicagent-postgres-optional
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: civicagent
+      POSTGRES_USER: civicagent
+      POSTGRES_PASSWORD: civicagent
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U civicagent -d civicagent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

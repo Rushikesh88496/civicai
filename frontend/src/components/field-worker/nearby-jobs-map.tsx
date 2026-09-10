@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { WorkerJob } from "@/lib/field-worker-api";
+import { fitBoundsSafely, isUsableLatLng } from "@/lib/leaflet";
 
 function nearbyIcon() {
   return L.divIcon({
@@ -36,9 +37,10 @@ export default function NearbyJobsMap({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = L.map(containerRef.current, {
-      center: origin
-        ? [origin.latitude, origin.longitude]
-        : [20.5937, 78.9629],
+      center:
+        origin != null && isUsableLatLng(origin.latitude, origin.longitude)
+          ? [origin.latitude, origin.longitude]
+          : [20.5937, 78.9629],
       zoom: 11,
       scrollWheelZoom: false,
     });
@@ -47,16 +49,16 @@ export default function NearbyJobsMap({
       attribution: "&copy; OpenStreetMap contributors",
     }).addTo(map);
 
-    const latlngs: [number, number][] = [];
-    if (origin) {
+    const latlngs: [unknown, unknown][] = [];
+    if (origin != null && isUsableLatLng(origin.latitude, origin.longitude)) {
       L.marker([origin.latitude, origin.longitude], { icon: userIcon() })
         .addTo(map)
         .bindPopup("<strong>You</strong>");
       latlngs.push([origin.latitude, origin.longitude]);
     }
     for (const job of jobs) {
-      if (job.location_lat != null && job.location_lon != null) {
-        L.marker([job.location_lat, job.location_lon], { icon: nearbyIcon() })
+      if (isUsableLatLng(job.location_lat, job.location_lon)) {
+        L.marker([job.location_lat as number, job.location_lon as number], { icon: nearbyIcon() })
           .addTo(map)
           .bindPopup(
             `<strong>${escapeHtml(job.incident || "Task")}</strong><br/>` +
@@ -70,16 +72,25 @@ export default function NearbyJobsMap({
         latlngs.push([job.location_lat, job.location_lon]);
       }
     }
-    if (latlngs.length > 0) {
-      map.fitBounds(L.latLngBounds(latlngs).pad(0.2));
-    }
+    fitBoundsSafely(map, latlngs, 0.2);
     return () => {
       map.remove();
       mapRef.current = null;
     };
   }, [jobs, origin]);
 
-  return <div ref={containerRef} className="h-72 w-full z-0" />;
+  return (
+    <div className="relative h-72 w-full">
+      <div ref={containerRef} className="h-72 w-full z-0" />
+      {jobs.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[500] flex items-center justify-center">
+          <div className="rounded-lg bg-white/90 px-4 py-2 text-sm text-slate-600 shadow">
+            No job locations to map yet.
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function escapeHtml(value: string): string {

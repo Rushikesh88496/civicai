@@ -22,6 +22,7 @@ from app.models.enums import ComplaintStatus, RoleName
 from app.schemas.complaint import ComplaintDetailOut
 from app.services import complaint_tracking_service
 from app.services.auth_service import register_user
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -44,7 +45,12 @@ async def _citizen_token(email: str) -> str:
 
     async with async_session_factory() as db:
         await register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Citizen Tracker")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Citizen Tracker",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
         role_name = await db.scalar(select(Role.name).where(Role.id == user.role_id))

@@ -44,6 +44,7 @@ from app.models.enums import (
 )
 from app.schemas.sla import NOTIFICATION_SLA_AT_RISK, NOTIFICATION_SLA_BREACHED
 from app.services import auth_service, sla_service
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _SLA = "/api/v1/sla"
@@ -76,8 +77,7 @@ async def _citizen_token(email: str) -> str:
             auth_service.RegisterIn(
                 email=email,
                 password=_PASSWORD,
-                full_name="SLA Citizen",
-            ),
+                full_name="SLA Citizen", ward_id=await any_active_ward_id(db)),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")

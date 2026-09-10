@@ -9,8 +9,9 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/auth/password-input";
 import { AuthScreen } from "@/components/auth/auth-screen";
 import { useAuth } from "@/components/auth/auth-provider";
-import { ApiError } from "@/lib/auth-api";
+import { ApiError, listActiveWards, type PublicWard } from "@/lib/auth-api";
 import { evaluatePassword } from "@/lib/password-strength";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
 export default function RegisterPage() {
@@ -20,6 +21,9 @@ export default function RegisterPage() {
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [confirm, setConfirm] = React.useState("");
+  const [wards, setWards] = React.useState<PublicWard[]>([]);
+  const [wardId, setWardId] = React.useState("");
+  const [wardsError, setWardsError] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -29,6 +33,27 @@ export default function RegisterPage() {
       router.replace("/dashboard");
     }
   }, [authLoading, router]);
+
+  React.useEffect(() => {
+    let active = true;
+    listActiveWards()
+      .then((rows) => {
+        if (!active) return;
+        setWards(rows);
+        setWardsError(null);
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        setWardsError(
+          err instanceof ApiError
+            ? err.message
+            : "Could not load the list of wards. Please refresh the page to try again."
+        );
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const strength = evaluatePassword(password);
   const matches = password === confirm && confirm.length > 0;
@@ -53,10 +78,14 @@ export default function RegisterPage() {
       setError("Passwords do not match.");
       return;
     }
+    if (!wardId || wards.length === 0) {
+      setError("Please choose the ward you live in.");
+      return;
+    }
 
     setSubmitting(true);
     try {
-      await register(fullName.trim(), email.trim(), password);
+      await register(fullName.trim(), email.trim(), password, wardId);
       router.replace("/dashboard");
     } catch (err) {
       if (err instanceof ApiError) {
@@ -148,6 +177,43 @@ export default function RegisterPage() {
             </p>
           )}
         </div>
+
+        <div>
+          <label htmlFor="wardId" className="mb-1 block text-sm font-medium text-slate-700">
+            Select your ward
+          </label>
+          {wardsError ? (
+            <p
+              role="alert"
+              className="rounded-lg border border-danger-200 bg-danger-50 px-3 py-2.5 text-sm text-danger-700"
+            >
+              {wardsError}
+            </p>
+          ) : (
+            <Select
+              id="wardId"
+              value={wardId}
+              onChange={(e) => {
+                setWardId(e.target.value);
+                setError(null);
+              }}
+              disabled={submitting || wards.length === 0}
+              required
+            >
+              <option value="">Select your ward…</option>
+              {wards.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name || w.code}
+                </option>
+              ))}
+            </Select>
+          )}
+        </div>
+
+        <p className="rounded-lg border border-primary-100 bg-primary-50 px-3 py-2 text-sm text-primary-800">
+          Your account is registered to this ward, so we can route reports and updates to the right
+          municipality team.
+        </p>
 
         {error && (
           <div

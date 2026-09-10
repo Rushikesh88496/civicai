@@ -41,6 +41,7 @@ from app.models import (
 from app.models.enums import ComplaintCategory, ComplaintStatus, RoleName
 from app.schemas.auth import RegisterIn
 from app.services import auth_service
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _CONV_BASE = "/api/v1/conversations"
@@ -58,7 +59,12 @@ def _unique_email(prefix: str) -> str:
 async def _citizen_user(email: str) -> User:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Conv Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Conv Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         return await db.scalar(select(User).where(User.email == email))
 
@@ -131,6 +137,14 @@ async def _delete_complaint(complaint_id) -> None:
     async with async_session_factory() as db:
         await db.execute(delete(Complaint).where(Complaint.id == complaint_id))
         await db.commit()
+
+
+async def _delete_ward(ward_id: uuid.UUID) -> None:
+    async with async_session_factory() as db:
+        ward = await db.get(Ward, ward_id)
+        if ward is not None:
+            await db.delete(ward)
+            await db.commit()
 
 
 def _auth(token: str) -> dict:
@@ -616,3 +630,4 @@ async def test_ai_draft_is_review_only_and_never_sends(client):
         if cid:
             await _delete_complaint(cid)
         await _delete_user(citizen_email)
+        await _delete_ward(ward.id)

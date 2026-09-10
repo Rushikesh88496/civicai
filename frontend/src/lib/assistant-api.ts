@@ -5,22 +5,9 @@
 // conversation persistence). Reuses the auth-api access-token machinery so the
 // assistant is only ever called for the authenticated user.
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
+import { ApiError, authorizedFetch, getAccessToken, readErrorMessage } from "@/lib/auth-api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-    if (Array.isArray(body?.detail)) {
-      return body.detail[0]?.msg || "Invalid input.";
-    }
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
-}
 
 // --------------------------------------------------------------------------- //
 // Types (mirror the backend /assistant schemas)
@@ -70,21 +57,7 @@ export interface AssistantClearResult {
 // --------------------------------------------------------------------------- //
 
 async function authorized<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError(401, "Not authenticated.");
-  }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  return res.json() as Promise<T>;
+  return authorizedFetch<T>(path, init);
 }
 
 // --------------------------------------------------------------------------- //

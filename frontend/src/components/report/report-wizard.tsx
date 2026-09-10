@@ -115,6 +115,7 @@ export function ReportWizard() {
               address: location.address || null,
               source: location.source,
               geopoint_denied: location.geopoint_denied,
+              accuracy_m: location.source === "gps" ? (location.accuracy_m ?? null) : null,
             }
           : null,
       });
@@ -217,7 +218,7 @@ export function ReportWizard() {
                   label="Location"
                   value={
                     location
-                      ? `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}${location.address ? ` — ${location.address}` : ""} (${location.source === "gps" ? "GPS" : "manual"})`
+                      ? `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}${location.address ? ` — ${location.address}` : ""} (${location.source === "gps" ? "GPS" : "manual"})${location.source === "gps" && location.accuracy_m ? ` ±${location.accuracy_m} m` : ""}`
                       : "Not provided"
                   }
                 />

@@ -101,8 +101,12 @@ _RESOLVED_STATUSES = {
     ComplaintStatus.CLOSED,
 }
 # Work-order statuses that are no longer "open" (excluded from SLA breaches).
+# WORK_COMPLETED / EVIDENCE_SUBMITTED are worker-done states — only AI +
+# human verification remain — so they are not pending SLA obligations either.
 _WORK_ORDER_TERMINAL = {
     WorkOrderStatus.COMPLETED,
+    WorkOrderStatus.WORK_COMPLETED,
+    WorkOrderStatus.EVIDENCE_SUBMITTED,
     WorkOrderStatus.CLOSED,
     WorkOrderStatus.REJECTED,
 }
@@ -552,6 +556,9 @@ async def get_map_data(db: AsyncSession, user: User) -> MapDataOut:
     ]
 
     # Hotspots: group the (scoped) complaints by ward -> counts + priority weight.
+    # A ward without a single complaint is NOT a hotspot — with zero operational
+    # data the list stays empty (Part 35), and wards with only resolved activity
+    # carry open_count 0 rather than disappearing entirely.
     from collections import defaultdict
 
     ward_index: dict[str, list[MapComplaint]] = defaultdict(list)
@@ -561,6 +568,8 @@ async def get_map_data(db: AsyncSession, user: User) -> MapDataOut:
     hotspots: list[MapHotspot] = []
     for w in wards_rows:
         ward_comps = ward_index.get(w.code, [])
+        if not ward_comps:
+            continue
         open_count = sum(
             1
             for cc in ward_comps

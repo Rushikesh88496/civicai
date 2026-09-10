@@ -47,6 +47,17 @@ ACTION_ROUTING_OVERRIDE = "routing.override"
 ACTION_PRIORITY_OVERRIDE = "priority.override"
 ACTION_DEPARTMENT_OVERRIDE = "department.override"
 
+# Resolution-verification + evidence audit verbs (Part 30). The verification
+# lifecycle must be auditable end-to-end: worker evidence submission, officer
+# evidence review, AI verification start/completion, and each officer decision.
+ACTION_WORK_ORDER_EVIDENCE_SUBMITTED = "work_order.evidence_submitted"
+ACTION_WORK_ORDER_EVIDENCE_VIEWED = "work_order.evidence_viewed"
+ACTION_WORK_ORDER_VERIFICATION_STARTED = "work_order.verification_started"
+ACTION_WORK_ORDER_VERIFICATION_COMPLETED = "work_order.verification_completed"
+ACTION_WORK_ORDER_RESOLUTION_CONFIRMED = "work_order.resolution_confirmed"
+ACTION_WORK_ORDER_REWORK_REQUESTED = "work_order.rework_requested"
+ACTION_WORK_ORDER_REOPENED = "work_order.reopened"
+
 # Maximum IP length stored (satisfies IPv6 with room to spare).
 _MAX_IP_LEN = 64
 

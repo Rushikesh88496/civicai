@@ -39,6 +39,10 @@ EVENT_HUMAN_REVIEW = "HUMAN_REVIEW"
 EVENT_NEW_ASSIGNMENT = "NEW_ASSIGNMENT"
 EVENT_PRIORITY_CHANGE = "PRIORITY_CHANGE"
 EVENT_REASSIGNMENT = "REASSIGNMENT"
+# Part 28 verification workflow events aimed at the assigned field worker.
+EVENT_AI_VERIFICATION_RESULT = "AI_VERIFICATION_RESULT"
+EVENT_REWORK_REQUESTED = "REWORK_REQUESTED"
+EVENT_WORK_RESOLVED = "WORK_RESOLVED"
 
 # Wards / representatives + cross-role
 EVENT_WARD_ALERT = "WARD_ALERT"
@@ -65,6 +69,9 @@ ALL_EVENTS: frozenset[str] = frozenset(
         EVENT_NEW_ASSIGNMENT,
         EVENT_PRIORITY_CHANGE,
         EVENT_REASSIGNMENT,
+        EVENT_AI_VERIFICATION_RESULT,
+        EVENT_REWORK_REQUESTED,
+        EVENT_WORK_RESOLVED,
         EVENT_WARD_ALERT,
         EVENT_ESCALATION,
         EVENT_MESSAGE,
@@ -185,6 +192,24 @@ EVENT_META: dict[str, EventMeta] = {
         stored_type=EVENT_REASSIGNMENT,
         label="Reassignment",
         default_title="Job reassigned to you",
+        roles=_WORKER_ROLES,
+    ),
+    EVENT_AI_VERIFICATION_RESULT: EventMeta(
+        stored_type=EVENT_AI_VERIFICATION_RESULT,
+        label="AI verification result",
+        default_title="AI reviewed your submitted work",
+        roles=_WORKER_ROLES,
+    ),
+    EVENT_REWORK_REQUESTED: EventMeta(
+        stored_type=EVENT_REWORK_REQUESTED,
+        label="Rework requested",
+        default_title="Officer requested rework on your job",
+        roles=_WORKER_ROLES,
+    ),
+    EVENT_WORK_RESOLVED: EventMeta(
+        stored_type=EVENT_WORK_RESOLVED,
+        label="Work resolved",
+        default_title="Your work has been confirmed resolved",
         roles=_WORKER_ROLES,
     ),
     EVENT_WARD_ALERT: EventMeta(

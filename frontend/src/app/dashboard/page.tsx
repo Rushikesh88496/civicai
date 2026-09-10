@@ -6,6 +6,7 @@ import { Files, Clock, CheckCircle, AlertTriangle } from "lucide-react";
 import { AnalyticsCards } from "@/components/dashboard/analytics-cards";
 import { RecentComplaints } from "@/components/dashboard/recent-complaints";
 import { WardInfoCard } from "@/components/dashboard/ward-info";
+import { WardRepresentativeCard } from "@/components/dashboard/ward-representative-card";
 import { QuickActions } from "@/components/dashboard/quick-actions";
 import { useDashboardData } from "@/components/dashboard/use-dashboard-data";
 import { ErrorState } from "@/components/ui/error-state";
@@ -53,6 +54,7 @@ export default function DashboardOverviewPage() {
             </div>
             <div className="space-y-6">
               <WardInfoCard ward={data?.ward ?? null} loading={loading} />
+              <WardRepresentativeCard ward={data?.ward ?? null} loading={loading} />
               <QuickActions />
             </div>
           </div>

@@ -284,9 +284,9 @@ class TriageAgent:
             "duration_ms": None,
             "event_log": [],
         }
-        await self._graph.ainvoke(state)
+        final_state: TriageState = await self._graph.ainvoke(state)
 
-        await self._log_governance(db, input_data, state, complaint_id)
+        await self._log_governance(db, input_data, final_state, complaint_id)
         duration = int((time.monotonic() - started) * 1000)
         reloaded = await agent_run_service.get_run_with_events(db, run_id)
         if reloaded is not None and reloaded.duration_ms is None:

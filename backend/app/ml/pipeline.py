@@ -205,8 +205,14 @@ def run_training(
     corpus: Corpus,
     context_provider: ContextProvider,
 ) -> dict:
-    """Execute the full train pipeline and return a serializable bundle."""
-    seed = settings.HOTSPOT_CORPUS_SEED
+    """Execute the full train pipeline and return a serializable bundle.
+
+    ``corpus.events`` must come from REAL complaint records (see Part 36); the
+    caller supplies a live ``context_provider`` built from the same real data.
+    The training randomness seed only controls feature-dropout and XGBoost fit
+    variance — it never generates complaint locations.
+    """
+    seed = settings.HOTSPOT_TRAIN_SEED
     rng = np.random.default_rng(seed)
     horizon = settings.HOTSPOT_HORIZON_DAYS
 
@@ -316,13 +322,14 @@ def run_training(
     config = {
         "horizon_days": horizon,
         "snapshot_every_days": settings.HOTSPOT_SNAPSHOT_EVERY_DAYS,
-        "corpus_years": settings.HOTSPOT_CORPUS_YEARS,
-        "corpus_seed": seed,
-        "corpus_description": (
-            "Deterministic synthetic historical complaints for the demo city "
-            "(see app.ml.corpus.build_corpus). Live inference reuses the same "
-            "feature extractor on real complaints."
+        "training_source": "real_complaints",
+        "training_description": (
+            "Trained exclusively on complaint records stored in the database "
+            "(coordinates from user GPS or explicit manual map selection). No "
+            "synthetic, random, hardcoded or demo complaint locations are used."
         ),
+        "training_lookback_days": settings.HOTSPOT_TRAIN_LOOKBACK_DAYS,
+        "train_seed": seed,
         "test_final_days": settings.HOTSPOT_TEST_FINAL_DAYS,
         "cv_folds": settings.HOTSPOT_CV_FOLDS,
         "external_dropout": settings.HOTSPOT_EXTERNAL_DROPOUT,

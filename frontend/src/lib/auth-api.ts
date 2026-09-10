@@ -24,6 +24,12 @@ export interface AuthUser {
     name: string;
     description: string | null;
   };
+  // The ward the user registered under (Part 31 — registration is ward-scoped).
+  ward: {
+    id: string;
+    code: string;
+    name: string | null;
+  } | null;
   profile: {
     phone: string | null;
     address: string | null;
@@ -79,12 +85,23 @@ export function clearSession() {
   }
 }
 
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${API_BASE_URL}${path}`, init);
+  } catch {
+    throw new ApiError(
+      0,
+      `Cannot reach the CivicAgent API at ${API_BASE_URL}. Is the backend server running?`
+    );
+  }
+}
+
 async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = getStoredRefreshToken();
   if (!refreshToken) return null;
 
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
+    const res = await apiFetch("/api/v1/auth/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
@@ -113,31 +130,47 @@ export async function getAccessToken(): Promise<string | null> {
   return refreshPromise;
 }
 
-async function authorizedFetch<T>(
+export async function authorizedFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = await getAccessToken();
+  let token = await getAccessToken();
   if (!token) {
     throw new ApiError(401, "Not authenticated.");
   }
 
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-  });
+  const doFetch = (bearer: string) =>
+    apiFetch(path, {
+      ...options,
+      headers: {
+        ...(options.body && !(options.body instanceof FormData)
+          ? { "Content-Type": "application/json" }
+          : {}),
+        Authorization: `Bearer ${bearer}`,
+        ...(options.headers || {}),
+      },
+    });
+
+  let res = await doFetch(token);
+
+  if (res.status === 401) {
+    accessToken = null;
+    token = await getAccessToken();
+    if (token) {
+      res = await doFetch(token);
+    }
+  }
 
   if (!res.ok) {
     throw new ApiError(res.status, await readErrorMessage(res));
   }
+  if (res.status === 204) {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }
 
-async function readErrorMessage(res: Response): Promise<string> {
+export async function readErrorMessage(res: Response): Promise<string> {
   try {
     const body = await res.json();
     if (typeof body?.detail === "string") return body.detail;
@@ -154,7 +187,7 @@ export async function login(
   email: string,
   password: string
 ): Promise<AuthUser> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+  const res = await apiFetch(`/api/v1/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -167,15 +200,33 @@ export async function login(
   return data.user;
 }
 
+export interface PublicWard {
+  id: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  is_active: boolean;
+}
+
+/** Active wards a new citizen can register under (public, unauthenticated). */
+export async function listActiveWards(): Promise<PublicWard[]> {
+  const res = await apiFetch("/api/v1/wards");
+  if (!res.ok) {
+    throw new ApiError(res.status, await readErrorMessage(res));
+  }
+  return res.json() as Promise<PublicWard[]>;
+}
+
 export async function register(
   fullName: string,
   email: string,
-  password: string
+  password: string,
+  wardId: string
 ): Promise<AuthUser> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
+  const res = await apiFetch("/api/v1/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ full_name: fullName, email, password }),
+    body: JSON.stringify({ full_name: fullName, email, password, ward_id: wardId }),
   });
   if (!res.ok) {
     throw new ApiError(res.status, await readErrorMessage(res));
@@ -211,7 +262,7 @@ export async function logout(): Promise<void> {
   clearSession();
   if (refreshToken) {
     try {
-      await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
+      await apiFetch("/api/v1/auth/logout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: refreshToken }),
@@ -228,7 +279,7 @@ export interface ForgotPasswordResult {
 }
 
 export async function forgotPassword(email: string): Promise<ForgotPasswordResult> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/auth/forgot-password`, {
+  const res = await apiFetch("/api/v1/auth/forgot-password", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email }),
@@ -244,7 +295,7 @@ export async function resetPassword(
   token: string,
   newPassword: string
 ): Promise<string> {
-  const res = await fetch(`${API_BASE_URL}/api/v1/auth/reset-password`, {
+  const res = await apiFetch("/api/v1/auth/reset-password", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token, new_password: newPassword }),

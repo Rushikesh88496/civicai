@@ -7,21 +7,10 @@
 // transparent refresh) so notifications are only ever fetched for the
 // authenticated user.
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
+import { authorizedFetch } from "@/lib/auth-api";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-    if (Array.isArray(body?.detail)) {
-      return body.detail[0]?.msg || "Invalid input.";
-    }
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
+async function authorized<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return authorizedFetch<T>(path, init);
 }
 
 // --------------------------------------------------------------------------- //
@@ -65,29 +54,6 @@ export interface NotificationListParams {
   page?: number;
   pageSize?: number;
   unreadOnly?: boolean;
-}
-
-// --------------------------------------------------------------------------- //
-// Authenticated transport
-// --------------------------------------------------------------------------- //
-
-async function authorized<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError(401, "Not authenticated.");
-  }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
 }
 
 // --------------------------------------------------------------------------- //

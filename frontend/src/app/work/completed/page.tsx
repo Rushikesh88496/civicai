@@ -53,10 +53,10 @@ export default function FieldWorkerCompletedPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900">Completed Jobs</h1>
-          <p className="text-sm text-slate-500">Tasks you have finished.</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Completed Jobs</h1>
+          <p className="mt-0.5 text-sm text-slate-500">Tasks you have finished.</p>
         </div>
         <Button
           variant="outline"

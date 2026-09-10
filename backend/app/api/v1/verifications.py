@@ -24,6 +24,7 @@ from app.schemas.verification import (
     VerificationReviewIn,
     VerificationReviewOut,
     VerificationRunResponse,
+    WorkOrderEvidenceOut,
     WorkOrderVerificationOut,
 )
 from app.services import verify_repair_service as svc
@@ -44,6 +45,8 @@ def _error(exc: Exception) -> HTTPException:
         return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     if isinstance(exc, svc.VerifyAccessError):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
+    if isinstance(exc, svc.VerifyEvidenceError):
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     if isinstance(exc, svc.VerifyStateError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))
@@ -73,6 +76,23 @@ async def get_order_verification(
 ) -> WorkOrderVerificationOut | None:
     try:
         return await svc.get_verification(db, user, order_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _error(exc) from exc
+
+
+@router.get(
+    "/{order_id}/evidence",
+    response_model=WorkOrderEvidenceOut,
+    dependencies=_STAFF_DEPS,
+)
+async def get_order_evidence(
+    order_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> WorkOrderEvidenceOut:
+    """Full resolution-review bundle: complaint + completion details + BEFORE/AFTER evidence."""
+    try:
+        return await svc.get_work_order_evidence(db, user, order_id)
     except Exception as exc:  # noqa: BLE001
         raise _error(exc) from exc
 

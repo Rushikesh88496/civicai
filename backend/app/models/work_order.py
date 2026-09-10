@@ -68,6 +68,15 @@ class WorkOrder(Base, UUIDMixin, TimestampMixin):
         nullable=True,
         index=True,
     )
+    # The worker the Dispatch Agent recommended (frozen at draft time). Kept so
+    # an officer's accept-vs-override can always be reconstructed precisely,
+    # even after the live ``worker_id`` is later changed by a reassignment.
+    recommended_worker_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("field_workers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Creator + approver (authorized staff). Approver set on approve.
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
@@ -82,10 +91,22 @@ class WorkOrder(Base, UUIDMixin, TimestampMixin):
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the worker submitted the resolution evidence (Part 28). Distinct from
+    # ``completed_at`` (when the physical work finished) — the order is only
+    # treated as resolved once the verification stage confirms the repair.
+    evidence_submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Why an officer returned the order for rework (``RETURNED_FOR_REWORK``).
+    # Kept through the rework cycle so the worker always sees the required fixes.
+    rework_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     worker_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     complaint = relationship("Complaint", back_populates="work_orders")
     worker = relationship("FieldWorker", back_populates="work_orders", foreign_keys=[worker_id])
+    recommended_worker = relationship(
+        "FieldWorker", foreign_keys=[recommended_worker_id], lazy="selectin"
+    )
     created_by_user = relationship("User", foreign_keys=[created_by])
     approved_by_user = relationship("User", foreign_keys=[approved_by])
     assignments = relationship(

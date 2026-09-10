@@ -12,12 +12,24 @@ from sqlalchemy import delete, select
 
 from app.db.session import async_session_factory
 from app.models import AuditLog, Complaint, User
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 
 
 def _unique_email(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}@example.com"
+
+
+async def _register_json(email: str) -> dict:
+    async with async_session_factory() as db:
+        ward_id = await any_active_ward_id(db)
+    return {
+        "email": email,
+        "password": _PASSWORD,
+        "full_name": "Audit User",
+        "ward_id": str(ward_id),
+    }
 
 
 async def _audit_rows(entity_id: str) -> list[str]:
@@ -44,7 +56,7 @@ async def test_register_writes_audit_row(client):
     email = _unique_email("aud-reg")
     resp = await client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": _PASSWORD, "full_name": "Audit User"},
+        json=await _register_json(email),
     )
     assert resp.status_code == 201
     user_id = resp.json()["user"]["id"]
@@ -61,7 +73,7 @@ async def test_login_writes_audit_row(client):
     email = _unique_email("aud-login")
     reg = await client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": _PASSWORD, "full_name": "Audit User"},
+        json=await _register_json(email),
     )
     user_id = reg.json()["user"]["id"]
     login = await client.post("/api/v1/auth/login", json={"email": email, "password": _PASSWORD})
@@ -76,7 +88,7 @@ async def test_logout_writes_audit_row(client):
     email = _unique_email("aud-out")
     reg = await client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": _PASSWORD, "full_name": "Audit User"},
+        json=await _register_json(email),
     )
     assert reg.status_code == 201
     user_id = reg.json()["user"]["id"]
@@ -112,7 +124,7 @@ async def test_password_reset_writes_audit_row(client):
     email = _unique_email("aud-reset")
     reg = await client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": _PASSWORD, "full_name": "Audit User"},
+        json=await _register_json(email),
     )
     user_id = reg.json()["user"]["id"]
 
@@ -146,7 +158,7 @@ async def test_complaint_create_writes_audit_row(client):
     email = _unique_email("aud-comp")
     reg = await client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": _PASSWORD, "full_name": "Audit User"},
+        json=await _register_json(email),
     )
     assert reg.status_code == 201
     user_id = reg.json()["user"]["id"]

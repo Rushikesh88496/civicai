@@ -37,6 +37,7 @@ from app.schemas.geo import (
     WardDetected,
 )
 from app.services import auth_service
+from tests.helpers import any_active_ward_id, any_officer_token
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -70,7 +71,12 @@ def _unique_email(prefix: str) -> str:
 async def _citizen_token(email: str) -> str:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Context Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Context Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -450,19 +456,18 @@ async def test_api_context_requires_access(client):
 
 @pytest.mark.asyncio
 async def test_api_context_404_unknown_complaint(client):
-    email = _unique_email("ctx-404")
-    token = await _citizen_token(email)
+    otoken = await any_officer_token(_unique_email("ctx-404-officer"))
     r = await client.post(
-        f"{_BASE}/{uuid.uuid4()}/context", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{uuid.uuid4()}/context", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert r.status_code == 404, r.text
-    await _delete_user(email)
 
 
 @pytest.mark.asyncio
 async def test_api_context_full_run_and_result(client, monkeypatch):
     email = _unique_email("ctx-api")
     token = await _citizen_token(email)
+    otoken = await any_officer_token(_unique_email("ctx-api-officer"))
     complaint_id = await _create_complaint(
         client,
         token,
@@ -478,7 +483,7 @@ async def test_api_context_full_run_and_result(client, monkeypatch):
     )
 
     resp = await client.post(
-        f"{_BASE}/{complaint_id}/context", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/context", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -489,7 +494,7 @@ async def test_api_context_full_run_and_result(client, monkeypatch):
     assert result["infrastructure_context"]["hospitals"] == 1
 
     getr = await client.get(
-        f"{_BASE}/{complaint_id}/context-result", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/context-result", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert getr.status_code == 200, getr.text
     out = getr.json()
@@ -503,6 +508,7 @@ async def test_api_context_full_run_and_result(client, monkeypatch):
 async def test_api_context_result_none_before_run(client):
     email = _unique_email("ctx-null")
     token = await _citizen_token(email)
+    otoken = await any_officer_token(_unique_email("ctx-null-officer"))
     complaint_id = await _create_complaint(
         client,
         token,
@@ -512,7 +518,7 @@ async def test_api_context_result_none_before_run(client):
         lon=_SEED_LON,
     )
     getr = await client.get(
-        f"{_BASE}/{complaint_id}/context-result", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/context-result", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert getr.status_code == 200, getr.text
     assert getr.json() is None

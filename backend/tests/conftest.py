@@ -157,7 +157,11 @@ async def _preflight_clean_test_data():
         # above, which cascades worker/representative profile rows).
         await db.execute(delete(m.Department).where(m.Department.code.like("TC%")))
         await db.execute(
-            delete(m.Ward).where((m.Ward.description == "wa") | (m.Ward.code.like("TC%")))
+            delete(m.Ward).where(
+                (m.Ward.description == "wa")
+                | (m.Ward.code.like("TC%"))
+                | (m.Ward.code.like("CONV-AI%"))
+            )
         )
         await db.commit()
 
@@ -173,3 +177,60 @@ async def _dispose_engine():
     from app.db.session import engine
 
     await engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _restore_zero_baseline():
+    """Return the shared dev database to the empty reference baseline (Part 35).
+
+    CivicAgent must *start* with zero operational data: 0 complaints (active or
+    resolved), 0 incidents/hotspots, 0 predictions, 0 work orders. Test modules
+    create-and-clean their own rows, but an aborted run (or the occasional
+    module that deliberately leaves data behind) would otherwise pollute the
+    shared development database. This teardown re-applies the same safe reset
+    the development ``seed.py --reset`` uses — wiping only operational rows,
+    every user except the bootstrap ``admin@example.com`` SUPER_ADMIN, and every
+    non-reference ward — so the suite hands the database back exactly at its
+    zero-data baseline.
+
+    Safety gate: the reset only runs against databases that still carry the four
+    migration-owned reference wards (WARD-1..WARD-4). A database without those
+    is treated as not-the-dev-baseline and is never touched.
+    """
+    yield
+    from sqlalchemy import func, select
+
+    import app.models as m
+    from app.db.session import async_session_factory
+
+    async with async_session_factory() as db:
+        reference_wards = await db.scalar(
+            select(func.count(m.Ward.id)).where(
+                m.Ward.code.in_(("WARD-1", "WARD-2", "WARD-3", "WARD-4"))
+            )
+        )
+        if not reference_wards:
+            return
+        from scripts.reset_dev_data import reset_dev_data_all
+
+        total_ops, users, wards = await reset_dev_data_all(db)
+
+        # Some assistant/i18n tests wipe the knowledge base rows wholesale
+        # (their fake embedder must not leak keyword-token vectors into the real
+        # KB). Restore the reference documents with real embeddings so the dev
+        # database ends exactly at its full seed baseline, as ``seed.py`` would.
+        knowledge_docs = int(
+            await db.scalar(
+                select(func.count()).select_from(m.KnowledgeDocument)
+            )
+            or 0
+        )
+        if knowledge_docs == 0:
+            from app.rag.knowledge_base import ensure_knowledge_base
+
+            ensured = await ensure_knowledge_base(db)
+            print(f"[baseline] restored {ensured} knowledge documents.")
+        print(
+            f"[baseline] post-suite reset: removed {total_ops} operational rows, "
+            f"{users} users, {wards} non-reference wards → zero-data baseline."
+        )

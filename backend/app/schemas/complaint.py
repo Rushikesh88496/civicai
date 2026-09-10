@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import (
     ComplaintCategory,
@@ -25,6 +25,33 @@ class ComplaintLocationIn(BaseModel):
     # True when the user denied/navigator.geolocation was unavailable and
     # they supplied coordinates by hand.
     geopoint_denied: bool = False
+    # Device GPS horizontal accuracy (rounded to the nearest metre). Only set
+    # for gps-sourced coordinates (Part 31).
+    accuracy_m: float | None = Field(default=None, ge=0, le=20000)
+
+    @field_validator("accuracy_m")
+    @classmethod
+    def _round_accuracy(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        return round(v, 1)
+
+    @model_validator(mode="after")
+    def _validate_location_rules(self) -> ComplaintLocationIn:
+        # Part 33: the platform never accepts fake/placeholder coordinates.
+        # (0,0) is the classic "GPS replaced by placeholder" sentinel — reject it
+        # outright. A real device never reports exactly (0.000000, 0.000000).
+        if self.latitude == 0 and self.longitude == 0:
+            raise ValueError(
+                "(0,0) is not a valid location — capture real GPS coordinates or "
+                "place the pin on the map manually."
+            )
+        # Accuracy is a device measurement — it only makes sense for GPS points.
+        if self.source != "gps" and self.accuracy_m is not None:
+            raise ValueError(
+                "accuracy_m is only allowed for source='gps' coordinates."
+            )
+        return self
 
 
 class ComplaintMediaOut(BaseModel):
@@ -78,6 +105,7 @@ class ComplaintLocationOut(BaseModel):
     address: str | None = None
     source: str
     geopoint_denied: bool = False
+    accuracy_m: float | None = None
 
 
 class WardOut(BaseModel):
@@ -121,3 +149,18 @@ class ComplaintTimelineOut(BaseModel):
     complaint_id: uuid.UUID
     current_status: ComplaintStatus
     events: list[ComplaintStatusHistoryOut] = Field(default_factory=list)
+    # Part 32: work-order milestone events merged into the complaint timeline so
+    # the UI can render the full lifecycle (officer review → official assignment
+    # → worker accepted → in progress → …) without a separate request.
+    work_order_events: list[WorkOrderTimelineEvent] = Field(default_factory=list)
+
+
+class WorkOrderTimelineEvent(BaseModel):
+    """A single work-order milestone surfaced in the complaint timeline (Part 32)."""
+
+    work_order_id: uuid.UUID
+    action: str
+    status: str
+    actor_name: str | None = None
+    note: str | None = None
+    recorded_at: datetime

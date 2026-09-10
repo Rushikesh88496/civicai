@@ -67,14 +67,14 @@ export default function FieldWorkerNearbyPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900">Nearby Open Jobs</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Nearby Open Jobs</h1>
+          <p className="mt-0.5 text-sm text-slate-500">
             Unassigned tasks ranked by distance.
           </p>
         </div>
-        <div className="flex gap-1.5">
+        <div className="flex shrink-0 gap-1.5">
           <Button
             variant="outline"
             size="sm"
@@ -94,7 +94,7 @@ export default function FieldWorkerNearbyPage() {
             onClick={() => setReloadKey((k) => k + 1)}
             disabled={loading}
           >
-            <RefreshCw className="mr-1.5 h-4 w-4" />
+            <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
       </div>
@@ -111,11 +111,13 @@ export default function FieldWorkerNearbyPage() {
           <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
         </div>
       ) : (
-        <div className="space-y-3">
-          <NearbyJobsMap
-            jobs={jobs}
-            origin={gpsCoords}
-          />
+        <div className="space-y-4">
+          <div className="overflow-hidden rounded-xl border border-border-soft shadow-sm">
+            <NearbyJobsMap
+              jobs={jobs}
+              origin={gpsCoords}
+            />
+          </div>
           <JobList
             jobs={jobs}
             emptyTitle="No nearby open jobs"

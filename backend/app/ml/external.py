@@ -1,22 +1,22 @@
-"""External feature providers for the hotspot pipeline (Part 23).
+"""External feature providers for the hotspot pipeline (Part 23, Part 36).
 
 The model mixes *complaint-history* features (always available: trailing counts,
 category mix, seasonality, location) with *context* features that may or may not
 be available depending on the environment:
 
-* **Rain** — the demo city has no historical weather store. Training uses the
-  corpus's synthetic rain field. Live inference can optionally fetch the current
+* **Rain** — the demo city has no historical weather store. Training reports it
+  unavailable (0.0). Live inference can optionally fetch the current
   Open-Meteo precipitation for the city, but the safe default reports the value
   as *unavailable* (0.0).
-* **Population** — training uses the synthetic per-cell density; live inference
-  uses ward-level resident counts as a city proxy, when wards exist.
-* **Infrastructure age** — available only on a small slice of the synthetic
-  corpus (documented); live inference reports it unavailable.
+* **Population** — training and live inference use ward-level resident counts as
+  a city proxy, when wards exist.
+* **Infrastructure age** — always reported unavailable for the hotspot pipeline.
 
 Every provider is a ``Callable[[str, datetime], ExternalFeatures]`` returning a
 tiny, bounded, always-serializable dataclass so the feature extractor treats
 training and live providers identically. Values are scaled to 0..1-ish units so
-the model never depends on raw magnitudes.
+the model never depends on raw magnitudes. Nothing here fabricates complaint
+locations: cells and coordinates come only from real complaint records.
 """
 
 from __future__ import annotations

@@ -8,11 +8,15 @@ Endpoints (mobile-first, gated to FIELD_WORKER role):
 - POST /worker/orders/{order_id}/start      — start work → IN_PROGRESS
 - POST /worker/orders/{order_id}/notes      — save free-text field notes
 - POST /worker/orders/{order_id}/photos     — upload a before/after evidence photo
-- POST /worker/orders/{order_id}/complete   — complete job + resolve complaint
+- POST /worker/orders/{order_id}/finish     — finish work → WORK_COMPLETED (no complaint resolve)
+- POST /worker/orders/{order_id}/submit-evidence — submit resolution evidence → EVIDENCE_SUBMITTED
+- POST /worker/orders/{order_id}/start-rework — restart a RETURNED_FOR_REWORK job → IN_PROGRESS
 
-Every action accepts an optional ``client_ref`` so the offline sync engine can
-replay a queued action idempotently (a replayed action returns the same state
-rather than creating a duplicate).
+The worker never resolves the complaint: resolution is confirmed by the AI
+resolution verification stage once the evidence is submitted. Every action
+accepts an optional ``client_ref`` so the offline sync engine can replay a
+queued action idempotently (a replayed action returns the same state rather
+than creating a duplicate).
 """
 
 from __future__ import annotations
@@ -29,11 +33,14 @@ from app.models.enums import RoleName
 from app.schemas.field_worker import (
     WorkerAcceptIn,
     WorkerCheckInIn,
-    WorkerCompleteIn,
     WorkerDashboardOut,
+    WorkerFinishIn,
     WorkerNotesIn,
     WorkerOrderDetailOut,
+    WorkerProfileOut,
+    WorkerReworkIn,
     WorkerStartIn,
+    WorkerSubmitEvidenceIn,
 )
 from app.services import field_worker_service as svc
 
@@ -49,6 +56,8 @@ def _error(exc: Exception) -> HTTPException:
         return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     if isinstance(exc, svc.WorkerOrderStateError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    if isinstance(exc, svc.EvidenceRequiredError):
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     if isinstance(exc, svc.MediaValidationError):
         return HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))
@@ -63,6 +72,17 @@ async def dashboard(
 ) -> WorkerDashboardOut:
     try:
         return await svc.get_dashboard(db, user, ref_lat=latitude, ref_lon=longitude)
+    except Exception as exc:  # noqa: BLE001
+        raise _error(exc) from exc
+
+
+@router.get("/me", response_model=WorkerProfileOut)
+async def worker_profile(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> WorkerProfileOut:
+    try:
+        return await svc.get_worker_profile(db, user)
     except Exception as exc:  # noqa: BLE001
         raise _error(exc) from exc
 
@@ -117,6 +137,7 @@ async def check_in(
             activity_type=payload.activity_type,
             latitude=payload.latitude,
             longitude=payload.longitude,
+            accuracy_m=payload.accuracy_m,
             geo_denied=payload.geo_denied,
             note=payload.note,
             client_ref=payload.client_ref,
@@ -198,20 +219,66 @@ async def upload_photo(
         ) from exc
 
 
-@router.post("/orders/{order_id}/complete", response_model=WorkerOrderDetailOut)
-async def complete(
+@router.post("/orders/{order_id}/finish", response_model=WorkerOrderDetailOut)
+async def finish(
     order_id: uuid.UUID,
-    payload: WorkerCompleteIn | None = None,
+    payload: WorkerFinishIn | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> WorkerOrderDetailOut:
     try:
-        p = payload or WorkerCompleteIn()
-        return await svc.complete_job(
+        p = payload or WorkerFinishIn()
+        return await svc.finish_job(
             db,
             user,
             order_id,
             notes=p.notes,
+            latitude=p.latitude,
+            longitude=p.longitude,
+            geo_denied=p.geo_denied,
+            client_ref=p.client_ref,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _error(exc) from exc
+
+
+@router.post("/orders/{order_id}/submit-evidence", response_model=WorkerOrderDetailOut)
+async def submit_evidence(
+    order_id: uuid.UUID,
+    payload: WorkerSubmitEvidenceIn | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> WorkerOrderDetailOut:
+    try:
+        p = payload or WorkerSubmitEvidenceIn()
+        return await svc.submit_evidence(
+            db,
+            user,
+            order_id,
+            notes=p.notes,
+            latitude=p.latitude,
+            longitude=p.longitude,
+            geo_denied=p.geo_denied,
+            client_ref=p.client_ref,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _error(exc) from exc
+
+
+@router.post("/orders/{order_id}/start-rework", response_model=WorkerOrderDetailOut)
+async def start_rework(
+    order_id: uuid.UUID,
+    payload: WorkerReworkIn | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> WorkerOrderDetailOut:
+    try:
+        p = payload or WorkerReworkIn()
+        return await svc.start_rework(
+            db,
+            user,
+            order_id,
+            note=p.note,
             latitude=p.latitude,
             longitude=p.longitude,
             geo_denied=p.geo_denied,

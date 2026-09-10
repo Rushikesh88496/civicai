@@ -24,10 +24,11 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from dataclasses import replace
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -43,6 +44,7 @@ from app.models import (
     ComplaintPriorityHistory,
     FieldWorker,
     User,
+    Ward,
     WorkOrder,
     WorkOrderStatusHistory,
 )
@@ -92,14 +94,14 @@ class DispatchState(TypedDict, total=False):
 
 
 async def _load_workers(db: AsyncSession) -> list[CandidateInput]:
-    """Load all ACTIVE field workers with their crew, home base and workloads."""
+    """Load all ACTIVE field workers with their crew, home ward, base and workloads."""
     rows = (
         (
             await db.execute(
                 select(FieldWorker)
                 .where(FieldWorker.status == WorkerStatus.ACTIVE.value)
                 .options(
-                    selectinload(FieldWorker.user),
+                    selectinload(FieldWorker.user).selectinload(User.ward),
                     selectinload(FieldWorker.department),
                     selectinload(FieldWorker.assignments),
                 )
@@ -126,9 +128,42 @@ async def _load_workers(db: AsyncSession) -> list[CandidateInput]:
                 home_lon=fw.home_longitude,
                 active_orders=len(active),
                 max_active_orders=fw.max_active_orders,
+                ward_code=user.ward.code if user.ward else None,
             )
         )
     return candidates
+
+
+async def _postgis_distances(
+    db: AsyncSession,
+    worker_ids: list[uuid.UUID],
+    lat: float | None,
+    lon: float | None,
+) -> dict[uuid.UUID, float]:
+    """Kilometre distance each worker is from the order location, via PostGIS.
+
+    Uses ``ST_Distance`` on the geography cast so the number is on the WGS84
+    ellipsoid. Returns an empty dict when PostGIS is unavailable or the order
+    has no coordinates — the engine then falls back to in-process haversine.
+    """
+    if lat is None or lon is None or not worker_ids:
+        return {}
+    origin = text("ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography")
+    stmt = text(
+        "SELECT id::text AS wid, "
+        "ST_Distance({origin}, "
+        "ST_SetSRID(ST_MakePoint(home_longitude, home_latitude), 4326)::geography) "
+        "/ 1000.0 AS km "
+        "FROM field_workers "
+        "WHERE id::text = ANY(:ids)".format(origin=origin)
+    )
+    try:
+        rows = await db.execute(
+            stmt, {"lon": lon, "lat": lat, "ids": [str(wid) for wid in worker_ids]}
+        )
+    except Exception:  # PostGIS unavailable — caller falls back to haversine.
+        return {}
+    return {uuid.UUID(r.wid): float(r.km) for r in rows}
 
 
 async def _load_complaint_location(
@@ -145,23 +180,106 @@ async def _load_complaint_location(
 def _required_from_department(department: str) -> tuple[list[str], list[str]]:
     """Default required skills + equipment for a routing department.
 
-    A pragmatic, deterministic default; officers may override skills later. This
-    keeps the five-criteria scoring meaningful even when a complaint supplies no
-    explicit skills.
+    A pragmatic, deterministic default; officers may override skills later. The
+    canonical routing tags come first, followed by the vocabulary the real
+    seeded crews (PW/SN/PR) actually carry (e.g. ``road-maintenance``,
+    ``garbage-collection``), so the skill criterion connects to the 25 real
+    field workers instead of scoring them ~0 on vocabulary mismatch.
     """
     mapping: dict[str, tuple[list[str], list[str]]] = {
-        "WATER": (["plumbing", "pipe-repair"], ["pump", "excavator"]),
-        "ROADS": (["pavement", "paving"], ["excavator", "compactor"]),
-        "ELECTRICAL": (["electrical-line", "wiring"], ["bucket-truck", "insulated-tools"]),
-        "WASTE": (["waste-audit", "collections"], ["garbage-truck", "broom"]),
-        "DRAINAGE": (["drainage", "jetted-outfall"], ["jetting-rig", "manhole-tool"]),
-        "PARKS": (["landscaping", "tree-care"], ["chainsaw", "pruner"]),
+        "WATER": (
+            [
+                "plumbing", "pipe-repair",
+                "water-line-repair", "pipeline", "valve",
+                "water-leak-repair", "shutoff-valve",
+            ],
+            ["pump", "excavator", "pipe-cutter", "pipe-clamp"],
+        ),
+        "ROADS": (
+            [
+                "pavement", "paving",
+                "road-maintenance", "asphalt", "patching",
+                "pothole-repair", "cold-mix", "paver-block",
+                "footpath-repair", "road-inspection", "pavement-assessment",
+            ],
+            ["excavator", "compactor", "road-roller", "asphalt-paver", "paver-block-setter"],
+        ),
+        "ELECTRICAL": (
+            [
+                "electrical-line", "wiring",
+                "electrical", "electrical-maintenance", "feeder", "panel",
+                "streetlight-repair", "lamp",
+            ],
+            ["bucket-truck", "insulated-tools", "boom-truck", "voltage-tester", "insulated-gloves"],
+        ),
+        "WASTE": (
+            [
+                "waste-audit", "collections",
+                "garbage-collection", "waste-management", "segregation", "landfill",
+                "street-cleaning", "sweeping",
+            ],
+            ["garbage-truck", "broom", "compactor-truck", "street-sweeper-vehicle"],
+        ),
+        "DRAINAGE": (
+            [
+                "drainage", "jetted-outfall",
+                "sewer-maintenance", "manhole", "jetting-rig",
+                "drain-cleaning", "drainage-jetting",
+            ],
+            ["jetting-rig", "manhole-tool", "manhole-lift"],
+        ),
+        "PARKS": (
+            [
+                "landscaping", "tree-care",
+                "civic-assets", "maintenance", "public-infrastructure",
+            ],
+            ["chainsaw", "pruner", "hand-tools", "app-phone"],
+        ),
         "EMERGENCY_DISASTER": (
             ["emergency-response", "first-responder"],
             ["rescue-kit", "generator"],
         ),
     }
     return mapping.get(department.upper(), (["general-maintenance"], []))
+
+
+def _explanation_for(best: CandidateScoreOut) -> str:
+    """One-sentence, deterministic explanation of the recommended worker's pick.
+
+    Built ONLY from the actual scored candidate data (never hardcoded, never raw
+    model chain-of-thought): skill match, department ownership, availability,
+    ward match, active-assignment count, and distance from the complaint.
+    """
+    skill_txt = (
+        "fully covers the required skills"
+        if best.skill >= 0.999
+        else f"matches {best.skill * 100:.0f}% of the required skills"
+    )
+    dept_txt = (
+        f"belongs to the {best.department_code} department that owns this work"
+        if best.department_code and best.department >= 1.0
+        else f"belongs to the {best.department_code or 'general'} department"
+    )
+    avail_txt = "is available" if best.available else "is currently unavailable"
+    ward_txt = (
+        f"operates in the required {best.ward_code} ward"
+        if best.ward_code and best.ward >= 1.0
+        else "is based outside the complaint's ward"
+    )
+    load_txt = (
+        f"currently has {best.active_orders} active assignment(s)"
+        if best.capacity is not None
+        else "has a favourable current workload"
+    )
+    dist_txt = (
+        f"is about {best.distance_km:.1f} km from the complaint"
+        if best.distance_km is not None
+        else f"scores {best.distance * 100:.0f}% on proximity"
+    )
+    return (
+        f"Recommended because {best.name} {skill_txt}, {dept_txt}, {avail_txt}, "
+        f"{ward_txt}, {load_txt}, and {dist_txt}."
+    )
 
 
 async def _compute_node(state: DispatchState) -> dict[str, Any]:
@@ -185,9 +303,27 @@ async def _compute_node(state: DispatchState) -> dict[str, Any]:
     lat, lon, address = await _load_complaint_location(db, complaint_id)
     incident = (complaint.title or "")[:200]
     priority = complaint.priority.value if complaint.priority else None
+    # The complaint's ward drives the "ward match" factor; the dynamic priority
+    # bucket (P1..P4, when available) drives the urgency factor.
+    ward_code = await db.scalar(
+        select(Ward.code)
+        .join(Complaint, Complaint.ward_id == Ward.id)
+        .where(Complaint.id == complaint_id)
+    )
+    priority_signal = await _latest_dynamic_priority(db, complaint_id) or priority
 
     skills, equipment = _required_from_department(department)
     candidates = await _load_workers(db)
+    # Real PostGIS distances (ellipsoidal); empty when PostGIS unavailable, in
+    # which case the engine falls back to in-process haversine.
+    distances = await _postgis_distances(db, [c.worker_id for c in candidates], lat, lon)
+    if distances:
+        candidates = [
+            replace(c, precomputed_distance_km=distances[c.worker_id])
+            if c.worker_id in distances
+            else c
+            for c in candidates
+        ]
 
     if not getattr(state, "dispatch_live", True) or not settings.DISPATCH_ENABLED:
         no_worker = "Unavailable while dispatch is disabled."
@@ -226,6 +362,8 @@ async def _compute_node(state: DispatchState) -> dict[str, Any]:
         order_lat=lat,
         order_lon=lon,
         department=department,
+        order_ward=ward_code,
+        priority=priority_signal,
         settings=settings,
     )
 
@@ -241,8 +379,8 @@ async def _compute_node(state: DispatchState) -> dict[str, Any]:
         recommended_worker_id = None
         recommended_worker_name = None
         no_worker_reason = (
-            "No worker is currently available (all busy or without the required "
-            "skills). Review candidates or escalate."
+            "No suitable workers available — every candidate is currently busy "
+            "or at capacity. Review candidates or escalate."
         )
 
     candidate_outs = [
@@ -256,6 +394,14 @@ async def _compute_node(state: DispatchState) -> dict[str, Any]:
             distance=c.distance,
             workload=c.workload,
             equipment=c.equipment,
+            department=c.department,
+            ward=c.ward,
+            priority=c.priority,
+            distance_km=c.distance_km,
+            department_code=c.department_code,
+            ward_code=c.ward_code,
+            active_orders=c.active_orders,
+            capacity=c.capacity,
             reasons=list(c.reasons),
         )
         for c in scored
@@ -275,6 +421,11 @@ async def _compute_node(state: DispatchState) -> dict[str, Any]:
         required_equipment=equipment,
         recommended_worker_id=recommended_worker_id,
         recommended_worker_name=recommended_worker_name,
+        recommended_worker_explanation=(
+            _explanation_for(candidate_outs[0])
+            if recommended_worker_id is not None and candidate_outs
+            else None
+        ),
         candidates=candidate_outs,
         sla_hours=sla_hours,
         eta_minutes=None,
@@ -448,6 +599,7 @@ async def _persist_node(state: DispatchState) -> dict[str, Any]:
             eta_minutes=rec.eta_minutes,
             eta_source=rec.eta_source,
             worker_id=rec.recommended_worker_id,
+            recommended_worker_id=rec.recommended_worker_id,
             created_by=created_by,
         )
         db.add(order)
@@ -555,7 +707,7 @@ class DispatchAgent:
         final_state = await self._graph.ainvoke(state)
         work_order_id = (final_state or {}).get("work_order_id")
 
-        await self._log_governance(db, state, complaint_id)
+        await self._log_governance(db, final_state, complaint_id)
         duration = int((time.monotonic() - started) * 1000)
         reloaded = await agent_run_service.get_run_with_events(db, run_id)
         if reloaded is not None and reloaded.duration_ms is None:

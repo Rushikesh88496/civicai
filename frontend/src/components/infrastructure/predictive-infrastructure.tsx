@@ -317,7 +317,62 @@ export function PredictiveInfrastructure() {
     );
   }
 
+  if (predictions.prediction_status === "INSUFFICIENT_DATA") {
+    const p = predictions;
+    return (
+      <div className="space-y-6">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Predictive Infrastructure Maintenance</h1>
+            <span className="inline-flex items-center gap-1 rounded-full bg-ai-100 px-2.5 py-0.5 text-xs font-semibold text-ai-700">
+              <Sparkles className="h-3.5 w-3.5" />
+              AI Prediction
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-slate-500">
+            30-day predicted risk per registered asset from the trained XGBoost model
+            (complaints, repairs, age, weather and location).
+          </p>
+        </div>
+        <Card>
+          <CardContent className="py-10">
+            <EmptyState
+              icon={<HardHat className="h-8 w-8 text-slate-400" />}
+              title="Not enough infrastructure data to predict yet"
+              description={p.message || "The model only runs once real assets are registered."}
+            />
+            <div className="mx-auto mt-6 max-w-md text-center">
+              <Stat
+                label="Registered assets"
+                value={String(p.registered_assets)}
+                suffix={`/ ${p.minimum_assets} required`}
+              />
+            </div>
+            <p className="mx-auto mt-6 max-w-md text-center text-sm text-slate-500">
+              Once enough assets are on record, per-asset failure risk and recommended inspections
+              appear here automatically. Until then no forecast is shown.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const model = predictions.model;
+  if (!model) {
+    return (
+      <ErrorState
+        title="No active infrastructure model"
+        description="The predictions endpoint returned no model metadata. Retry or retrain."
+        action={
+          <Button variant="outline" onClick={reload}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Retry
+          </Button>
+        }
+      />
+    );
+  }
   const f1 = modelMetric(model, ["clf", "f1"]);
   const rocAuc = modelMetric(model, ["clf", "roc_auc"]);
   const baselineF1 = modelMetric(model, ["baseline", "f1"]);

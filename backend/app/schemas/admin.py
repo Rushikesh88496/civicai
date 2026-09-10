@@ -118,6 +118,9 @@ class UserAdminCreate(BaseModel):
     worker_status: WorkerStatus = WorkerStatus.ACTIVE
     skill_tags: list[str] = Field(default_factory=list)
     equipment: list[str] = Field(default_factory=list)
+    home_latitude: float | None = None
+    home_longitude: float | None = None
+    base_location: str | None = Field(default=None, max_length=255)
     # Ward-representative profile (ignored unless role == WARD_REPRESENTATIVE).
     rep_title: str | None = Field(default=None, max_length=150)
     rep_status: RepresentativeStatus = RepresentativeStatus.ACTIVE
@@ -151,6 +154,7 @@ class UserAdminUpdate(BaseModel):
     equipment: list[str] | None = None
     home_latitude: float | None = None
     home_longitude: float | None = None
+    base_location: str | None = Field(default=None, max_length=255)
     max_active_orders: int | None = Field(default=None, ge=0)
     # Ward-representative profile (applied only when the user holds the role).
     rep_title: str | None = Field(default=None, max_length=150)
@@ -184,6 +188,7 @@ class FieldWorkerOut(BaseModel):
     equipment: list[str] = Field(default_factory=list)
     home_latitude: float | None = None
     home_longitude: float | None = None
+    base_location: str | None = None
     max_active_orders: int | None = None
     created_at: datetime
 
@@ -196,6 +201,7 @@ class FieldWorkerUpdate(BaseModel):
     equipment: list[str] | None = None
     home_latitude: float | None = None
     home_longitude: float | None = None
+    base_location: str | None = Field(default=None, max_length=255)
     max_active_orders: int | None = Field(default=None, ge=0)
 
 

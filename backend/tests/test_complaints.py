@@ -20,6 +20,7 @@ from app.db.session import async_session_factory
 from app.models import Complaint, User
 from app.models.enums import RoleName
 from app.services.auth_service import register_user
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -42,7 +43,12 @@ async def _citizen_token(email: str) -> str:
 
     async with async_session_factory() as db:
         await register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Citizen Test")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Citizen Test",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), RoleName.CITIZEN.value)
@@ -100,6 +106,8 @@ async def test_upload_and_submit_complete_with_gps(client):
             "address": "Near Market Street, Downtown",
             "source": "gps",
             "geopoint_denied": False,
+            # Device-reported GPS horizontal accuracy in metres (Part 31).
+            "accuracy_m": 12.34,
         },
     }
     resp = await client.post(_BASE, json=payload, headers=headers)
@@ -110,7 +118,7 @@ async def test_upload_and_submit_complete_with_gps(client):
     assert data["media"], "created complaint should include uploaded media"
     assert data["media"][0]["id"] == media["id"]
 
-    # The media row is now attached and a geometry point was stored.
+    # The media row is now attached and a geometry+accuracy point was stored.
     async with async_session_factory() as db:
         complaint = await db.scalar(
             select(Complaint)
@@ -122,6 +130,7 @@ async def test_upload_and_submit_complete_with_gps(client):
         assert complaint.complaint_location is not None
         assert complaint.complaint_location.source == "gps"
         assert complaint.complaint_location.geopoint_denied is False
+        assert complaint.complaint_location.accuracy_m == pytest.approx(12.3)
 
     await _delete_user(email)
 
@@ -223,6 +232,8 @@ async def test_submit_location_gps_denied_manual(client):
         assert complaint.complaint_location is not None
         assert complaint.complaint_location.geopoint_denied is True
         assert complaint.complaint_location.source == "manual"
+        # Manual coordinates carry no device accuracy (Part 31).
+        assert complaint.complaint_location.accuracy_m is None
 
     await _delete_user(email)
 

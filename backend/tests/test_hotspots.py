@@ -1,21 +1,22 @@
-"""Tests for Predictive Civic Hotspots (Part 23).
+"""Tests for Predictive Civic Hotspots (Part 23 + Part 36 real-data training).
 
-Layers exercised:
+Part 36 hard requirements exercised here:
 
-* **Grid geometry** — deterministic cell ids, centroid round-trip, neighbour
-  adjacency and out-of-bounds rejection.
-* **Leak-freedom of the feature extractor** — trailing features only use events
-  strictly before the snapshot date; labels use only the next ``horizon`` days.
-* **Corpus determinism** — same seed reproduces identical events; a different
-  seed changes them.
-* **Provider degradation** — unavailable rain/population are reported as flags,
-  never raised errors.
-* **End-to-end training** — the API writes an artifact file + a registry row;
-  a second train bumps the version and deactivates the previous model.
-* **RBAC** — city roles (officer / admin) may train/read while citizens,
-  ward-reps and field workers are rejected.
-* **Live prediction** — a fresh system lazily trains, real complaints map onto
-  grid cells, and the response carries the AI-Prediction disclaimer.
+* Hotspots are trained and predicted **only from real complaint records** stored
+  in the database (coordinates from user GPS or explicit manual map selection);
+  there is no synthetic / random / hardcoded / demo corpus anymore.
+* **No lazy provisioning** — simply opening the hotspot page never trains a
+  model or creates a prediction. With real history present but no model trained,
+  ``GET /predictions`` returns ``READY`` with ``model=None`` and zero cells and
+  the ``predictive_models`` registry stays empty.
+* Hotspot geographic positions are **calculated from the actual complaint
+  coordinates** (crowd centroid per cell), never from fabricated positions.
+* Too-compressed history is refused with ``INSUFFICIENT_DATA`` (span must cover
+  the feature warm-up plus the label horizon).
+* Thin/empty history stays gated as ``INSUFFICIENT_DATA`` (Part 31).
+
+Also covered: grid geometry, feature leak-freedom, provider degradation, RBAC,
+registry versioning and live-prediction shape.
 """
 
 import uuid
@@ -28,14 +29,23 @@ from starlette.testclient import TestClient
 from app.core.config import get_settings
 from app.core.security import create_access_token, hash_password
 from app.db.session import async_session_factory
-from app.ml.corpus import build_corpus
+from app.ml.corpus import corpus_from_events
 from app.ml.external import LiveContextProvider
 from app.ml.features import build_feature_frame
 from app.ml.grid import HotspotGrid
-from app.models import Complaint, ComplaintLocation, PredictiveModel, Role, User, UserProfile
+from app.models import (
+    Complaint,
+    ComplaintLocation,
+    PredictiveModel,
+    Role,
+    User,
+    UserProfile,
+    Ward,
+)
 from app.models.enums import ComplaintCategory, RoleName
 from app.schemas.auth import RegisterIn
 from app.services import auth_service
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/hotspots"
@@ -43,6 +53,13 @@ _SETTINGS = get_settings()
 _LAT = 17.4327
 _LON = 78.3885
 _GRID = HotspotGrid(17.40, 78.35, 17.50, 78.49, _SETTINGS.HOTSPOT_CELL_DEG)
+
+_HOTSPOT_CELLS = ("r3c3", "r3c4", "r4c3")
+_SCATTER_CELLS = (
+    "r0c0", "r0c14", "r2c7", "r5c1", "r6c10", "r8c5",
+    "r9c12", "r11c2", "r12c8", "r13c11", "r14c3", "r7c6",
+)
+_CATEGORIES = ("GARBAGE", "ROAD", "WATER", "SANITATION")
 
 
 def _unique_email(prefix: str) -> str:
@@ -53,10 +70,20 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _offset(lat: float, lon: float) -> tuple[float, float]:
+    """A reproducible real coordinate inside the same grid cell as the centroid."""
+    return round(lat + 0.002, 6), round(lon - 0.002, 6)
+
+
 async def _citizen(email: str) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="HS Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="HS Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
         return user.id
@@ -89,6 +116,7 @@ async def _insert_complaint(
     lat: float = _LAT,
     lon: float = _LON,
     created_at: datetime | None = None,
+    source: str = "gps",
 ) -> uuid.UUID:
     async with async_session_factory() as db:
         complaint = Complaint(
@@ -103,25 +131,101 @@ async def _insert_complaint(
             complaint.created_at = created_at
         db.add(
             ComplaintLocation(
-                complaint_id=complaint.id, latitude=lat, longitude=lon, source="gps"
+                complaint_id=complaint.id, latitude=lat, longitude=lon, source=source
             )
         )
         await db.commit()
         return complaint.id
 
 
+async def _seed_real_history(
+    citizen_id: uuid.UUID,
+    *,
+    span_days: int = 150,
+) -> dict[str, tuple[float, float]]:
+    """Insert REAL complaint records spread across ``span_days``.
+
+    ``_HOTSPOT_CELLS`` receive a regular stream of complaints (a real hotspot
+    persisted over time), ``_SCATTER_CELLS`` receive one-off reports. Every
+    coordinate is an explicit GPS/manual-map value, so the expected per-cell
+    crowd centroid is exactly the offset coordinate.
+
+    Returns {cell_id: (lat, lon)} for the cells with recurring complaints.
+    """
+    now = datetime.now(UTC)
+    coords_by_cell: dict[str, tuple[float, float]] = {}
+
+    idx = 0
+    for day in range(span_days):
+        if day % 2 != 0:
+            continue
+        cell = _HOTSPOT_CELLS[(day // 2) % len(_HOTSPOT_CELLS)]
+        if cell not in coords_by_cell:
+            clat, clon = _GRID.cell_centroid(cell)
+            coords_by_cell[cell] = _offset(clat, clon)
+        lat, lon = coords_by_cell[cell]
+        await _insert_complaint(
+            user_id=citizen_id,
+            title=f"hs-hot-{idx}",
+            category=_CATEGORIES[idx % len(_CATEGORIES)],
+            lat=lat,
+            lon=lon,
+            created_at=now - timedelta(days=span_days - 1 - day),
+        )
+        idx += 1
+
+    for k, cell in enumerate(_SCATTER_CELLS):
+        clat, clon = _GRID.cell_centroid(cell)
+        lat, lon = _offset(clat, clon)
+        await _insert_complaint(
+            user_id=citizen_id,
+            title=f"hs-scatter-{k}",
+            category=_CATEGORIES[k % len(_CATEGORIES)],
+            lat=lat,
+            lon=lon,
+            created_at=now - timedelta(days=span_days - 40 - k * 7),
+        )
+
+    return coords_by_cell
+
+
+async def _trained_system(client: TestClient) -> tuple[str, dict[str, tuple[float, float]]]:
+    """Seed real history, run the explicit training action, return officer token."""
+    citizen_id = await _citizen(_unique_email("hs-train"))
+    coords = await _seed_real_history(citizen_id)
+    token = await _officer_token()
+    r = await client.post(f"{_BASE}/train", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()["trained"] is True
+    return token, coords
+
+
 @pytest.fixture(autouse=True)
 async def _fast_settings(tmp_path, monkeypatch):
     """Small, fast training config + isolated artifact directory."""
     for attr, value in (
-        ("HOTSPOT_CORPUS_YEARS", 1),
+        ("HOTSPOT_TRAIN_LOOKBACK_DAYS", 400),
         ("HOTSPOT_SNAPSHOT_EVERY_DAYS", 7),
-        ("HOTSPOT_TEST_FINAL_DAYS", 120),
+        ("HOTSPOT_TEST_FINAL_DAYS", 15),
         ("HOTSPOT_CV_FOLDS", 1),
         ("HOTSPOT_N_ESTIMATORS", 30),
         ("HOTSPOT_ARTIFACT_DIR", str(tmp_path)),
     ):
         monkeypatch.setattr(_SETTINGS, attr, value)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _low_gating_thresholds(monkeypatch):
+    """Part 31 gating minima of 1/1 keep the behaviour tests cheap.
+
+    Seeding 25+ spread complaints for every hotspot behaviour test would dominate
+    the suite; lowering the thresholds to 1/1 exercises the full ready-path with
+    modest real history. The dedicated gating test re-raises them via the same
+    fixture override logic.
+    """
+    monkeypatch.setattr(_SETTINGS, "MINIMUM_TRAINING_RECORDS", 1)
+    monkeypatch.setattr(_SETTINGS, "MINIMUM_AREA_TIME_OBSERVATIONS", 1)
     yield
 
 
@@ -216,21 +320,14 @@ def test_features_span_every_grid_cell():
 
 
 # --------------------------------------------------------------------------- #
-# Corpus determinism
+# Corpus is a real-data container (Part 36: no synthetic generator).
 # --------------------------------------------------------------------------- #
-def test_corpus_is_deterministic():
-    c1 = build_corpus(_GRID, 1, 42)
-    c2 = build_corpus(_GRID, 1, 42)
-    c3 = build_corpus(_GRID, 1, 43)
-    assert len(c1.events) == len(c2.events)
-    assert [(e.ts, e.cell_id, e.category) for e in c1.events] == [
-        (e.ts, e.cell_id, e.category) for e in c2.events
-    ]
-    assert [(e.ts, e.cell_id, e.category) for e in c1.events] != [
-        (e.ts, e.cell_id, e.category) for e in c3.events
-    ]
-    # Trailing months contain data so features have context at every snapshot.
-    assert c1.events[-1].ts.date() > datetime(2026, 8, 1, tzinfo=UTC).date()
+def test_corpus_from_events_is_real_data_container():
+    evs = [_event(1, "r0c0"), _event(0, "r0c0")]
+    corpus = corpus_from_events(evs)
+    assert corpus.events[0].ts < corpus.events[1].ts
+    assert corpus.events == sorted(evs, key=lambda e: e.ts)
+    assert corpus.cells == {} and corpus.rain_mm == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -265,7 +362,8 @@ async def test_rbac_forbids_non_city_roles(client: TestClient):
     )
     worker_token = await _role_user(_unique_email("hs-worker"), RoleName.FIELD_WORKER.value)
 
-    for token in (citizen_token, rep_token, worker_token):
+    # Citizen + field worker are denied every hotspot surface.
+    for token in (citizen_token, worker_token):
         for method, path in (
             ("GET", "/status"),
             ("GET", "/predictions"),
@@ -274,15 +372,172 @@ async def test_rbac_forbids_non_city_roles(client: TestClient):
             rec = await client.request(method, f"{_BASE}{path}", headers=_auth(token))
             assert rec.status_code == 403
 
+    # A ward representative may READ status + predictions, but never retrain.
+    for method, path in (("GET", "/status"), ("GET", "/predictions")):
+        rec = await client.request(method, f"{_BASE}{path}", headers=_auth(rep_token))
+        assert rec.status_code == 200
+
+    rec = await client.post(f"{_BASE}/train", headers=_auth(rep_token))
+    assert rec.status_code == 403
+
     r = await client.get(f"{_BASE}/status")
     assert r.status_code in (401, 403)
 
 
+@pytest.mark.asyncio
+async def test_ward_rep_predictions_scoped_to_own_ward(client: TestClient):
+    """A representative only ever sees the risk cells inside their own ward.
+
+    The trained model is city-wide (real complaints), but GET /predictions for a
+    WARD_REPRESENTATIVE must filter every returned cell to their assigned ward.
+    Another representative of a ward with no cells gets an empty (non-leaking)
+    forecast.
+    """
+    token, _coords = await _trained_system(client)
+
+    async with async_session_factory() as db:
+        ward_id = await any_active_ward_id(db)
+        ward = await db.get(Ward, ward_id)
+        assert ward is not None
+        ward_code = ward.code
+
+    covering_rep = await _role_user(
+        _unique_email("hs-rep-cover"),
+        RoleName.WARD_REPRESENTATIVE.value,
+        ward_id=ward_id,
+    )
+
+    st = await client.get(f"{_BASE}/status", headers=_auth(covering_rep))
+    assert st.status_code == 200
+    assert st.json()["trained"] is True
+
+    pred = await client.get(f"{_BASE}/predictions", headers=_auth(covering_rep))
+    assert pred.status_code == 200, pred.text
+    data = pred.json()
+    assert data["prediction_status"] == "READY"
+    assert data["cells"] != []
+    for cell in data["cells"]:
+        assert cell["ward_code"] == ward_code, cell
+
+    # A representative bound to a ward the grid does not cover sees zero cells.
+    async with async_session_factory() as db:
+        empty_ward = Ward(
+            code=f"HSE-{uuid.uuid4().hex[:6]}",
+            name=f"Empty-{uuid.uuid4().hex[:6]}",
+            description="no cells over this ward",
+        )
+        db.add(empty_ward)
+        await db.commit()
+        empty_ward_id = empty_ward.id
+
+    empty_rep = await _role_user(
+        _unique_email("hs-rep-empty"),
+        RoleName.WARD_REPRESENTATIVE.value,
+        ward_id=empty_ward_id,
+    )
+    pred2 = await client.get(f"{_BASE}/predictions", headers=_auth(empty_rep))
+    assert pred2.status_code == 200, pred2.text
+    assert pred2.json()["cells"] == []
+
+
 # --------------------------------------------------------------------------- #
-# Training + registry versioning
+# Gating / no lazy provisioning (Part 31 + Part 36)
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_predictions_no_lazy_train_when_gated(client: TestClient, monkeypatch):
+    # Default (high) Part 31 thresholds with zero complaints → INSUFFICIENT_DATA
+    # everywhere and NO model is provisioned (the platform stays genuinely empty).
+    for attr, value in (
+        ("MINIMUM_TRAINING_RECORDS", 1000),
+        ("MINIMUM_AREA_TIME_OBSERVATIONS", 1000),
+    ):
+        monkeypatch.setattr(_SETTINGS, attr, value)
+    await _clear_models()
+    token = await _officer_token()
+
+    r = await client.get(f"{_BASE}/predictions", headers=_auth(token))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["prediction_status"] == "INSUFFICIENT_DATA"
+    assert data["model"] is None
+    assert data["cells"] == []
+    assert data["records_available"] == 0
+    assert data["complaint_events_used"] == 0
+    assert "minimum" in data["message"]
+
+    st = await client.get(f"{_BASE}/status", headers=_auth(token))
+    assert st.json()["trained"] is False
+    assert st.json()["prediction_status"] == "INSUFFICIENT_DATA"
+
+    tr = await client.post(f"{_BASE}/train", headers=_auth(token))
+    assert tr.json()["trained"] is False
+    assert tr.json()["status"] == "INSUFFICIENT_DATA"
+
+    async with async_session_factory() as db:
+        rows = (await db.execute(select(PredictiveModel))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_predictions_without_trained_model_stay_empty(client: TestClient):
+    # Real history clears the gate, but NO model exists: opening the hotspot
+    # page must NOT create a model or any forecast (no lazy provisioning).
+    await _clear_models()
+    citizen_id = await _citizen(_unique_email("hs-notrained"))
+    await _seed_real_history(citizen_id)
+    token = await _officer_token()
+
+    r = await client.get(f"{_BASE}/predictions", headers=_auth(token))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["prediction_status"] == "READY"
+    assert data["ai_prediction"] is True
+    assert data["model"] is None
+    assert data["cells"] == []
+    assert "trained" in data["message"].lower() or "officer" in data["message"].lower()
+    assert data["complaint_events_used"] == 0
+
+    # Repeated page loads still never provision anything.
+    r2 = await client.get(f"{_BASE}/predictions", headers=_auth(token))
+    assert r2.json()["model"] is None
+    async with async_session_factory() as db:
+        rows = (await db.execute(select(PredictiveModel))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_train_refuses_compressed_history(client: TestClient):
+    # A burst confined to a few days is not a training time series (warm-up +
+    # horizon must fit inside the real history span).
+    citizen_id = await _citizen(_unique_email("hs-compact"))
+    for m in range(4):
+        lat, lon = _offset(*_GRID.cell_centroid(_HOTSPOT_CELLS[m % len(_HOTSPOT_CELLS)]))
+        await _insert_complaint(
+            user_id=citizen_id,
+            title=f"hs-compact-{m}",
+            lat=lat,
+            lon=lon,
+            created_at=datetime.now(UTC) - timedelta(days=4 - m),
+        )
+    token = await _officer_token()
+
+    tr = await client.post(f"{_BASE}/train", headers=_auth(token))
+    assert tr.status_code == 200
+    assert tr.json()["trained"] is False
+    assert tr.json()["status"] == "INSUFFICIENT_DATA"
+    assert "span" in tr.json()["message"].lower()
+
+    pred = await client.get(f"{_BASE}/predictions", headers=_auth(token))
+    assert pred.json()["cells"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Training uses ONLY real complaint locations (Part 36)
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_train_persists_artifact_and_version_bumps(client: TestClient):
+    citizen_id = await _citizen(_unique_email("hs-train"))
+    coords = await _seed_real_history(citizen_id)
     token = await _officer_token()
     headers = _auth(token)
 
@@ -297,9 +552,19 @@ async def test_train_persists_artifact_and_version_bumps(client: TestClient):
     assert data["metrics"]["reg"]["mae"] >= 0
     assert data["metrics"]["baseline"]["clf"]["f1"] is not None
 
+    # The bundle provenance must prove real-data training:
+    assert data["config"]["training_source"] == "real_complaints"
+    assert "no synthetic" in data["config"]["training_description"].lower()
+    assert "database" in data["config"]["training_description"].lower()
+    assert "corpus_years" not in data["config"]
+    assert "corpus_seed" not in data["config"]
+    assert data["config"]["training_lookback_days"] == 400
+
     async with async_session_factory() as db:
         row = await db.scalar(select(PredictiveModel).where(PredictiveModel.is_active.is_(True)))
         assert row is not None and row.version == 1 and row.artifact_filename.endswith(".joblib")
+        stored = row.config or {}
+    assert stored.get("training_source") == "real_complaints"
 
     # Status reflects the active model + evaluation metrics.
     r = await client.get(f"{_BASE}/status", headers=headers)
@@ -308,6 +573,7 @@ async def test_train_persists_artifact_and_version_bumps(client: TestClient):
     assert st["trained"] is True
     assert st["model"]["version"] == 1
     assert st["model"]["metrics"]["clf"]["roc_auc"] is not None
+    assert st["model"]["config"]["training_source"] == "real_complaints"
 
     # Retrain bumps the version and swaps active.
     r = await client.post(f"{_BASE}/train", headers=headers)
@@ -318,28 +584,41 @@ async def test_train_persists_artifact_and_version_bumps(client: TestClient):
         old = await db.scalar(select(PredictiveModel).where(PredictiveModel.version == 1))
         assert old is not None and old.is_active is False
 
+    # Hotspot positions in live forecasts are the crowd centroids of the REAL
+    # complaint coordinates for the window the model was trained on windows of.
+    r = await client.get(f"{_BASE}/predictions", headers=headers)
+    assert r.status_code == 200
+    pred = r.json()
+    assert pred["prediction_status"] == "READY"
+    hotspot = next(c for c in pred["cells"] if c["cell_id"] == "r3c3")
+    expected_lat, expected_lon = coords["r3c3"]
+    assert abs(hotspot["latitude"] - expected_lat) < 0.0005
+    assert abs(hotspot["longitude"] - expected_lon) < 0.0005
+    # And the crowd centroid is NOT the fabricated grid centroid.
+    grid_lat, grid_lon = _GRID.cell_centroid("r3c3")
+    assert abs(hotspot["latitude"] - grid_lat) > 0.001
+
 
 # --------------------------------------------------------------------------- #
-# Live prediction
+# Live prediction shape
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_predictions_lazy_train_and_shape(client: TestClient):
-    await _clear_models()
-    token = await _officer_token()
+async def test_predictions_shape(client: TestClient):
+    token, _coords = await _trained_system(client)
     r = await client.get(f"{_BASE}/predictions", headers=_auth(token))
     assert r.status_code == 200
     data = r.json()
     assert data["ai_prediction"] is True
-    assert "forecast" in data["disclaimer"].lower()
+    assert "not a confirmed incident" in data["disclaimer"].lower()
     assert data["horizon_days"] == 7
     assert data["model"]["version"] >= 1
-    assert len(data["cells"]) == len(_GRID.all_cells())
+    assert data["complaint_events_used"] >= 1
+    assert len(data["cells"]) >= 1
     for cell in data["cells"]:
         assert 0.0 <= cell["risk_score"] <= 1.0
         assert cell["tier"] in ("high", "medium", "low")
         assert -180.0 <= cell["longitude"] <= 180.0
         assert -90.0 <= cell["latitude"] <= 90.0
-    assert data["complaint_events_used"] == 0
 
     # Second call reuses the trained model (no new active version).
     r2 = await client.get(f"{_BASE}/predictions", headers=_auth(token))
@@ -348,15 +627,13 @@ async def test_predictions_lazy_train_and_shape(client: TestClient):
 
 @pytest.mark.asyncio
 async def test_predictions_reflect_live_complaint(client: TestClient):
-    citizen_id = await _citizen(_unique_email("hs-src"))
-    await _insert_complaint(user_id=citizen_id, title="hs-live", category="GARBAGE")
-
-    token = await _officer_token()
+    token, coords = await _trained_system(client)
     r = await client.get(f"{_BASE}/predictions", headers=_auth(token))
     assert r.status_code == 200
     data = r.json()
-    assert data["complaint_events_used"] == 1
+    assert data["complaint_events_used"] >= 1
     hotspot = next(c for c in data["cells"] if c["cell_id"] == "r3c3")
     assert hotspot["trailing7"] >= 1
-    assert hotspot["ward_code"] in ("W-001", "W-002", "W-003")
+    assert hotspot["latitude"] == coords["r3c3"][0]
+    assert hotspot["ward_code"] == "WARD-1"
     assert data["population_cells"] >= 1

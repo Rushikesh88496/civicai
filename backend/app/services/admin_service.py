@@ -30,6 +30,7 @@ from app.models import (
     WardRepresentative,
 )
 from app.models.enums import RepresentativeStatus, RoleName, WorkerStatus
+from app.services.geo_service import GeoService, InvalidCoordinatesError
 from app.schemas.admin import (
     DepartmentIn,
     DepartmentUpdate,
@@ -319,10 +320,8 @@ async def update_user(
             worker.equipment = data["equipment"]
         if "worker_status" in data and data["worker_status"] is not None:
             worker.status = data["worker_status"]
-        if "home_latitude" in data:
-            worker.home_latitude = data["home_latitude"]
-        if "home_longitude" in data:
-            worker.home_longitude = data["home_longitude"]
+        if "home_latitude" in data or "home_longitude" in data or "base_location" in data:
+            _update_worker_home(worker, data)
         if "max_active_orders" in data:
             worker.max_active_orders = data["max_active_orders"]
     elif user.role.name == RoleName.FIELD_WORKER.value and "department_code" in data:
@@ -340,6 +339,7 @@ async def update_user(
                 status=data.get("worker_status", WorkerStatus.ACTIVE),
                 skill_tags=data.get("skill_tags", []),
                 equipment=data.get("equipment", []),
+                base_location=data.get("base_location"),
             )
         )
 
@@ -576,6 +576,29 @@ async def update_department(
 # --------------------------------------------------------------------------- #
 # Field workers
 # --------------------------------------------------------------------------- #
+def _update_worker_home(worker: FieldWorker, data: dict) -> None:
+    """Apply Pune-scoped base/registered location fields to a field worker.
+
+    Coordinates are co-updated (a lone latitude also validates against the
+    existing longitude) and MUST fall inside the Pune municipal area — the
+    worker's registered base, not a live GPS position. ``base_location`` is the
+    human-readable station label (e.g. "Kothrud, Pune, Maharashtra").
+    """
+    if "home_latitude" in data:
+        worker.home_latitude = data["home_latitude"]
+    if "home_longitude" in data:
+        worker.home_longitude = data["home_longitude"]
+    if "base_location" in data:
+        worker.base_location = data["base_location"]
+    if worker.home_latitude is not None and worker.home_longitude is not None:
+        try:
+            GeoService().validate_pune_base_coordinates(
+                worker.home_latitude, worker.home_longitude
+            )
+        except InvalidCoordinatesError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+
 def _worker_out(worker: FieldWorker) -> FieldWorkerOut:
     return FieldWorkerOut(
         id=worker.id,
@@ -591,6 +614,7 @@ def _worker_out(worker: FieldWorker) -> FieldWorkerOut:
         equipment=worker.equipment or [],
         home_latitude=worker.home_latitude,
         home_longitude=worker.home_longitude,
+        base_location=worker.base_location,
         max_active_orders=worker.max_active_orders,
         created_at=worker.created_at,
     )
@@ -654,10 +678,8 @@ async def update_field_worker(
     for field in ("specialty", "skill_tags", "equipment"):
         if field in data and data[field] is not None:
             setattr(worker, field, data[field])
-    if "home_latitude" in data:
-        worker.home_latitude = data["home_latitude"]
-    if "home_longitude" in data:
-        worker.home_longitude = data["home_longitude"]
+    if "home_latitude" in data or "home_longitude" in data or "base_location" in data:
+        _update_worker_home(worker, data)
     if "max_active_orders" in data:
         worker.max_active_orders = data["max_active_orders"]
     if "status" in data and data["status"] is not None:

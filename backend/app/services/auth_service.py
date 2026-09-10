@@ -18,7 +18,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models import RefreshToken, Role, User, UserProfile
+from app.models import RefreshToken, Role, User, UserProfile, Ward
 from app.models.enums import RoleName
 from app.schemas.auth import (
     AuthResponse,
@@ -69,7 +69,7 @@ async def _issue_token_pair(db: AsyncSession, user: User) -> TokenPair:
 
 
 async def register_user(db: AsyncSession, payload: RegisterIn) -> AuthResponse:
-    """Create a new citizen user and return a token pair."""
+    """Create a new citizen user against an active reference ward and return tokens."""
     email = payload.email.lower().strip()
     existing = await db.scalar(select(User).where(User.email == email))
     if existing:
@@ -82,11 +82,21 @@ async def register_user(db: AsyncSession, payload: RegisterIn) -> AuthResponse:
             "Default CITIZEN role is missing. Run the development seed script first.",
         )
 
+    # Part 31: registration is ward-required. The ward must exist AND be active;
+    # Inactive or deleted -- with distinct messages so the UI can tell the
+    # citizen their ward is off the roster vs. a wrong pick.
+    ward = await db.get(Ward, payload.ward_id)
+    if ward is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "The chosen ward does not exist.")
+    if not ward.is_active:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "The chosen ward is not active.")
+
     user = User(
         email=email,
         password_hash=hash_password(payload.password),
         full_name=payload.full_name.strip(),
         role_id=role.id,
+        ward_id=ward.id,
         is_active=True,
         is_email_verified=False,
     )
@@ -97,7 +107,7 @@ async def register_user(db: AsyncSession, payload: RegisterIn) -> AuthResponse:
 
     tokens = await _issue_token_pair(db, user)
     await db.commit()
-    await db.refresh(user)
+    await db.refresh(user, attribute_names=["role", "profile", "ward"])
     return AuthResponse(user=_to_user_out(user), tokens=tokens)
 
 
@@ -117,7 +127,7 @@ async def login_user(db: AsyncSession, email: str, password: str) -> AuthRespons
 
     tokens = await _issue_token_pair(db, user)
     await db.commit()
-    await db.refresh(user)
+    await db.refresh(user, attribute_names=["role", "profile", "ward"])
     return AuthResponse(user=_to_user_out(user), tokens=tokens)
 
 
@@ -240,7 +250,7 @@ async def get_me(db: AsyncSession, user_id: uuid.UUID) -> MeResponse:
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
-    await db.refresh(user, attribute_names=["profile", "role"])
+    await db.refresh(user, attribute_names=["profile", "role", "ward"])
     return MeResponse(user=_to_user_out(user))
 
 

@@ -74,5 +74,16 @@ export function AnalyticsHeatmap({ clusters }: { clusters: HeatmapCluster[] }) {
     }
   }, [clusters]);
 
-  return <div ref={containerRef} className="h-[280px] w-full rounded-lg border border-border-soft" aria-label="Complaint heatmap" />;
+  return (
+    <div className="relative h-[280px] w-full rounded-lg border border-border-soft" aria-label="Complaint heatmap">
+      <div ref={containerRef} className="h-[280px] w-full rounded-lg" />
+      {clusters.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[500] flex items-center justify-center">
+          <div className="rounded-lg bg-white/90 px-4 py-2 text-sm text-slate-600 shadow">
+            No complaint density data yet. The heatmap appears once complaints are registered.
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

@@ -27,12 +27,13 @@ from app.models import User
 from app.schemas.auth import RegisterIn
 from app.services import auth_service
 from app.services.geo_service import GeoService, get_geo_service
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/geo"
 _SETTINGS = get_settings()
 
-# Hyderabad seed area (inside the DEMO Riverside W-002 polygon).
+# Hyderabad seed area (inside the reference WARD-1 polygon).
 _SEED_LAT = 17.4327
 _SEED_LON = 78.3885
 
@@ -47,7 +48,12 @@ async def _citizen_token(email: str) -> str:
     async with async_session_factory() as db:
         await auth_service.register_user(
             db,
-            RegisterIn(email=email, password=_PASSWORD, full_name="GIS Citizen"),
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="GIS Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -98,8 +104,8 @@ async def test_find_ward_detects_demo_ward_at_seed_area():
     async with async_session_factory() as db:
         ward = await svc.find_ward(db, _SEED_LAT, _SEED_LON)
     assert ward is not None
-    assert ward.code == "W-002"
-    assert ward.name == "Riverside"
+    assert ward.code == "WARD-1"
+    assert ward.name == "Ward 1"
     assert ward.is_demo is True
 
 
@@ -244,7 +250,7 @@ async def test_lookup_valid_auth_returns_demo_payload(client):
         )
         assert r.status_code == 200, r.text
         data = r.json()
-        assert data["ward"]["code"] == "W-002"
+        assert data["ward"]["code"] == "WARD-1"
         assert data["ward"]["is_demo"] is True
         assert data["demo_label"] == "DEMO DATA"
         assert data["address"]["source"] in ("nominatim",)
@@ -338,7 +344,7 @@ async def test_wards_returns_demo_boundary_rings(client):
         assert r.status_code == 200, r.text
         data = r.json()
         wards = data["wards"]
-        assert any(w["code"] == "W-002" for w in wards)
+        assert any(w["code"] == "WARD-1" for w in wards)
         for w in wards:
             assert w["is_demo"] is True
             assert "geometry" in w and len(w["geometry"]) >= 5  # closed polygon

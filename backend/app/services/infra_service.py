@@ -48,6 +48,7 @@ from app.ml.infra_pipeline import (
     run_infra_training,
     save_bundle,
 )
+from app.ml.readiness import PredictionStatus
 from app.models import (
     Complaint,
     ComplaintLocation,
@@ -119,30 +120,57 @@ def _model_info(row: InfrastructureModel) -> InfrastructureModelInfo:
     )
 
 
+async def _asset_count(db: AsyncSession) -> int:
+    return int(
+        await db.scalar(
+            select(func.count(InfrastructureAsset.id)).where(InfrastructureAsset.is_active.is_(True))
+        )
+        or 0
+    )
+
+
 async def get_status(
     db: AsyncSession,
     settings: Settings | None = None,
 ) -> InfrastructureStatus:
     settings = settings or get_settings()
+    registered = await _asset_count(db)
     row = await db.scalar(
         select(InfrastructureModel).where(InfrastructureModel.is_active.is_(True))
     )
     if row is None:
         return InfrastructureStatus(
             trained=False,
+            prediction_status=PredictionStatus.INSUFFICIENT_DATA,
             model=None,
-            message=(
-                "No predictive infrastructure model is trained yet. The first "
-                "predictions request trains one (this can take a minute)."
-            ),
+            message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
+            registered_assets=registered,
+            minimum_assets=settings.INFRA_MIN_ASSETS,
+        )
+    if registered < settings.INFRA_MIN_ASSETS:
+        return InfrastructureStatus(
+            trained=True,
+            prediction_status=PredictionStatus.INSUFFICIENT_DATA,
+            model=_model_info(row),
+            message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
+            registered_assets=registered,
+            minimum_assets=settings.INFRA_MIN_ASSETS,
         )
     return InfrastructureStatus(
-trained=True,
+        trained=True,
+        prediction_status=PredictionStatus.READY,
         model=_model_info(row),
-        message=(
-            "Active predictive infrastructure model (synthetic corpus "
-            "training, live inference)."
-        ),
+        message="Active predictive infrastructure model, forecasts are being served.",
+        registered_assets=registered,
+        minimum_assets=settings.INFRA_MIN_ASSETS,
+    )
+
+
+def _infra_gate_message(registered: int, minimum: int) -> str:
+    return (
+        "The infrastructure model is not ready yet: "
+        f"{registered}/{minimum} registered assets are required. Register real "
+        "assets in the asset registry before forecasts are enabled."
     )
 
 
@@ -152,6 +180,18 @@ async def train(
     settings: Settings | None = None,
 ) -> InfrastructureTrainingOut:
     settings = settings or get_settings()
+
+    # Part 31 gate: refuse to train without a real, on-the-books fleet.
+    registered = await _asset_count(db)
+    if registered < settings.INFRA_MIN_ASSETS:
+        return InfrastructureTrainingOut(
+            trained=False,
+            status=PredictionStatus.INSUFFICIENT_DATA,
+            message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
+            registered_assets=registered,
+            minimum_assets=settings.INFRA_MIN_ASSETS,
+        )
+
     started = time.monotonic()
     bundle = await _train_sync(settings)
     duration = round(time.monotonic() - started, 2)
@@ -184,12 +224,16 @@ async def train(
 
     return InfrastructureTrainingOut(
         trained=True,
+        status=PredictionStatus.READY,
         version=version,
         model=_model_info(row),
         metrics=bundle["metrics"],
         config=bundle["config"],
         rows=bundle["config"]["training_rows"],
         duration_seconds=duration,
+        message="Infrastructure model trained on the configured asset corpus.",
+        registered_assets=registered,
+        minimum_assets=settings.INFRA_MIN_ASSETS,
     )
 
 
@@ -347,6 +391,22 @@ async def get_predictions(
     settings: Settings | None = None,
 ) -> InfrastructurePredictions:
     settings = settings or get_settings()
+
+    # Part 31 gate: forecasts require a real registered fleet. No lazy
+    # provisioning — an empty asset registry must STAY empty of AI output.
+    registered = await _asset_count(db)
+    if registered < settings.INFRA_MIN_ASSETS:
+        return InfrastructurePredictions(
+            ai_prediction=True,
+            disclaimer=_DISCLAIMER,
+            prediction_status=PredictionStatus.INSUFFICIENT_DATA,
+            model=None,
+            assets=[],
+            message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
+            registered_assets=registered,
+            minimum_assets=settings.INFRA_MIN_ASSETS,
+        )
+
     row = await db.scalar(
         select(InfrastructureModel).where(InfrastructureModel.is_active.is_(True))
     )
@@ -466,12 +526,16 @@ async def get_predictions(
     return InfrastructurePredictions(
         ai_prediction=True,
         disclaimer=_DISCLAIMER,
+        prediction_status=PredictionStatus.READY,
         inference_at=reference,
         model=_model_info(row),
         assets=predictions,
         assets_assessed=len(predictions),
         assets_skipped=0,
         horizon_days=bundle["config"]["horizon_days"],
+        message="Forecasts served from the trained infrastructure model.",
+        registered_assets=registered,
+        minimum_assets=settings.INFRA_MIN_ASSETS,
     )
 
 

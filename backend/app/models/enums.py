@@ -149,13 +149,25 @@ class WorkOrderStatus(enum.StrEnum):
     with a reason. Once approved/assigned it can be ``ASSIGNED`` / ``REASSIGNED``,
     move to ``IN_PROGRESS``, ``ESCALATED`` (no worker / out of SLA), ``COMPLETED``
     and finally ``CLOSED``.
+
+    The field worker does NOT resolve anything themselves (Part 28). Finishing
+    the physical work moves the order to ``WORK_COMPLETED``; submitting the
+    resolution evidence moves it to ``EVIDENCE_SUBMITTED``; the complaint is
+    only marked ``RESOLVED`` once the AI resolution verification (and, where
+    required, the human review) confirms the repair — which moves the order to
+    ``COMPLETED``.
     """
 
     PENDING_APPROVAL = "PENDING_APPROVAL"
     APPROVED = "APPROVED"
     ASSIGNED = "ASSIGNED"
     IN_PROGRESS = "IN_PROGRESS"
+    WORK_COMPLETED = "WORK_COMPLETED"
+    EVIDENCE_SUBMITTED = "EVIDENCE_SUBMITTED"
     COMPLETED = "COMPLETED"
+    # The officer requested rework (Part 28): the worker must return and complete
+    # follow-up fixes before a fresh verification cycle can certify resolution.
+    RETURNED_FOR_REWORK = "RETURNED_FOR_REWORK"
     ESCALATED = "ESCALATED"
     REJECTED = "REJECTED"
     CLOSED = "CLOSED"
@@ -192,9 +204,20 @@ class WorkOrderAction(enum.StrEnum):
     PHOTO_BEFORE = "PHOTO_BEFORE"
     PHOTO_AFTER = "PHOTO_AFTER"
     NOTE_ADDED = "NOTE_ADDED"
+    # Work completion + evidence (Part 28): the worker finishes the physical
+    # work (→ WORK_COMPLETED) and submits resolution evidence (→ EVIDENCE_SUBMITTED).
+    FINISH_WORK = "FINISH_WORK"
+    SUBMIT_EVIDENCE = "SUBMIT_EVIDENCE"
     # Human review action (Part 19): a failed AI repair verification is sent
     # back to the field worker for follow-up.
     REOPEN = "REOPEN"
+    # Rework (Part 28): an officer returned the evidence to the worker and the
+    # worker acknowledged by restarting the job for follow-up fixes.
+    REWORK_REQUESTED = "REWORK_REQUESTED"
+    START_REWORK = "START_REWORK"
+    # Resolution confirmed (Part 28): the complaint is marked RESOLVED only after
+    # the AI resolution verification / human review stage certifies the repair.
+    RESOLUTION_CONFIRMED = "RESOLUTION_CONFIRMED"
 
 
 class DepartmentCode(enum.StrEnum):
@@ -315,10 +338,14 @@ class VerificationReviewDecision(enum.StrEnum):
       the verification is certified and moves on.
     * ``REQUIRES_FOLLOWUP`` — the reviewer rejects the outcome; the work order is
       reopened (COMPLETED → IN_PROGRESS) so the field worker can return.
+    * ``REQUEST_REWORK`` — the reviewer rejects the submitted resolution evidence;
+      the work order moves to ``RETURNED_FOR_REWORK`` with the required fixes so
+      the field worker can return, redo the work and re-submit fresh evidence.
     """
 
     CONFIRM_VERIFIED = "CONFIRM_VERIFIED"
     REQUIRES_FOLLOWUP = "REQUIRES_FOLLOWUP"
+    REQUEST_REWORK = "REQUEST_REWORK"
 
 
 class InfrastructureCategory(enum.StrEnum):

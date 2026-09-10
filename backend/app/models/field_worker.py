@@ -35,6 +35,9 @@ class FieldWorker(Base, UUIDMixin, TimestampMixin):
     # Home-base coordinates used for deterministic distance-based ranking.
     home_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     home_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Human-readable registered/base location (e.g. "Kothrud, Pune, Maharashtra").
+    # Describes where the worker is stationed — NOT a live GPS position.
+    base_location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Skill / capability tags relevant to recommended work (e.g. ["drainage-jetting"]).
     skill_tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     # Equipment the worker can operate (e.g. ["jetting-rig", "excavator"]).

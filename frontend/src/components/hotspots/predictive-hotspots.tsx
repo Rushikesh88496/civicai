@@ -17,6 +17,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { LoadingState } from "@/components/ui/loading-state";
 import { useToast } from "@/components/ui/toast";
+import { useAuth } from "@/components/auth/auth-provider";
 import { PredictiveHotspotMap } from "@/components/hotspots/predictive-hotspot-map";
 import {
   fetchHotspotPredictions,
@@ -45,6 +46,7 @@ function Stat({ label, value, suffix }: { label: string; value: string; suffix?:
 }
 
 export function PredictiveHotspots() {
+  const { user } = useAuth();
   const [status, setStatus] = React.useState<HotspotStatus | null>(null);
   const [predictions, setPredictions] = React.useState<HotspotPredictions | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -52,6 +54,10 @@ export function PredictiveHotspots() {
   const [training, setTraining] = React.useState(false);
   const [tick, setTick] = React.useState(0);
   const { addToast } = useToast();
+
+  // Only officers/admins train the city-wide model; a ward representative can
+  // view their own ward's forecast but never retrains.
+  const canTrain = user?.role.name !== "WARD_REPRESENTATIVE";
 
   React.useEffect(() => {
     let active = true;
@@ -100,7 +106,7 @@ export function PredictiveHotspots() {
       <LoadingState
         message={
           status === null
-            ? "Loading predictive hotspots. First request may train the model — this can take up to a minute."
+            ? "Loading predictive hotspots…"
             : "Refreshing predictive hotspots…"
         }
       />
@@ -122,7 +128,66 @@ export function PredictiveHotspots() {
     );
   }
 
+  if (predictions.prediction_status === "INSUFFICIENT_DATA") {
+    const p = predictions;
+    return (
+      <div className="space-y-6">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Predictive Civic Hotspots</h1>
+            <span className="inline-flex items-center gap-1 rounded-full bg-ai-100 px-2.5 py-0.5 text-xs font-semibold text-ai-700">
+              <Sparkles className="h-3.5 w-3.5" />
+              AI Prediction
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-slate-500">
+            7-day risk forecast per grid cell from the trained XGBoost model (volume + probability).
+          </p>
+        </div>
+        <Card>
+          <CardContent className="py-10">
+            <EmptyState
+              icon={<BarChart3 className="h-8 w-8 text-slate-400" />}
+              title="Not enough data to predict yet"
+              description={p.message || "The model only runs on real complaint history."}
+            />
+            <div className="mx-auto mt-6 grid max-w-md grid-cols-2 gap-3">
+              <Stat
+                label="Complaints available"
+                value={String(p.records_available)}
+                suffix={`/ ${p.minimum_records} required`}
+              />
+              <Stat
+                label="Ward observations"
+                value={String(p.observations_available)}
+                suffix={`/ ${p.minimum_observations} required`}
+              />
+            </div>
+            <p className="mx-auto mt-6 max-w-md text-center text-sm text-slate-500">
+              Once enough civic reports accumulate, the risk map and model quality metrics will
+              appear here automatically. Until then no forecast is shown.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const model = predictions.model;
+  if (!model) {
+    return (
+      <ErrorState
+        title="No active hotspot model"
+        description="The predictions endpoint returned no model metadata. Retry or retrain."
+        action={
+          <Button variant="outline" onClick={reload}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Retry
+          </Button>
+        }
+      />
+    );
+  }
   const f1 = modelMetric(model, ["clf", "f1"]);
   const rocAuc = modelMetric(model, ["clf", "roc_auc"]);
   const bestF1 = modelMetric(model, ["clf", "best_f1"]);
@@ -143,6 +208,9 @@ export function PredictiveHotspots() {
               <Sparkles className="h-3.5 w-3.5" />
               AI Prediction
             </span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
+              Not a confirmed incident
+            </span>
           </div>
           <p className="mt-1 text-sm text-slate-500">
             7-day risk forecast per grid cell from the trained XGBoost model (volume + probability).
@@ -153,10 +221,12 @@ export function PredictiveHotspots() {
             <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
-          <Button onClick={retrain} disabled={training}>
-            <RefreshCw className={training ? "mr-2 h-4 w-4 animate-spin" : "mr-2 h-4 w-4"} />
-            {training ? "Training…" : "Retrain model"}
-          </Button>
+          {canTrain && (
+            <Button onClick={retrain} disabled={training}>
+              <RefreshCw className={training ? "mr-2 h-4 w-4 animate-spin" : "mr-2 h-4 w-4"} />
+              {training ? "Training…" : "Retrain model"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -193,8 +263,8 @@ export function PredictiveHotspots() {
           </div>
           {cvF1 !== null ? (
             <p className="mt-3 text-xs text-slate-500">
-              Time-aware CV mean F1: {cvF1.toFixed(3)}. Model trained on a deterministic synthetic
-              historical corpus; inference runs on real complaints.
+              Time-aware CV mean F1: {cvF1.toFixed(3)}. Model trained exclusively on this platform&rsquo;s
+              real complaint records; no synthetic or demo data is used.
             </p>
           ) : null}
         </CardContent>

@@ -48,7 +48,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.models import AgentRun, WorkOrderPhoto, WorkOrderVerification
+from app.models import AgentRun, ComplaintMedia, WorkOrderPhoto, WorkOrderVerification
 from app.models.enums import AgentStatus, VerificationStatus
 from app.schemas.verification import VerificationInput, VerificationOutput
 from app.services import agent_run_service
@@ -136,26 +136,46 @@ class VerifyState(TypedDict, total=False):
 # Helpers for loading / comparing / validating photos
 # --------------------------------------------------------------------------- #
 def _build_content_array(
-    description: str, category: str | None, images: list[tuple[str, bytes]]
+    description: str,
+    category: str | None,
+    images: list[tuple[str, bytes]],
+    *,
+    completion_notes: str | None = None,
+    complaint_image: tuple[str, bytes] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the OpenAI-style content array: text + ``image_url`` (data URI) parts.
 
     ``images`` is ``[(mime_type, bytes)]``; the BEFORE photo is sent first, then
-    the AFTER photo so the model can compare them in order.
+    the AFTER photo so the model can compare them in order. When a citizen
+    attached an original complaint photo (``complaint_image``) it is sent first
+    so the model can compare the reported condition against the evidence; the
+    worker's ``completion_notes`` are included as text context.
     """
     issue = "the reported civic issue"
     if category:
         issue = f"the reported '{category}' complaint"
+    notes = f"\n\nThe field worker's completion notes: \"{completion_notes}\"" if completion_notes else ""
+    complaint_photo_hint = (
+        "\n\nThe first image is the citizen's ORIGINAL complaint photo (the reported "
+        "condition); compare it against the before/after evidence."
+        if complaint_image is not None
+        else ""
+    )
     text = (
-        f'Original complaint description: "{description}"\n\n'
-        f"Inspect the two attached photos in order: the BEFORE photo (first) and "
-        f"the AFTER photo (second), taken by a field worker after attempting to "
-        f"resolve {issue}. Determine whether the AFTER photo shows the issue is "
-        "resolved. Fill repair_evidence with what you observe that shows the fix, "
-        "remaining_issue with anything still unresolved, and set issue_fixed=true "
-        "when the reported issue is gone. Respond with the requested JSON object only."
+        f'Original complaint description: "{description}"{notes}\n\n'
+        f"Inspect the attached photos in order:{complaint_photo_hint} The BEFORE "
+        f"photo (taken before the repair) and the AFTER photo (second, taken by a "
+        f"field worker after attempting to resolve {issue}). Determine whether the "
+        f"AFTER photo shows the issue is resolved. Fill repair_evidence with what "
+        f"you observe that shows the fix, remaining_issue with anything still "
+        f"unresolved, and set issue_fixed=true when the reported issue is gone. "
+        "Respond with the requested JSON object only."
     )
     parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    if complaint_image is not None:
+        mime, data = complaint_image
+        b64 = base64.b64encode(data).decode("ascii")
+        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
     for mime, data in images:
         b64 = base64.b64encode(data).decode("ascii")
         parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
@@ -265,7 +285,32 @@ async def _verify_node(state: VerifyState) -> dict[str, Any]:
                     "source": "pixel-diff",
                 }
 
-    content = _build_content_array(input_data.complaint_description, input_data.category, images)
+    # --- Load & validate the original complaint photo (optional, best-effort). ---
+    complaint_image: tuple[str, bytes] | None = None
+    if input_data.original_complaint_key:
+        try:
+            comp_media = await db.scalar(
+                select(ComplaintMedia).where(
+                    ComplaintMedia.storage_key == input_data.original_complaint_key
+                )
+            )
+        except Exception:  # noqa: BLE001 - unexpected DB error
+            comp_media = None
+        if comp_media is not None:
+            try:
+                comp_data = get_storage().read(comp_media.storage_key)
+                if _validate_image_payload(comp_data) is None:
+                    complaint_image = (comp_media.content_type, comp_data)
+            except Exception as exc:  # noqa: BLE001 - best-effort; do not block the run
+                logger.warning("Verify original complaint photo read failed: %s", exc)
+
+    content = _build_content_array(
+        input_data.complaint_description,
+        input_data.category,
+        images,
+        completion_notes=input_data.completion_notes,
+        complaint_image=complaint_image,
+    )
     try:
         output: VerificationOutput = await ai.structured_vision_completion(
             content,

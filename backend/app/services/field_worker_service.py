@@ -6,7 +6,13 @@ mobile-first dashboard of their assigned jobs plus nearby / P1 work, and walk a
 guided workflow:
 
     accept → navigate (GPS check-in) → arrive (GPS check-in) → start
-    → before photo → repair → after photo → notes → complete
+    → repair → finish work → submit resolution evidence → (AI verification)
+
+The worker never resolves the complaint themselves: finishing the physical work
+moves the order to ``WORK_COMPLETED`` and submitting the resolution evidence
+(photos + completion notes) moves it to ``EVIDENCE_SUBMITTED``. The complaint is
+marked ``RESOLVED`` only after the AI resolution verification (and, where
+required, the human review) confirms the repair.
 
 Every step is recorded on the server as an append-only ``WorkOrderActivity``
 row (with optional GPS capture and a ``geo_denied`` flag when the device
@@ -27,16 +33,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.core.notification_types import EVENT_REPAIR_STARTED, EVENT_RESOLVED
+from app.core.notification_types import EVENT_REPAIR_STARTED
 from app.models import (
     Complaint,
     FieldWorker,
-    Role,
     User,
     WorkOrder,
     WorkOrderActivity,
     WorkOrderPhoto,
     WorkOrderStatusHistory,
+    WorkerAssignment,
 )
 from app.models.enums import (
     AssignmentStatus,
@@ -49,10 +55,12 @@ from app.schemas.field_worker import (
     WorkerDashboardOut,
     WorkerJobOut,
     WorkerOrderDetailOut,
+    WorkerProfileOut,
     WorkOrderActivityOut,
     WorkOrderPhotoOut,
 )
 from app.services import notification_service, sla_service
+from app.services.audit_service import ACTION_WORK_ORDER_EVIDENCE_SUBMITTED, record_audit
 from app.services.complaint_service import (
     MediaValidationError,
     _classify_content_type,
@@ -69,6 +77,8 @@ _IDLE_STATUSES = (
     WorkOrderStatus.COMPLETED,
     WorkOrderStatus.CLOSED,
     WorkOrderStatus.REJECTED,
+    # Evidence submitted → the worker is done; verification is now the next stage.
+    WorkOrderStatus.EVIDENCE_SUBMITTED,
 )
 
 
@@ -82,6 +92,14 @@ class WorkerOrderNotFoundError(Exception):
 
 class WorkerOrderStateError(Exception):
     """Raised when a workflow action is illegal for the current job state."""
+
+
+class EvidenceRequiredError(Exception):
+    """Raised when resolution evidence is missing (422 — a validation failure).
+
+    The AI repair verification needs real BEFORE / AFTER photo evidence, so the
+    evidence submission itself must not succeed without both photos.
+    """
 
 
 def _now() -> datetime:
@@ -108,6 +126,7 @@ def _activity_out(activity: WorkOrderActivity) -> WorkOrderActivityOut:
         note=activity.note,
         latitude=activity.latitude,
         longitude=activity.longitude,
+        accuracy_m=activity.accuracy_m,
         geo_denied=activity.geo_denied,
         media_id=activity.media_id,
         worker_name=activity.worker.user.full_name
@@ -128,6 +147,45 @@ async def _require_profile(db: AsyncSession, user: User) -> FieldWorker:
     return worker
 
 
+async def get_worker_profile(db: AsyncSession, user: User) -> WorkerProfileOut:
+    """Return the worker's own profile for the app's Profile screen (read-only).
+
+    All fields are managed server-side (auth / admin) — the worker app only
+    displays them and can never modify them.
+    """
+    worker = await db.scalar(
+        select(FieldWorker)
+        .where(FieldWorker.user_id == user.id)
+        .options(
+            selectinload(FieldWorker.user).selectinload(User.ward),
+            selectinload(FieldWorker.department),
+        )
+    )
+    if worker is None:
+        raise WorkerProfileError("No field worker profile is linked to this account.")
+    account = worker.user
+    department = worker.department
+    ward = account.ward
+    return WorkerProfileOut(
+        user_id=account.id,
+        full_name=account.full_name or account.email,
+        email=account.email,
+        role=account.role.name if account.role is not None else RoleName.FIELD_WORKER.value,
+        department_name=department.name if department is not None else None,
+        department_code=department.code if department is not None else None,
+        ward_name=ward.name if ward is not None else None,
+        ward_code=ward.code if ward is not None else None,
+        specialty=worker.specialty,
+        status=worker.status.value if worker.status is not None else None,
+        skill_tags=list(worker.skill_tags or []),
+        equipment=list(worker.equipment or []),
+        home_latitude=worker.home_latitude,
+        home_longitude=worker.home_longitude,
+        base_location=worker.base_location,
+        max_active_orders=worker.max_active_orders or 0,
+    )
+
+
 def _is_mine(order: WorkOrder, worker: FieldWorker) -> bool:
     return order.worker_id == worker.id
 
@@ -139,9 +197,9 @@ async def _load_order(db: AsyncSession, order_id: uuid.UUID) -> WorkOrder | None
         .execution_options(populate_existing=True)
         .options(
             selectinload(WorkOrder.worker).selectinload(FieldWorker.user),
-            selectinload(WorkOrder.complaint),
+            selectinload(WorkOrder.complaint).selectinload(Complaint.ward),
             selectinload(WorkOrder.status_history).selectinload(WorkOrderStatusHistory.actor),
-            selectinload(WorkOrder.assignments),
+            selectinload(WorkOrder.assignments).selectinload(WorkerAssignment.assigned_by_user),
             selectinload(WorkOrder.activities)
             .selectinload(WorkOrderActivity.worker)
             .selectinload(FieldWorker.user),
@@ -180,13 +238,22 @@ def _job_out(
 ) -> WorkerJobOut:
     has_before = any(p.category == "BEFORE" for p in order.photos)
     has_after = any(p.category == "AFTER" for p in order.photos)
+    ward = None
+    if order.complaint is not None:
+        ward = order.complaint.ward
+    assigned_at, assigned_by_name = _assignment_info(order)
     return WorkerJobOut(
         id=order.id,
         complaint_id=order.complaint_id,
         incident=order.incident,
+        category=_complaint_category(order),
         department=order.department,
         priority=order.priority,
         status=order.status,
+        ward_name=ward.name if ward is not None else None,
+        ward_code=ward.code if ward is not None else None,
+        assigned_at=assigned_at,
+        assigned_by_name=assigned_by_name,
         address=order.address,
         location_lat=order.location_lat,
         location_lon=order.location_lon,
@@ -196,6 +263,8 @@ def _job_out(
         accepted_at=order.accepted_at,
         started_at=order.started_at,
         completed_at=order.completed_at,
+        evidence_submitted_at=order.evidence_submitted_at,
+        rework_reason=order.rework_reason,
         worker_notes=order.worker_notes,
         has_before_photo=has_before,
         has_after_photo=has_after,
@@ -211,6 +280,24 @@ def _complaint_category(order: WorkOrder) -> str | None:
         return None
     cat = order.complaint.category
     return cat.value if hasattr(cat, "value") else str(cat)
+
+
+def _assignment_info(order: WorkOrder) -> tuple[datetime | None, str | None]:
+    """(assigned_at, assigned_by_name) of the latest active assignment.
+
+    ``order.assignments`` is ordered by ``assigned_at`` ascending; earlier rows
+    are superseded (``REASSIGNED``/``UNASSIGNED``), so the newest active row is
+    the officer's live assignment of this job.
+    """
+    active: WorkerAssignment | None = None
+    for assignment in order.assignments:
+        if assignment.status in (AssignmentStatus.ASSIGNED, AssignmentStatus.REASSIGNED):
+            if active is None or assignment.assigned_at >= active.assigned_at:
+                active = assignment
+    if active is None:
+        return None, None
+    assigner = active.assigned_by_user
+    return active.assigned_at, (assigner.full_name if assigner is not None else None)
 
 
 async def _sla_for(db: AsyncSession, order: WorkOrder) -> object | None:
@@ -233,6 +320,7 @@ async def _record_activity(
     note: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
+    accuracy_m: float | None = None,
     geo_denied: bool = False,
     media_id: uuid.UUID | None = None,
     client_ref: str | None = None,
@@ -259,6 +347,7 @@ async def _record_activity(
         note=note,
         latitude=latitude,
         longitude=longitude,
+        accuracy_m=accuracy_m,
         geo_denied=geo_denied,
         media_id=media_id,
         client_ref=client_ref,
@@ -290,46 +379,6 @@ async def _notify_repair_started(db: AsyncSession, order: WorkOrder) -> None:
     )
 
 
-async def _notify_work_completed(db: AsyncSession, complaint: Complaint, order: WorkOrder) -> None:
-    """Notify the complaint owner (+ ward representatives) the job is resolved (Part 21)."""
-    link = f"/dashboard/complaints/{complaint.id}"
-    owner = await db.get(User, complaint.user_id)
-    if owner is not None and owner.is_active:
-        await notification_service.notify(
-            db,
-            targets=[owner],
-            event=EVENT_RESOLVED,
-            complaint_id=complaint.id,
-            work_order_id=order.id,
-            body=f"Your complaint '{complaint.title}' was marked resolved.",
-            link=link,
-        )
-    if complaint.ward_id is not None:
-        reps = (
-            (
-                await db.execute(
-                    select(User).where(
-                        User.ward_id == complaint.ward_id,
-                        User.is_active.is_(True),
-                        User.role.has(Role.name == RoleName.WARD_REPRESENTATIVE.value),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if reps:
-            await notification_service.notify(
-                db,
-                targets=[rep for rep in reps if rep.is_active],
-                event=EVENT_RESOLVED,
-                complaint_id=complaint.id,
-                work_order_id=order.id,
-                body=f"Work order for '{complaint.title}' was completed.",
-                link=link,
-            )
-
-
 # --------------------------------------------------------------------------- #
 # Dashboard + detail
 # --------------------------------------------------------------------------- #
@@ -355,7 +404,10 @@ async def get_dashboard(
                 .where(WorkOrder.worker_id == worker.id)
                 .order_by(WorkOrder.created_at.desc())
                 .options(
-                    selectinload(WorkOrder.complaint),
+                    selectinload(WorkOrder.complaint).selectinload(Complaint.ward),
+                    selectinload(WorkOrder.assignments).selectinload(
+                        WorkerAssignment.assigned_by_user
+                    ),
                     selectinload(WorkOrder.photos),
                 )
             )
@@ -388,7 +440,11 @@ async def get_dashboard(
                         WorkOrder.location_lat.is_not(None),
                         WorkOrder.location_lon.is_not(None),
                     )
-                    .options(selectinload(WorkOrder.complaint), selectinload(WorkOrder.photos))
+                    .options(
+                        selectinload(WorkOrder.complaint).selectinload(Complaint.ward),
+                        selectinload(WorkOrder.assignments),
+                        selectinload(WorkOrder.photos),
+                    )
                 )
             )
             .scalars()
@@ -494,6 +550,7 @@ async def check_in(
     activity_type: str,
     latitude: float | None = None,
     longitude: float | None = None,
+    accuracy_m: float | None = None,
     geo_denied: bool = False,
     note: str | None = None,
     client_ref: str | None = None,
@@ -501,10 +558,21 @@ async def check_in(
     """Record a navigational GPS check-in (EN_ROUTE or ARRIVED).
 
     Coordinates are optional and only stored when the worker supplies them; when
-    location is unavailable ``geo_denied`` records the fact instead.
+    location is unavailable ``geo_denied`` records the fact instead. ``accuracy_m``
+    is the browser GPS horizontal accuracy in metres at capture time. The check-in
+    is only valid while the order is actionable (ASSIGNED / IN_PROGRESS /
+    RETURNED_FOR_REWORK) — never on an idle, rejected or escalated job.
     """
     worker = await _require_profile(db, user)
     order = await _require_my_order(db, order_id, worker)
+    if order.status not in (
+        WorkOrderStatus.ASSIGNED,
+        WorkOrderStatus.IN_PROGRESS,
+        WorkOrderStatus.RETURNED_FOR_REWORK,
+    ):
+        raise WorkerOrderStateError(
+            f"Cannot check in to a work order in state {order.status}."
+        )
     previous = await _record_activity(
         db,
         order,
@@ -513,12 +581,25 @@ async def check_in(
         note=note,
         latitude=latitude,
         longitude=longitude,
+        accuracy_m=accuracy_m,
         geo_denied=geo_denied,
         client_ref=client_ref,
     )
     if previous is not None:
         await db.commit()
     return await get_order_detail(db, user, order_id)
+
+
+_CHECK_IN_TYPES = ("EN_ROUTE", "ARRIVED")
+
+
+def _has_check_in(order: WorkOrder) -> bool:
+    """True once the worker has recorded any GPS check-in for this job.
+
+    START WORK is deliberately gated on this — the assigned worker must have
+    checked in at the job before physical work begins.
+    """
+    return any(a.activity_type in _CHECK_IN_TYPES for a in order.activities)
 
 
 async def start_job(
@@ -532,11 +613,27 @@ async def start_job(
     geo_denied: bool = False,
     client_ref: str | None = None,
 ) -> WorkerOrderDetailOut:
-    """Mark the job as started → IN_PROGRESS (idempotent)."""
+    """Mark the job as started → IN_PROGRESS (idempotent).
+
+    Requires a prior GPS check-in (EN_ROUTE / ARRIVED activity row) — the
+    worker cannot start work before checking in at the location.
+    """
     worker = await _require_profile(db, user)
     order = await _require_my_order(db, order_id, worker)
-    if order.status == WorkOrderStatus.COMPLETED or order.status == WorkOrderStatus.CLOSED:
+    if order.status in (
+        WorkOrderStatus.COMPLETED,
+        WorkOrderStatus.CLOSED,
+        WorkOrderStatus.REJECTED,
+        WorkOrderStatus.ESCALATED,
+        WorkOrderStatus.WORK_COMPLETED,
+        WorkOrderStatus.EVIDENCE_SUBMITTED,
+        # Rework has its own dedicated path (fresh check-in + START_REWORK), so a
+        # generic START WORK must never silently restart a returned job.
+        WorkOrderStatus.RETURNED_FOR_REWORK,
+    ):
         raise WorkerOrderStateError(f"Cannot start a work order in state {order.status}.")
+    if not _has_check_in(order) and order.status != WorkOrderStatus.IN_PROGRESS:
+        raise WorkerOrderStateError("Check in with your GPS location before starting work.")
     previous = await _record_activity(
         db,
         order,
@@ -607,7 +704,7 @@ async def save_notes(
     return await get_order_detail(db, user, order_id)
 
 
-async def complete_job(
+async def finish_job(
     db: AsyncSession,
     user: User,
     order_id: uuid.UUID,
@@ -618,19 +715,35 @@ async def complete_job(
     geo_denied: bool = False,
     client_ref: str | None = None,
 ) -> WorkerOrderDetailOut:
-    """Complete the job → COMPLETED and resolve the complaint (idempotent)."""
+    """Finish the physical work → WORK_COMPLETED (idempotent).
+
+    The complaint is deliberately NOT resolved here: resolution is only confirmed
+    after the AI resolution verification stage certifies the repair. The worker
+    must have started the job (IN_PROGRESS) before it can be finished. An offline
+    replay of the same ``client_ref`` returns the current state without touching
+    the gate.
+    """
     worker = await _require_profile(db, user)
     order = await _require_my_order(db, order_id, worker)
-    if (
-        order.status in (WorkOrderStatus.CLOSED, WorkOrderStatus.REJECTED)
-        or order.status == WorkOrderStatus.ESCALATED
-    ):
-        raise WorkerOrderStateError(f"Cannot complete a work order in state {order.status}.")
+    if client_ref is not None:
+        existing = await db.scalar(
+            select(WorkOrderActivity).where(
+                WorkOrderActivity.worker_id == worker.id,
+                WorkOrderActivity.activity_type == "FINISH_WORK",
+                WorkOrderActivity.client_ref == client_ref,
+            )
+        )
+        if existing is not None:
+            return await get_order_detail(db, user, order_id)
+    if order.status != WorkOrderStatus.IN_PROGRESS:
+        raise WorkerOrderStateError(
+            f"Finish work requires an in-progress job (current state {order.status})."
+        )
     previous = await _record_activity(
         db,
         order,
         worker,
-        "COMPLETE_WORK",
+        "FINISH_WORK",
         note=notes,
         latitude=latitude,
         longitude=longitude,
@@ -638,34 +751,213 @@ async def complete_job(
         client_ref=client_ref,
     )
     if previous is not None:
-        changed = order.status != WorkOrderStatus.COMPLETED
-        from_status = order.status
-        order.status = WorkOrderStatus.COMPLETED
+        order.status = WorkOrderStatus.WORK_COMPLETED
         order.completed_at = _now()
         if notes:
             order.worker_notes = notes
         db.add(
             WorkOrderStatusHistory(
                 work_order_id=order.id,
-                action=WorkOrderAction.COMPLETE_WORK.value,
-                from_status=from_status,
-                to_status=WorkOrderStatus.COMPLETED,
+                action=WorkOrderAction.FINISH_WORK.value,
+                from_status=WorkOrderStatus.IN_PROGRESS,
+                to_status=WorkOrderStatus.WORK_COMPLETED,
                 actor_id=user.id,
-                note=notes or "Work completed by field worker.",
+                note=notes or "Physical work finished by field worker.",
             )
         )
-        if changed and order.complaint is not None:
-            if order.complaint.status.value != ComplaintStatus.RESOLVED.value:
-                order.complaint.status = ComplaintStatus.RESOLVED
-                db.add(
-                    record_status_transition(
-                        order.complaint,
-                        ComplaintStatus.RESOLVED,
-                        actor_id=user.id,
-                        note="Field work completed.",
-                    )
+        await db.commit()
+    return await get_order_detail(db, user, order_id)
+
+
+async def submit_evidence(
+    db: AsyncSession,
+    user: User,
+    order_id: uuid.UUID,
+    *,
+    notes: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    geo_denied: bool = False,
+    client_ref: str | None = None,
+) -> WorkerOrderDetailOut:
+    """Submit the resolution evidence → EVIDENCE_SUBMITTED (idempotent).
+
+    Available only after the work is finished (WORK_COMPLETED). Stores the
+    completion notes, stamps ``evidence_submitted_at`` and hands the order over
+    to the AI resolution verification stage. The complaint is still not RESOLVED
+    by the worker — the verification stage confirms it. An offline replay of the
+    same ``client_ref`` returns the current state without touching the gate.
+    """
+    worker = await _require_profile(db, user)
+    order = await _require_my_order(db, order_id, worker)
+    if client_ref is not None:
+        existing = await db.scalar(
+            select(WorkOrderActivity).where(
+                WorkOrderActivity.worker_id == worker.id,
+                WorkOrderActivity.activity_type == "SUBMIT_EVIDENCE",
+                WorkOrderActivity.client_ref == client_ref,
+            )
+        )
+        if existing is not None:
+            return await get_order_detail(db, user, order_id)
+    if order.status != WorkOrderStatus.WORK_COMPLETED:
+        raise WorkerOrderStateError(
+            f"Submit evidence requires a finished job (current state {order.status})."
+        )
+    previous = await _record_activity(
+        db,
+        order,
+        worker,
+        "SUBMIT_EVIDENCE",
+        note=notes,
+        latitude=latitude,
+        longitude=longitude,
+        geo_denied=geo_denied,
+        client_ref=client_ref,
+    )
+    if previous is not None:
+        # Part 30: the AI repair verification compares BEFORE / AFTER photos, so
+        # the evidence submission must not succeed without both. Server-side
+        # enforcement (never trust the client UI alone).
+        if not any(p.category == "BEFORE" and p.allowed for p in order.photos):
+            raise EvidenceRequiredError("Before photo is required.")
+        if not any(p.category == "AFTER" and p.allowed for p in order.photos):
+            raise EvidenceRequiredError("After photo is required.")
+        order.status = WorkOrderStatus.EVIDENCE_SUBMITTED
+        order.evidence_submitted_at = _now()
+        if notes:
+            order.worker_notes = notes
+        db.add(
+            WorkOrderStatusHistory(
+                work_order_id=order.id,
+                action=WorkOrderAction.SUBMIT_EVIDENCE.value,
+                from_status=WorkOrderStatus.WORK_COMPLETED,
+                to_status=WorkOrderStatus.EVIDENCE_SUBMITTED,
+                actor_id=user.id,
+                note=notes or "Resolution evidence submitted by field worker.",
+            )
+        )
+        await record_audit(
+            db,
+            actor_id=user.id,
+            action=ACTION_WORK_ORDER_EVIDENCE_SUBMITTED,
+            entity_type="work_order",
+            entity_id=str(order.id),
+            after={
+                "order_status": WorkOrderStatus.EVIDENCE_SUBMITTED.value,
+                "worker_id": str(worker.id),
+            },
+        )
+        await db.commit()
+    return await get_order_detail(db, user, order_id)
+
+
+def _rework_requested_at(order: WorkOrder) -> datetime | None:
+    """The recorded_at of the latest REWORK_REQUESTED status-history entry.
+
+    ``order.status_history`` is ordered by ``recorded_at`` ascending, so the last
+    matching entry is the officer's most recent rework request.
+    """
+    for entry in reversed(order.status_history):
+        if entry.action == WorkOrderAction.REWORK_REQUESTED.value:
+            return entry.recorded_at
+    return None
+
+
+def _has_fresh_check_in(order: WorkOrder, since: datetime) -> bool:
+    """True when the worker checked in at the job at or after ``since``.
+
+    START_REWORK is deliberately gated on a GPS check-in recorded *after* the
+    officer's rework request — the worker must physically return to the site
+    before restarting the job (the old evidence cannot simply be re-submitted).
+    """
+    return any(
+        a.activity_type in _CHECK_IN_TYPES
+        and a.recorded_at is not None
+        and a.recorded_at >= since
+        for a in order.activities
+    )
+
+
+async def start_rework(
+    db: AsyncSession,
+    user: User,
+    order_id: uuid.UUID,
+    *,
+    note: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    geo_denied: bool = False,
+    client_ref: str | None = None,
+) -> WorkerOrderDetailOut:
+    """Restart a RETURNED_FOR_REWORK job → IN_PROGRESS (idempotent).
+
+    The officer requested rework, so the worker must return to the site: a fresh
+    GPS check-in recorded after the rework request is a hard prerequisite. The
+    action clears the stale ``completed_at`` / ``evidence_submitted_at`` so the
+    second round of evidence is auditable as its own cycle, keeps ``rework_reason``
+    for context, and records a START_REWORK activity + status-history entry.
+    """
+    worker = await _require_profile(db, user)
+    order = await _require_my_order(db, order_id, worker)
+    if client_ref is not None:
+        existing = await db.scalar(
+            select(WorkOrderActivity).where(
+                WorkOrderActivity.worker_id == worker.id,
+                WorkOrderActivity.activity_type == "START_REWORK",
+                WorkOrderActivity.client_ref == client_ref,
+            )
+        )
+        if existing is not None:
+            return await get_order_detail(db, user, order_id)
+    if order.status != WorkOrderStatus.RETURNED_FOR_REWORK:
+        raise WorkerOrderStateError(
+            f"Start rework requires a returned-for-rework job (current state {order.status})."
+        )
+    rework_requested_at = _rework_requested_at(order)
+    if rework_requested_at is None or not _has_fresh_check_in(order, rework_requested_at):
+        raise WorkerOrderStateError(
+            "Check in with your GPS location after the rework request before restarting the job."
+        )
+    previous = await _record_activity(
+        db,
+        order,
+        worker,
+        "START_REWORK",
+        note=note,
+        latitude=latitude,
+        longitude=longitude,
+        geo_denied=geo_denied,
+        client_ref=client_ref,
+    )
+    if previous is not None:
+        order.status = WorkOrderStatus.IN_PROGRESS
+        order.started_at = _now()
+        order.completed_at = None
+        order.evidence_submitted_at = None
+        db.add(
+            WorkOrderStatusHistory(
+                work_order_id=order.id,
+                action=WorkOrderAction.START_REWORK.value,
+                from_status=WorkOrderStatus.RETURNED_FOR_REWORK,
+                to_status=WorkOrderStatus.IN_PROGRESS,
+                actor_id=user.id,
+                note=note or "Rework started by field worker.",
+            )
+        )
+        if (
+            order.complaint is not None
+            and order.complaint.status.value != ComplaintStatus.IN_PROGRESS.value
+        ):
+            order.complaint.status = ComplaintStatus.IN_PROGRESS
+            db.add(
+                record_status_transition(
+                    order.complaint,
+                    ComplaintStatus.IN_PROGRESS,
+                    actor_id=user.id,
+                    note="Rework started.",
                 )
-            await _notify_work_completed(db, order.complaint, order)
+            )
         await db.commit()
     return await get_order_detail(db, user, order_id)
 
@@ -766,10 +1058,12 @@ __all__ = [
     "WorkerProfileError",
     "accept_job",
     "check_in",
-    "complete_job",
+    "finish_job",
     "get_dashboard",
     "get_order_detail",
     "save_notes",
     "start_job",
+    "start_rework",
+    "submit_evidence",
     "upload_photo",
 ]

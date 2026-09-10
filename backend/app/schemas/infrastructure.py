@@ -21,6 +21,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
+from app.ml.readiness import PredictionStatus
+
 
 class InfrastructureModelInfo(BaseModel):
     version: int
@@ -81,28 +83,40 @@ class AssetPrediction(BaseModel):
 class InfrastructurePredictions(BaseModel):
     ai_prediction: bool = Field(True, description="Always true: this is a forecast, not data")
     disclaimer: str
-    inference_at: datetime
-    model: InfrastructureModelInfo
+    # READY | INSUFFICIENT_DATA | TRAINING | FAILED (Part 31 gating).
+    prediction_status: PredictionStatus = PredictionStatus.INSUFFICIENT_DATA
+    inference_at: datetime | None = None
+    model: InfrastructureModelInfo | None = None
     assets: list[AssetPrediction] = Field(default_factory=list)
     assets_assessed: int = 0
     assets_skipped: int = 0
     horizon_days: int = 30
+    message: str = ""
+    registered_assets: int = 0
+    minimum_assets: int = 5
 
 
 class InfrastructureTrainingOut(BaseModel):
-    trained: bool = True
-    version: int
-    model: InfrastructureModelInfo
+    trained: bool = False
+    status: PredictionStatus = PredictionStatus.INSUFFICIENT_DATA
+    version: int | None = None
+    model: InfrastructureModelInfo | None = None
     metrics: dict = Field(default_factory=dict)
     config: dict = Field(default_factory=dict)
     rows: int = 0
     duration_seconds: float = 0.0
+    message: str = ""
+    registered_assets: int = 0
+    minimum_assets: int = 5
 
 
 class InfrastructureStatus(BaseModel):
     trained: bool = False
+    prediction_status: PredictionStatus = PredictionStatus.INSUFFICIENT_DATA
     model: InfrastructureModelInfo | None = None
     message: str = ""
+    registered_assets: int = 0
+    minimum_assets: int = 5
 
 
 class InfrastructureReviewIn(BaseModel):

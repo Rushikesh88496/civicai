@@ -34,6 +34,7 @@ from app.models.enums import ComplaintCategory, RoleName
 from app.schemas.auth import RegisterIn
 from app.services import auth_service
 from app.services.routing_engine import route_complaint
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -49,7 +50,12 @@ def _unique_email(prefix: str) -> str:
 async def _citizen_token(email: str) -> str:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Routing Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Routing Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -276,7 +282,7 @@ async def test_detail_surfaces_effective_department_after_override(client):
     )
 
     await client.post(
-        f"{_BASE}/{complaint_id}/routing", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/routing", headers={"Authorization": f"Bearer {officer_token}"}
     )
     # Override to a different department.
     ov = await client.post(
@@ -324,25 +330,24 @@ async def test_api_routing_requires_access(client):
 
 @pytest.mark.asyncio
 async def test_api_routing_404_unknown_complaint(client):
-    email = _unique_email("rout-404")
-    token = await _citizen_token(email)
+    otoken = await _officer_token(_unique_email("rout-404-officer"))
     r = await client.post(
-        f"{_BASE}/{uuid.uuid4()}/routing", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{uuid.uuid4()}/routing", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert r.status_code == 404, r.text
-    await _delete_user(email)
 
 
 @pytest.mark.asyncio
 async def test_api_routing_full_run_result_and_history(client):
     email = _unique_email("rout-api")
     token = await _citizen_token(email)
+    otoken = await _officer_token(_unique_email("rout-api-officer"))
     complaint_id = await _create_complaint(
         client, token, desc="Flooding on approach road.", category="FLOODING"
     )
 
     resp = await client.post(
-        f"{_BASE}/{complaint_id}/routing", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/routing", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -352,14 +357,14 @@ async def test_api_routing_full_run_result_and_history(client):
     assert "ROADS" in result["secondary_departments"]
 
     getr = await client.get(
-        f"{_BASE}/{complaint_id}/routing-result", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/routing-result", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert getr.status_code == 200, getr.text
     assert getr.json()["agent"] == "routing"
     assert getr.json()["structured_result"]["primary_department"] == "DRAINAGE"
 
     h = await client.get(
-        f"{_BASE}/{complaint_id}/routing-history", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/routing-history", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert h.status_code == 200, h.text
     assert len(h.json()["entries"]) == 1
@@ -371,9 +376,10 @@ async def test_api_routing_full_run_result_and_history(client):
 async def test_api_routing_result_none_before_run(client):
     email = _unique_email("rout-null")
     token = await _citizen_token(email)
+    otoken = await _officer_token(_unique_email("rout-null-officer"))
     complaint_id = await _create_complaint(client, token, desc="Nothing yet.", category="PARKS")
     getr = await client.get(
-        f"{_BASE}/{complaint_id}/routing-result", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/routing-result", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert getr.status_code == 200, getr.text
     assert getr.json() is None
@@ -414,10 +420,10 @@ async def test_override_requires_officer_role(client):
     assert over["reason"] == "officer correction"
     assert over["override_by_name"] == "Routing Officer"
 
-    # Override history shows the recorded audit trail.
+    # Override history shows the recorded audit trail (officer-only view).
     hist = await client.get(
         f"{_BASE}/{complaint_id}/routing/overrides",
-        headers={"Authorization": f"Bearer {citizen_token}"},
+        headers={"Authorization": f"Bearer {officer_token}"},
     )
     assert hist.status_code == 200, hist.text
     assert len(hist.json()["overrides"]) == 1

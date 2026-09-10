@@ -28,7 +28,9 @@ from app.core.config import get_settings
 from app.core.security import create_access_token, decode_token, hash_password
 from app.db.session import async_session_factory
 from app.models import (
+    AuditLog,
     Complaint,
+    ComplaintMedia,
     Department,
     FieldWorker,
     Notification,
@@ -41,6 +43,7 @@ from app.models import (
 )
 from app.models.enums import (
     ComplaintStatus,
+    MediaType,
     RoleName,
     VerificationStatus,
     WorkerStatus,
@@ -48,7 +51,14 @@ from app.models.enums import (
 )
 from app.schemas.verification import VerificationInput
 from app.services import auth_service
+from app.services.audit_service import (
+    ACTION_WORK_ORDER_EVIDENCE_VIEWED,
+    ACTION_WORK_ORDER_RESOLUTION_CONFIRMED,
+    ACTION_WORK_ORDER_VERIFICATION_COMPLETED,
+    ACTION_WORK_ORDER_VERIFICATION_STARTED,
+)
 from app.storage import get_storage
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _COMPLAINTS = "/api/v1/complaints"
@@ -129,8 +139,7 @@ async def _citizen_token(email: str) -> str:
             auth_service.RegisterIn(
                 email=email,
                 password=_PASSWORD,
-                full_name="Verify Citizen",
-            ),
+                full_name="Verify Citizen", ward_id=await any_active_ward_id(db)),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -717,6 +726,12 @@ async def test_api_staff_run_verify_and_review(client, monkeypatch):
     assert rev["verification"]["human_review_required"] is False
     assert rev["verification"]["review_note"] == "Looks good on site."
 
+    # The assigned worker is notified of the AI result and the confirmed resolution.
+    notif_w = await client.get("/api/v1/notifications", headers=_auth(wtoken))
+    types_w = [n["notification_type"] for n in notif_w.json().get("items", [])]
+    assert "AI_VERIFICATION_RESULT" in types_w
+    assert "WORK_RESOLVED" in types_w
+
 
 @pytest.mark.asyncio
 async def test_api_review_reopens_order(client, monkeypatch):
@@ -785,6 +800,83 @@ async def test_api_review_reopens_order(client, monkeypatch):
     )
     types_c = [n["notification_type"] for n in notif_c.json().get("items", [])]
     assert "WORK_ORDER_REOPENED" in types_c
+
+
+@pytest.mark.asyncio
+async def test_api_review_requests_rework(client, monkeypatch):
+    """REQUEST_REWORK → RETURNED_FOR_REWORK, rework_reason set, worker notified."""
+    citizen = await _citizen_token(_unique_email("vf-api-rework"))
+    otoken = await _staff_token(_unique_email("vf-api-rework-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-api-rework-wk"))
+    order_id, cid, _ = await _seed_completed_order(
+        citizen,
+        wid,
+        before_color=(70, 60, 50),
+        after_color=(200, 220, 90),
+    )
+
+    fake = FakeAI(
+        [
+            _out(status=VerificationStatus.PARTIALLY_RESOLVED, confidence=0.7, review=True),
+        ]
+    )
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(ai=fake),
+    )
+
+    # Run verification (needs human review).
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    assert r.json()["result"]["human_review_required"] is True
+
+    # Officer requests rework.
+    r2 = await client.post(
+        f"{_VERIFY}/{order_id}/verification/review",
+        json={"decision": "REQUEST_REWORK", "note": "Pothole not fully refilled."},
+        headers=_auth(otoken),
+    )
+    assert r2.status_code == 200, r2.text
+    rev = r2.json()
+    assert rev["reopened"] is False
+    assert rev["rework_requested"] is True
+    assert rev["work_order_status"] == WorkOrderStatus.RETURNED_FOR_REWORK.value
+    assert rev["verification"]["verification_status"] == VerificationStatus.NOT_RESOLVED.value
+
+    async with async_session_factory() as db:
+        order = await _order_with_photos(order_id, db)
+        assert order.status == WorkOrderStatus.RETURNED_FOR_REWORK
+        assert order.rework_reason == "Pothole not fully refilled."
+        # Evidence timestamps are KEPT until the worker restarts the rework.
+        assert order.completed_at is not None
+        # Complaint returned IN_PROGRESS (the seeded order was already RESOLVED).
+        assert (await db.get(Complaint, uuid.UUID(cid))).status == ComplaintStatus.IN_PROGRESS
+        from app.models import WorkOrderStatusHistory
+
+        history = (
+            (
+                await db.execute(
+                    select(WorkOrderStatusHistory).where(
+                        WorkOrderStatusHistory.work_order_id == uuid.UUID(order_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert "REWORK_REQUESTED" in [h.action for h in history]
+
+    # Worker → REWORK_REQUESTED; complaint owner → WORK_ORDER_REOPENED.
+    notif_w = await client.get("/api/v1/notifications", headers=_auth(wtoken))
+    types_w = [n["notification_type"] for n in notif_w.json().get("items", [])]
+    assert "REWORK_REQUESTED" in types_w
+    notif_c = await client.get("/api/v1/notifications", headers=_auth(citizen))
+    types_c = [n["notification_type"] for n in notif_c.json().get("items", [])]
+    assert "WORK_ORDER_REOPENED" in types_c
+
+    # Verification cannot be re-run on a returned-for-rework order (409).
+    r3 = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r3.status_code == 409, r3.text
 
 
 @pytest.mark.asyncio
@@ -868,8 +960,8 @@ async def test_api_worker_cannot_run_verify_only_read(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_api_complaint_owner_can_read(client, monkeypatch):
-    """Complaint owner can read the verification (read-only)."""
+async def test_api_complaint_owner_cannot_read(client, monkeypatch):
+    """Verification is staff-only: officer reads, complaint owner is denied."""
     citizen = await _citizen_token(_unique_email("vf-api-owner"))
     otoken = await _staff_token(_unique_email("vf-api-owner-off"))
     wtoken, wid = await _seed_worker(_unique_email("vf-api-owner-wk"))
@@ -891,10 +983,269 @@ async def test_api_complaint_owner_can_read(client, monkeypatch):
     )
     await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
 
-    # Owner reads successfully
+    # Officer reads successfully
+    o = await client.get(
+        f"{_VERIFY}/{order_id}/verification",
+        headers=_auth(otoken),
+    )
+    assert o.status_code == 200, o.text
+    assert o.json()["verification_status"] == "VERIFIED"
+
+    # Complaint owner is denied
     r = await client.get(
         f"{_VERIFY}/{order_id}/verification",
         headers=_auth(citizen),
     )
+    assert r.status_code == 403, r.text
+
+
+# --------------------------------------------------------------------------- #
+# Part 30: officer-only resolution review (no AI auto-resolve)
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_api_ai_verified_does_not_auto_resolve(client, monkeypatch):
+    """A high-confidence AI VERIFIED is advisory — the complaint stays open until an officer reviews."""
+    citizen = await _citizen_token(_unique_email("vf-api-nor"))
+    otoken = await _staff_token(_unique_email("vf-api-nor-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-api-nor-wk"))
+    order_id, cid, _ = await _seed_completed_order(
+        citizen,
+        wid,
+        before_color=(70, 60, 50),
+        after_color=(200, 220, 90),
+        complaint_status=ComplaintStatus.IN_PROGRESS,
+    )
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI([_out(status=VerificationStatus.VERIFIED, confidence=0.97, review=False)])
+        ),
+    )
+
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
     assert r.status_code == 200, r.text
-    assert r.json()["verification_status"] == "VERIFIED"
+    result = r.json()["result"]
+    assert result["verification_status"] == "VERIFIED"
+    assert result["human_review_required"] is False
+
+    # Nothing resolved: order stays as-is and the complaint is NOT auto-resolved.
+    async with async_session_factory() as db:
+        order = await _order_with_photos(order_id, db)
+        assert order.status == WorkOrderStatus.COMPLETED
+        complaint = await db.get(Complaint, uuid.UUID(cid))
+        assert complaint.status == ComplaintStatus.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_api_officer_review_confirms_ai_verified(client, monkeypatch):
+    """Officer CONFIRM_VERIFIED after an AI VERIFIED completes order + resolves complaint."""
+    citizen = await _citizen_token(_unique_email("vf-api-rc"))
+    otoken = await _staff_token(_unique_email("vf-api-rc-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-api-rc-wk"))
+    order_id, cid, _ = await _seed_completed_order(
+        citizen,
+        wid,
+        before_color=(70, 60, 50),
+        after_color=(200, 220, 90),
+        complaint_status=ComplaintStatus.IN_PROGRESS,
+    )
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI([_out(status=VerificationStatus.VERIFIED, confidence=0.96, review=False)])
+        ),
+    )
+
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    assert r.json()["result"]["human_review_required"] is False
+
+    # The officer still makes the call — and it is accepted (no gate on the AI flag).
+    r2 = await client.post(
+        f"{_VERIFY}/{order_id}/verification/review",
+        json={"decision": "CONFIRM_VERIFIED", "note": "Confirmed after on-site check."},
+        headers=_auth(otoken),
+    )
+    assert r2.status_code == 200, r2.text
+    rev = r2.json()
+    assert rev["reopened"] is False
+    assert rev["rework_requested"] is False
+    assert rev["work_order_status"] == WorkOrderStatus.COMPLETED.value
+    assert rev["verification"]["reviewed_at"] is not None
+    assert rev["verification"]["review_note"] == "Confirmed after on-site check."
+    assert rev["verification"]["human_review_required"] is False
+
+    async with async_session_factory() as db:
+        order = await _order_with_photos(order_id, db)
+        assert order.status == WorkOrderStatus.COMPLETED
+        complaint = await db.get(Complaint, uuid.UUID(cid))
+        assert complaint.status == ComplaintStatus.RESOLVED
+
+
+@pytest.mark.asyncio
+async def test_api_run_verify_requires_before_photo(client):
+    """Missing resolution evidence → 422 (the AI cannot be run without both photos)."""
+    citizen = await _citizen_token(_unique_email("vf-api-ev422"))
+    otoken = await _staff_token(_unique_email("vf-api-ev422-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-api-ev422-wk"))
+    uid = uuid.UUID(decode_token(citizen, "access")["sub"])
+
+    # A COMPLETED order with NO evidence photos (seed variant without photos).
+    async with async_session_factory() as db:
+        complaint = Complaint(
+            description="Pothole reported but the worker never attached photos.",
+            title="ROAD: Pothole reported but never photographed.",
+            category="ROAD",
+            status=ComplaintStatus.IN_PROGRESS,
+            user_id=uid,
+        )
+        db.add(complaint)
+        await db.flush()
+        order = WorkOrder(
+            complaint_id=complaint.id,
+            department="ROAD",
+            priority="P2_HIGH",
+            location_lat=_LAT,
+            location_lon=_LON,
+            address="Test location",
+            status=WorkOrderStatus.COMPLETED,
+            worker_id=wid,
+            sla_hours=24,
+            created_by=None,
+            completed_at=datetime.now(UTC),
+        )
+        db.add(order)
+        await db.commit()
+        order_id = str(order.id)
+
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "Before photo is required."
+
+
+@pytest.mark.asyncio
+async def test_api_evidence_bundle_and_rbac(client, monkeypatch):
+    """Evidence endpoint returns the full review bundle; only staff may read it."""
+    citizen = await _citizen_token(_unique_email("vf-api-ev"))
+    otoken = await _staff_token(_unique_email("vf-api-ev-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-api-ev-wk"))
+    order_id, cid, _ = await _seed_completed_order(citizen, wid)
+
+    # Attach an original complaint photo so it flows into the bundle + AI input.
+    async with async_session_factory() as db:
+        complaint = await db.get(Complaint, uuid.UUID(cid))
+        key = f"ev-test-{uuid.uuid4().hex}-original.png"
+        get_storage().upload(key, _png_bytes(), "image/png")
+        db.add(
+            ComplaintMedia(
+                complaint_id=complaint.id,
+                user_id=complaint.user_id,
+                media_type=MediaType.IMAGE,
+                original_filename="original.png",
+                storage_key=key,
+                content_type="image/png",
+                size_bytes=len(_png_bytes()),
+            )
+        )
+        await db.commit()
+
+    r = await client.get(f"{_VERIFY}/{order_id}/evidence", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    bundle = r.json()
+    assert bundle["order_id"] == order_id
+    assert bundle["order_status"] == "COMPLETED"
+    assert bundle["complaint_id"] == cid
+    assert bundle["complaint_title"].startswith("ROAD:")
+    assert bundle["complaint_category"] == "ROAD"
+    assert len(bundle["complaint_media"]) == 1
+    assert bundle["complaint_media"][0]["media_type"] == "IMAGE"
+    assert bundle["complaint_media"][0]["url"]
+    assert bundle["worker_id"] is not None
+    assert bundle["worker_name"] == "Verify Worker"
+    assert bundle["completed_at"] is not None
+    assert len(bundle["before_photos"]) == 1
+    assert bundle["before_photos"][0]["category"] == "BEFORE"
+    assert bundle["before_photos"][0]["uploaded_by_name"] == "Verify Worker"
+    assert bundle["before_photos"][0]["url"]
+    assert len(bundle["after_photos"]) == 1
+    assert bundle["after_photos"][0]["category"] == "AFTER"
+
+    # Staff-only: worker and complaint owner are denied.
+    assert (
+        await client.get(f"{_VERIFY}/{order_id}/evidence", headers=_auth(wtoken))
+    ).status_code == 403
+    assert (
+        await client.get(f"{_VERIFY}/{order_id}/evidence", headers=_auth(citizen))
+    ).status_code == 403
+
+    # With the complaint photo attached, verification still runs (original key resolved).
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI([_out(status=VerificationStatus.VERIFIED, confidence=0.9)])
+        ),
+    )
+    rrun = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert rrun.status_code == 200, rrun.text
+
+
+@pytest.mark.asyncio
+async def test_api_audit_trail_for_verify_review_evidence(client, monkeypatch):
+    """Each verify / evidence-view / review step lands an auditable officer trail."""
+    citizen = await _citizen_token(_unique_email("vf-api-aud"))
+    otoken = await _staff_token(_unique_email("vf-api-aud-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-api-aud-wk"))
+    order_id, cid, _ = await _seed_completed_order(
+        citizen,
+        wid,
+        before_color=(70, 60, 50),
+        after_color=(200, 220, 90),
+    )
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI(
+                [_out(status=VerificationStatus.PARTIALLY_RESOLVED, confidence=0.8, review=True)]
+            )
+        ),
+    )
+
+    assert (
+        await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    ).status_code == 200
+    assert (
+        await client.get(f"{_VERIFY}/{order_id}/evidence", headers=_auth(otoken))
+    ).status_code == 200
+    rev = await client.post(
+        f"{_VERIFY}/{order_id}/verification/review",
+        json={"decision": "CONFIRM_VERIFIED", "note": "Cleared."},
+        headers=_auth(otoken),
+    )
+    assert rev.status_code == 200, rev.text
+
+    async with async_session_factory() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(AuditLog).where(AuditLog.entity_id == str(order_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        actions = [a.action for a in rows]
+        assert ACTION_WORK_ORDER_VERIFICATION_STARTED in actions
+        assert ACTION_WORK_ORDER_VERIFICATION_COMPLETED in actions
+        assert ACTION_WORK_ORDER_EVIDENCE_VIEWED in actions
+        assert ACTION_WORK_ORDER_RESOLUTION_CONFIRMED in actions
+        confirmed = next(
+            a for a in rows if a.action == ACTION_WORK_ORDER_RESOLUTION_CONFIRMED
+        )
+        assert confirmed.after["decision"] == "CONFIRM_VERIFIED"
+        assert confirmed.after["actor_role"] == RoleName.OFFICER.value
+        assert all(
+            a.after.get("actor_role") == RoleName.OFFICER.value for a in rows
+        )

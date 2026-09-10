@@ -34,6 +34,7 @@ from app.services.priority_engine import (
     score_from_units,
     score_priority,
 )
+from tests.helpers import any_active_ward_id, any_officer_token
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -51,7 +52,12 @@ def _unique_email(prefix: str) -> str:
 async def _citizen_token(email: str) -> str:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Priority Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Priority Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -366,23 +372,22 @@ async def test_api_priority_requires_access(client):
 
 @pytest.mark.asyncio
 async def test_api_priority_404_unknown_complaint(client):
-    email = _unique_email("pri-404")
-    token = await _citizen_token(email)
+    otoken = await any_officer_token(_unique_email("pri-404-officer"))
     r = await client.post(
-        f"{_BASE}/{uuid.uuid4()}/priority", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{uuid.uuid4()}/priority", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert r.status_code == 404, r.text
-    await _delete_user(email)
 
 
 @pytest.mark.asyncio
 async def test_api_priority_full_run_result_and_history(client):
     email = _unique_email("pri-api")
     token = await _citizen_token(email)
+    otoken = await any_officer_token(_unique_email("pri-api-officer"))
     complaint_id = await _create_complaint(client, token, desc="Sinkhole near school.")
 
     resp = await client.post(
-        f"{_BASE}/{complaint_id}/priority", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/priority", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -392,7 +397,7 @@ async def test_api_priority_full_run_result_and_history(client):
     assert result["priority"].startswith("P")
 
     getr = await client.get(
-        f"{_BASE}/{complaint_id}/priority-result", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/priority-result", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert getr.status_code == 200, getr.text
     out = getr.json()
@@ -401,7 +406,7 @@ async def test_api_priority_full_run_result_and_history(client):
     assert out["structured_result"]["score"] == result["score"]
 
     h = await client.get(
-        f"{_BASE}/{complaint_id}/priority-history", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/priority-history", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert h.status_code == 200, h.text
     hist = h.json()
@@ -415,9 +420,10 @@ async def test_api_priority_full_run_result_and_history(client):
 async def test_api_priority_result_none_before_run(client):
     email = _unique_email("pri-null")
     token = await _citizen_token(email)
+    otoken = await any_officer_token(_unique_email("pri-null-officer"))
     complaint_id = await _create_complaint(client, token, desc="Nothing yet.")
     getr = await client.get(
-        f"{_BASE}/{complaint_id}/priority-result", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{complaint_id}/priority-result", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert getr.status_code == 200, getr.text
     assert getr.json() is None

@@ -9,7 +9,6 @@ import {
   BrainCircuit,
   Flame,
   BarChart3,
-  Map,
   Wrench,
   Bell,
   MessageSquare,
@@ -66,13 +65,19 @@ const OPERATIONS_STAFF: NavSection = {
   ],
 };
 
-const INTELLIGENCE: NavSection = {
+const INTELLIGENCE_OFFICER: NavSection = {
   label: "Intelligence",
   items: [
-    { label: "AI Triage", href: "/dashboard", icon: BrainCircuit, description: "AI agent decisions and runs" },
     { label: "Predictive Hotspots", href: "/officer/hotspots", icon: Flame, description: "AI risk forecasts by ward" },
     { label: "Analytics", href: "/officer/analytics", icon: BarChart3, description: "Trends, SLAs, performance" },
-    { label: "GIS Intelligence", href: "/officer", icon: Map, exact: true, description: "Incident and ward mapping" },
+  ],
+};
+
+const INTELLIGENCE_WARD_REP: NavSection = {
+  label: "Intelligence",
+  items: [
+    { label: "AI Triage", href: "/ward-rep/triage", icon: BrainCircuit, description: "AI agent decisions and runs" },
+    { label: "Analytics", href: "/ward-rep/analytics", icon: BarChart3, description: "Trends, SLAs, performance" },
   ],
 };
 
@@ -133,10 +138,10 @@ export function getNavSections(role?: string): NavSection[] {
     case "FIELD_WORKER":
       return [WORKER, COMMUNICATION];
     case "WARD_REPRESENTATIVE":
-      return [WARD_REP, INTELLIGENCE, COMMUNICATION];
+      return [WARD_REP, INTELLIGENCE_WARD_REP, COMMUNICATION];
     case "OFFICER":
     case "ADMIN":
-      return [OPERATIONS_STAFF, INTELLIGENCE, COMMUNICATION];
+      return [OPERATIONS_STAFF, INTELLIGENCE_OFFICER, COMMUNICATION];
     default:
       return [OVERVIEW_CITIZEN, CITIZEN_SERVICES, COMMUNICATION, ACCOUNT];
   }

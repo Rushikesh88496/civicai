@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import {
   RefreshCw,
   ListOrdered,
@@ -445,24 +446,29 @@ export function CommandCenter() {
 
 function QueueRow({ complaint }: { complaint: CommandCenterComplaint }) {
   return (
-    <div className="rounded-lg border border-border-soft p-3 transition-colors hover:border-border-strong hover:bg-slate-50/60">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="truncate font-medium text-slate-900">{complaint.title}</p>
-            {priorityBadge(complaint.priority ?? complaint.complaint_priority)}
-            {statusBadge(complaint.status)}
+    <Link
+      href={`/officer/complaints/${complaint.complaint_id}`}
+      className="block"
+    >
+      <div className="rounded-lg border border-border-soft p-3 transition-colors hover:border-border-strong hover:bg-slate-50/60">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="truncate font-medium text-slate-900">{complaint.title}</p>
+              {priorityBadge(complaint.priority ?? complaint.complaint_priority)}
+              {statusBadge(complaint.status)}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              {complaint.complaint_id} · {categoryLabel(complaint.category)}
+              {complaint.department ? ` · ${complaint.department}` : ""}
+              {complaint.ward_name ? ` · ${complaint.ward_name}` : ""}
+              {complaint.sla_due_at ? ` · SLA due ${formatDate(complaint.sla_due_at)}` : ""}
+            </p>
           </div>
-          <p className="mt-1 text-xs text-slate-500">
-            {complaint.complaint_id} · {categoryLabel(complaint.category)}
-            {complaint.department ? ` · ${complaint.department}` : ""}
-            {complaint.ward_name ? ` · ${complaint.ward_name}` : ""}
-            {complaint.sla_due_at ? ` · SLA due ${formatDate(complaint.sla_due_at)}` : ""}
-          </p>
+          <span className="whitespace-nowrap text-xs text-slate-400">{formatDate(complaint.created_at)}</span>
         </div>
-        <span className="whitespace-nowrap text-xs text-slate-400">{formatDate(complaint.created_at)}</span>
       </div>
-    </div>
+    </Link>
   );
 }
 

@@ -8,6 +8,7 @@ import type {
   GeoLookup,
   WardBoundary,
 } from "@/lib/citizen-api";
+import { fitBoundsSafely, isUsableLatLng } from "@/lib/leaflet";
 
 interface GeoMapCanvasProps {
   latitude: number;
@@ -35,6 +36,7 @@ export default function GeoMapCanvas({
   const mapRef = useRef<L.Map | null>(null);
 
   useEffect(() => {
+    if (!isUsableLatLng(latitude, longitude)) return;
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
@@ -98,8 +100,10 @@ export default function GeoMapCanvas({
     if (lookup.ward) {
       const boundary = wards.find((w) => w.code === lookup.ward!.code);
       if (boundary && boundary.geometry && boundary.geometry.length >= 3) {
-        map.fitBounds(
-          boundary.geometry.map(([lng, lat]) => [lat, lng] as [number, number])
+        fitBoundsSafely(
+          map,
+          boundary.geometry.map(([lng, lat]) => [lat, lng] as [unknown, unknown]),
+          0
         );
       }
     }

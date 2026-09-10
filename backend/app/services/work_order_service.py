@@ -56,6 +56,15 @@ from app.services.complaint_tracking_service import (
     _load_complaint,
     user_can_view,
 )
+from app.services.override_service import OVERRIDE_ASSIGNMENT, record_override
+
+# Assignment provenance (Part 32 — human-in-the-loop). An assignment is either the
+# officer accepting the AI recommendation, an override with a different worker, or
+# a manual pick when no recommendation existed. The AI recommendation itself is
+# never called an assignment.
+ASSIGNMENT_ORIGIN_AI = "AI_RECOMMENDATION"
+ASSIGNMENT_ORIGIN_OVERRIDE = "OFFICER_OVERRIDE"
+ASSIGNMENT_ORIGIN_MANUAL = "MANUAL"
 
 
 class WorkOrderNotFoundError(Exception):
@@ -84,6 +93,7 @@ async def _load_work_order(db: AsyncSession, work_order_id: uuid.UUID) -> WorkOr
         .where(WorkOrder.id == work_order_id)
         .options(
             selectinload(WorkOrder.worker).selectinload(FieldWorker.user),
+            selectinload(WorkOrder.recommended_worker).selectinload(FieldWorker.user),
             selectinload(WorkOrder.assignments)
             .selectinload(WorkerAssignment.worker)
             .selectinload(FieldWorker.user),
@@ -307,7 +317,8 @@ async def approve_work_order(
     db: AsyncSession, user: User, work_order_id: uuid.UUID, note: str = ""
 ) -> WorkOrderDetailBundle:
     """Officer approves a draft → approved. The recommended worker (if any) is
-    formalized into an active assignment; the order moves to ASSIGNED."""
+    formalized into an active assignment (``origin=AI_RECOMMENDATION``); the
+    order moves to ASSIGNED."""
     order = await _assert_can_view_work_order(db, user, work_order_id)
     if order.status not in (WorkOrderStatus.PENDING_APPROVAL,):
         raise WorkOrderStateError(f"Cannot approve a work order in state {order.status}.")
@@ -324,6 +335,7 @@ async def approve_work_order(
                 worker_id=order.worker_id,
                 status=AssignmentStatus.ASSIGNED,
                 assigned_by=user.id,
+                origin=ASSIGNMENT_ORIGIN_AI,
                 reason="Recommended worker confirmed on approval.",
             )
         )
@@ -351,7 +363,14 @@ async def assign_work_order(
     worker_id: uuid.UUID,
     reason: str,
 ) -> WorkOrderDetailBundle:
-    """Officer assigns a worker to a work order (or reassigns if one is held)."""
+    """Officer assigns a worker to a work order (or reassigns if one is held).
+
+    The chosen worker is classified against the frozen AI recommendation
+    (``order.recommended_worker_id``): accepting it is ``AI_RECOMMENDATION``,
+    picking a different worker is ``OFFICER_OVERRIDE`` (a ``human_overrides``
+    row is written), and picking any worker without a recommendation is
+    ``MANUAL``.
+    """
     order = await _assert_can_view_work_order(db, user, work_order_id)
     if order.status in (
         WorkOrderStatus.COMPLETED,
@@ -370,6 +389,15 @@ async def assign_work_order(
     if worker.status.value != "ACTIVE":
         raise WorkOrderStateError("Worker is not active.")
 
+    origin = _assignment_origin(order, worker_id)
+    recommended_id = order.recommended_worker_id
+    recommended_name = (
+        order.recommended_worker.user.full_name
+        if order.recommended_worker is not None and order.recommended_worker.user is not None
+        else None
+    )
+    new_name = worker.user.full_name if worker.user is not None else None
+
     previous = order.worker_id
     _supersede_active_assignment(db, order)
     order.worker_id = worker.id
@@ -385,6 +413,7 @@ async def assign_work_order(
             worker_id=worker.id,
             status=AssignmentStatus.ASSIGNED,
             assigned_by=user.id,
+            origin=origin,
             reason=reason,
         )
     )
@@ -398,6 +427,20 @@ async def assign_work_order(
             note=reason,
         )
     )
+    if origin == ASSIGNMENT_ORIGIN_OVERRIDE:
+        await record_override(
+            db,
+            complaint_id=order.complaint_id,
+            override_type=OVERRIDE_ASSIGNMENT,
+            original_value=recommended_name,
+            new_value=new_name,
+            original_data={"recommended_worker_id": str(recommended_id)}
+            if recommended_id is not None
+            else None,
+            new_data={"assigned_worker_id": str(worker.id)},
+            reason=f"{reason} (AI recommended {recommended_name or 'no worker'}).",
+            user_id=user.id,
+        )
     if worker.user is not None:
         await _notify_assignment(db, order, worker.user, is_new=action == WorkOrderAction.ASSIGN)
     await db.commit()
@@ -433,6 +476,15 @@ async def reassign_work_order(
     if order.worker_id == worker.id:
         raise WorkOrderStateError("Worker is already assigned to this work order.")
 
+    origin = _assignment_origin(order, worker.id)
+    recommended_id = order.recommended_worker_id
+    recommended_name = (
+        order.recommended_worker.user.full_name
+        if order.recommended_worker is not None and order.recommended_worker.user is not None
+        else None
+    )
+    new_name = worker.user.full_name if worker.user is not None else None
+
     _supersede_active_assignment(db, order)
     order.worker_id = worker.id
     order.status = WorkOrderStatus.ASSIGNED
@@ -443,6 +495,7 @@ async def reassign_work_order(
             worker_id=worker.id,
             status=AssignmentStatus.REASSIGNED,
             assigned_by=user.id,
+            origin=origin,
             reason=reason,
         )
     )
@@ -456,6 +509,20 @@ async def reassign_work_order(
             note=reason,
         )
     )
+    if origin == ASSIGNMENT_ORIGIN_OVERRIDE:
+        await record_override(
+            db,
+            complaint_id=order.complaint_id,
+            override_type=OVERRIDE_ASSIGNMENT,
+            original_value=recommended_name,
+            new_value=new_name,
+            original_data={"recommended_worker_id": str(recommended_id)}
+            if recommended_id is not None
+            else None,
+            new_data={"assigned_worker_id": str(worker.id)},
+            reason=f"{reason} (AI recommended {recommended_name or 'no worker'}).",
+            user_id=user.id,
+        )
     if worker.user is not None:
         await _notify_assignment(db, order, worker.user, is_new=False)
     await db.commit()
@@ -525,6 +592,19 @@ def _supersede_active_assignment(db: AsyncSession, order: WorkOrder) -> None:
             a.status = AssignmentStatus.UNASSIGNED
 
 
+def _assignment_origin(order: WorkOrder, worker_id: uuid.UUID) -> str:
+    """Classify an officer's pick against the frozen AI recommendation.
+
+    ``recommended_worker_id`` is captured at dispatch time and never mutated,
+    so even a later reassignment can still say whether a given pick honoured
+    (or overrode) the AI recommendation.
+    """
+    recommended = order.recommended_worker_id
+    if recommended is None:
+        return ASSIGNMENT_ORIGIN_MANUAL
+    return ASSIGNMENT_ORIGIN_AI if recommended == worker_id else ASSIGNMENT_ORIGIN_OVERRIDE
+
+
 def _worker_name(order: WorkOrder) -> str | None:
     if order.worker is None:
         return None
@@ -548,6 +628,12 @@ def _detail_out(o: WorkOrder) -> WorkOrderDetailOut:
         eta_minutes=o.eta_minutes,
         eta_source=o.eta_source,
         worker_name=_worker_name(o),
+        recommended_worker_id=o.recommended_worker_id,
+        recommended_worker_name=(
+            o.recommended_worker.user.full_name
+            if o.recommended_worker is not None and o.recommended_worker.user is not None
+            else None
+        ),
         created_at=o.created_at,
         updated_at=o.updated_at,
     )
@@ -573,6 +659,7 @@ def _assignment_out(a: WorkerAssignment) -> WorkerAssignmentOut:
         worker_name=a.worker.user.full_name if a.worker and a.worker.user else None,
         status=a.status,
         assigned_by_name=a.assigned_by_user.full_name if a.assigned_by_user else None,
+        origin=a.origin,
         reason=a.reason,
         assigned_at=a.assigned_at,
     )

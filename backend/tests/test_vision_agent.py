@@ -23,6 +23,7 @@ from app.models import AgentRun, Complaint, ComplaintMedia, User
 from app.models.enums import AgentStatus, ComplaintStatus, MediaType, TriageSeverity
 from app.schemas.vision import VisionInput, VisionOutput
 from app.services import auth_service
+from tests.helpers import any_active_ward_id, any_officer_token
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -91,7 +92,12 @@ async def _citizen_token(email: str) -> str:
 
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Vision Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Vision Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -382,6 +388,7 @@ async def test_vision_missing_api_key_marks_failed(client):
 async def test_api_run_vision_success(client, monkeypatch):
     email = _unique_email("vis-api")
     token = await _citizen_token(email)
+    otoken = await any_officer_token(_unique_email("vis-api-officer"))
     complaint_id = await _create_complaint(client, token, desc="Water main burst.")
 
     from app.services.vision_service import VisionAgent as _AgentCls
@@ -391,7 +398,7 @@ async def test_api_run_vision_success(client, monkeypatch):
 
     resp = await client.post(
         f"{_BASE}/{complaint_id}/vision",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {otoken}"},
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -403,7 +410,7 @@ async def test_api_run_vision_success(client, monkeypatch):
 
     get = await client.get(
         f"{_BASE}/{complaint_id}/vision-result",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {otoken}"},
     )
     assert get.status_code == 200
     assert get.json()["agent"] == "vision"

@@ -14,6 +14,9 @@ export const CATEGORY_LABELS: Record<string, string> = {
 export const STATUS_LABELS: Record<string, string> = {
   OPEN: "Open",
   IN_PROGRESS: "In Progress",
+  WORK_COMPLETED: "Work Finished",
+  EVIDENCE_SUBMITTED: "Evidence Submitted",
+  RETURNED_FOR_REWORK: "Returned for Rework",
   RESOLVED: "Resolved",
   ESCALATED: "Escalated",
   SUBMITTED: "Submitted",

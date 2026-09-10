@@ -16,13 +16,14 @@ existing deadlines stay stable).
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import FieldWorker, SlaPolicy, WorkOrder
+from app.models import Complaint, FieldWorker, SlaPolicy, WorkOrder
 from app.models.enums import SlaState, WorkOrderStatus
 from app.schemas.sla import (
     OrderSlaSnapshot,
@@ -38,7 +39,13 @@ _TERMINAL = {
     WorkOrderStatus.REJECTED.value,
 }
 # Orders whose work is done (state = COMPLETED, never at risk / breached).
-_DONE = {WorkOrderStatus.COMPLETED.value}
+# Includes the worker-completion states: from WORK_COMPLETED on, the physical
+# work is finished and only evidence/verification remains.
+_DONE = {
+    WorkOrderStatus.COMPLETED.value,
+    WorkOrderStatus.WORK_COMPLETED.value,
+    WorkOrderStatus.EVIDENCE_SUBMITTED.value,
+}
 
 _DEFAULT_AT_RISK_PERCENT = 0.75
 
@@ -186,9 +193,13 @@ async def scan(
     now: datetime | None = None,
     department: str | None = None,
     priority: str | None = None,
+    ward_id: uuid.UUID | None = None,
     backfill: bool = False,
 ) -> SlaScanOutput:
-    """Scan all monitored work orders and return per-order snapshots + counts.
+    """Scan monitored work orders and return per-order snapshots + counts.
+
+    ``ward_id`` restricts the scan to a single ward (WARD_REPRESENTATIVE); when
+    omitted the whole city is scanned (officer / admin / SLA agent).
 
     ``backfill=True`` (agent path) persists missing deadlines; the read-only
     board path leaves ``backfill=False``.
@@ -202,6 +213,10 @@ async def scan(
             selectinload(WorkOrder.worker).selectinload(FieldWorker.user),
         )
     )
+    if ward_id is not None:
+        stmt = stmt.join(Complaint, Complaint.id == WorkOrder.complaint_id).where(
+            Complaint.ward_id == ward_id
+        )
     if department:
         stmt = stmt.where(WorkOrder.department == department)
     if priority:
@@ -279,12 +294,21 @@ async def list_sla_orders(
     department: str | None = None,
     priority: str | None = None,
     search: str | None = None,
+    ward_id: uuid.UUID | None = None,
 ) -> tuple[list[OrderSlaSnapshot], SlaCounts, int]:
     """Live read-only SLA board: newest computation, sorted by severity.
 
+    ``ward_id`` scopes the board to one ward (WARD_REPRESENTATIVE).
+
     Returns ``(items, counts, total)`` for the requested page.
     """
-    scan_out = await scan(db, department=department, priority=priority)
+    scan_out = await scan(
+        db,
+        department=department,
+        priority=priority,
+        ward_id=ward_id,
+        backfill=False,
+    )
     snapshots = scan_out.orders
     counts = scan_out.counts
 
@@ -313,8 +337,12 @@ async def list_sla_orders(
     return items, counts, total
 
 
-async def latest_run(db: AsyncSession) -> dict | None:
-    """The most recent persisted ``sla_monitor`` run, if any."""
+async def latest_run(db: AsyncSession, *, ward_id: uuid.UUID | None = None) -> dict | None:
+    """The most recent persisted ``sla_monitor`` run, if any.
+
+    ``ward_id`` (WARD_REPRESENTATIVE) filters the returned order snapshots to a
+    single ward.
+    """
     from app.models import AgentRun
 
     run = await db.scalar(
@@ -330,6 +358,14 @@ async def latest_run(db: AsyncSession) -> dict | None:
         if run.structured_result is not None
         else None
     )
+    if ward_id is not None and result is not None and result.orders:
+        complaint_ids = (
+            await db.scalars(
+                select(Complaint.id).where(Complaint.ward_id == ward_id)
+            )
+        ).all()
+        allowed = set(complaint_ids)
+        result.orders = [o for o in result.orders if o.complaint_id in allowed]
     return SlaRunOut(
         id=run.id,
         agent=run.agent,

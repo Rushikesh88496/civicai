@@ -1,5 +1,7 @@
 """Request/response schemas for the authentication endpoints."""
 
+import uuid
+
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.core.security import is_strong_password
@@ -9,6 +11,9 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=255)
+    # Every citizen must pick one of the active reference wards at signup
+    # (Part 31). The service layer re-validates that the ward exists + is active.
+    ward_id: uuid.UUID
 
     @field_validator("password")
     @classmethod

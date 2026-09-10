@@ -13,6 +13,10 @@ const STATUS_VARIANT: Record<
 > = {
   OPEN: "secondary",
   IN_PROGRESS: "warning",
+  WORK_COMPLETED: "info",
+  EVIDENCE_SUBMITTED: "ai",
+  RETURNED_FOR_REWORK: "warning",
+  REWORK_REQUESTED: "warning",
   RESOLVED: "success",
   ESCALATED: "destructive",
   SUBMITTED: "secondary",

@@ -157,7 +157,7 @@ async def test_user_create_list_search_filter(client, super_admin):
             "password": _PASSWORD,
             "full_name": "Cit Created",
             "role": "CITIZEN",
-            "ward_code": "W-002",
+            "ward_code": "WARD-2",
             "is_email_verified": True,
         },
         headers=_auth(super_admin),
@@ -192,7 +192,7 @@ async def test_user_create_list_search_filter(client, super_admin):
             "password": _PASSWORD,
             "full_name": "Rep Created",
             "role": "WARD_REPRESENTATIVE",
-            "ward_code": "W-002",
+            "ward_code": "WARD-2",
             "rep_title": "Councillor",
         },
         headers=_auth(super_admin),
@@ -399,12 +399,12 @@ async def test_field_worker_update(client, super_admin):
 # ---------- Representatives ------------------------------------------------ #
 
 async def test_representative_update(client, super_admin):
-    rep_id, _ = await _make_user("WARD_REPRESENTATIVE", ward_code="W-001")
+    rep_id, _ = await _make_user("WARD_REPRESENTATIVE", ward_code="WARD-1")
     # Ensure WardRepresentative profile exists.
     async with async_session_factory() as db:
         from app.models import WardRepresentative as _WardRep
         _wr = _WardRep(user_id=rep_id, ward_id=None, title="Councillor")
-        ward = await db.scalar(select(Ward).where(Ward.code == "W-001"))
+        ward = await db.scalar(select(Ward).where(Ward.code == "WARD-1"))
         _wr.ward_id = ward.id
         db.add(_wr)
         await db.commit()

@@ -34,6 +34,7 @@ import {
   CategoryBadge,
 } from "@/components/dashboard/status-badge";
 import { ComplaintMap } from "@/components/dashboard/complaint-map";
+import { WardRepresentativeCard } from "@/components/dashboard/ward-representative-card";
 import {
   categoryLabel,
   formatDate,
@@ -43,18 +44,11 @@ import {
 import {
   fetchComplaintDetail,
   fetchComplaintTimeline,
+  fetchMyWardRepresentative,
   type ComplaintDetail,
   type ComplaintTimeline,
+  type WardInfo,
 } from "@/lib/citizen-api";
-import { AiAnalysisCard } from "@/components/dashboard/ai-analysis-card";
-import { EvidenceVerificationCard } from "@/components/dashboard/evidence-verification-card";
-import { CorrelationCard } from "@/components/dashboard/correlation-card";
-import { GeoSpatialCard } from "@/components/dashboard/geo-spatial-card";
-import { ContextIntelligenceCard } from "@/components/dashboard/context-intelligence-card";
-import { PriorityIndexCard } from "@/components/dashboard/priority-index-card";
-import { RoutingCard } from "@/components/dashboard/routing-card";
-import { WorkOrderCard } from "@/components/dashboard/work-order-card";
-import { RepairVerificationCard } from "@/components/dashboard/repair-verification-card";
 
 function DetailSkeleton() {
   return (
@@ -89,6 +83,31 @@ const STATUS_ICON: Record<string, "done" | "active" | "pending"> = {
   ESCALATED: "done",
 };
 
+const WORK_ACTION_LABEL: Record<string, string> = {
+  APPROVE: "Officer approved the work order",
+  ASSIGN: "Worker assigned",
+  REASSIGN: "Reassigned to another worker",
+  ESCALATE: "Escalated for urgent attention",
+  REJECT: "Officer rejected the work order",
+  CLOSE: "Complaint closed",
+  DISPATCH: "Work order created",
+  ACCEPT: "Field worker accepted the task",
+  START_WORK: "Field worker started work",
+  COMPLETE_WORK: "Field worker completed the task",
+  CHECK_IN: "Field worker checked in",
+  PHOTO_BEFORE: "Before photo added",
+  PHOTO_AFTER: "After photo added",
+  NOTE_ADDED: "Field worker added notes",
+  REOPEN: "Verification required follow-up",
+};
+
+function workActionLabel(action: string): string {
+  return (
+    WORK_ACTION_LABEL[action] ??
+    action.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
 export function ComplaintDetailView({ id }: { id: string }) {
   const router = useRouter();
   const [detail, setDetail] = useState<ComplaintDetail | null>(null);
@@ -96,6 +115,10 @@ export function ComplaintDetailView({ id }: { id: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+
+  const [repWard, setRepWard] = useState<WardInfo | null>(null);
+  const [repLoading, setRepLoading] = useState(true);
+  const [repError, setRepError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,6 +142,23 @@ export function ComplaintDetailView({ id }: { id: string }) {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
+    // The ward representative is an independent, non-fatal enrichment: a
+    // failure here must never block viewing the complaint itself.
+    fetchMyWardRepresentative()
+      .then((ward) => {
+        if (!cancelled) {
+          setRepWard(ward);
+          setRepError(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRepError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setRepLoading(false);
+      });
+
     return () => {
       cancelled = true;
     };
@@ -179,9 +219,6 @@ export function ComplaintDetailView({ id }: { id: string }) {
   const location = detail.complaint_location;
   const imageMedia = detail.media.filter((m) => m.media_type === "IMAGE");
   const videoMedia = detail.media.filter((m) => m.media_type === "VIDEO");
-  const sortedEvents = [...(timeline?.events ?? [])].sort(
-    (a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime()
-  );
 
   return (
     <div className="space-y-6">
@@ -300,18 +337,17 @@ export function ComplaintDetailView({ id }: { id: string }) {
                   <ShieldCheck className="h-3.5 w-3.5" />
                   Coordinates {location.latitude.toFixed(4)},{" "}
                   {location.longitude.toFixed(4)}
-                  {location.source === "manual" && " · entered manually"}
+                  {location.source === "gps"
+                    ? location.accuracy_m
+                      ? ` · GPS ±${Math.round(location.accuracy_m)} m`
+                      : " · GPS"
+                    : location.geopoint_denied
+                      ? " · entered manually after GPS denied"
+                      : " · entered manually"}
                 </p>
               )}
             </CardContent>
           </Card>
-
-          {location && (
-            <GeoSpatialCard
-              latitude={location.latitude}
-              longitude={location.longitude}
-            />
-          )}
         </div>
 
         <div className="space-y-6">
@@ -362,68 +398,105 @@ export function ComplaintDetailView({ id }: { id: string }) {
             </CardContent>
           </Card>
 
-          <AiAnalysisCard complaintId={detail.id} />
+          {repError ? (
+            <Card>
+              <CardContent>
+                <p className="text-sm text-slate-500">
+                  Could not load your ward representative.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <WardRepresentativeCard ward={repWard ?? null} loading={repLoading} />
+          )}
 
-          <EvidenceVerificationCard
-            complaintId={detail.id}
-            imageMedia={imageMedia}
-          />
-
-          <CorrelationCard complaintId={detail.id} />
-
-          <ContextIntelligenceCard complaintId={detail.id} />
-
-          <PriorityIndexCard complaintId={detail.id} />
-
-          <RoutingCard complaintId={detail.id} />
-
-          <WorkOrderCard complaintId={detail.id} />
-
-          <RepairVerificationCard complaintId={detail.id} />
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Status Timeline</CardTitle>
-              <CardDescription>
-                Every update to this complaint, ordered by time.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {sortedEvents.length === 0 ? (
-                <p className="text-sm text-gray-400">No updates yet.</p>
-              ) : (
-                <ol className="relative ml-2 border-l-2 border-border-soft pl-6">
-                  {sortedEvents.map((event) => {
-                    const dotState = STATUS_ICON[event.status] ?? "done";
-                    return (
-                      <li key={event.id} className="relative pb-6 last:pb-0">
-                        <span
-                          className={`absolute -left-[31px] flex h-5 w-5 items-center justify-center rounded-full border-2 bg-surface ${
-                            dotState === "done"
-                              ? "border-primary-600 text-primary-600"
-                              : "border-slate-300 text-slate-400"
-                          }`}
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                        </span>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <StatusBadge value={event.status} />
-                          <span className="text-xs text-slate-400">
-                            {formatDateTime(event.recorded_at)}
-                          </span>
-                        </div>
-                        {event.note && (
-                          <p className="mt-1 text-sm text-slate-500">{event.note}</p>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ol>
-              )}
-            </CardContent>
-          </Card>
+          {timeline && <ComplaintTimelineCard timeline={timeline} />}
         </div>
       </div>
     </div>
+  );
+}
+
+interface TimelineItem {
+  key: string;
+  recorded_at: string;
+  status?: string;
+  action?: string;
+  actor?: string | null;
+  note?: string | null;
+}
+
+export function ComplaintTimelineCard({ timeline }: { timeline: ComplaintTimeline }) {
+  const items: TimelineItem[] = [
+    ...timeline.events.map((e) => ({
+      key: `status-${e.id}`,
+      recorded_at: e.recorded_at,
+      status: e.status,
+      note: e.note,
+    })),
+    ...timeline.work_order_events.map((e) => ({
+      key: `work-${e.work_order_id}-${e.recorded_at}-${e.action}`,
+      recorded_at: e.recorded_at,
+      action: e.action,
+      actor: e.actor_name,
+      note: e.note,
+    })),
+  ].sort(
+    (a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime()
+  );
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Status Timeline</CardTitle>
+        <CardDescription>
+          Every update to this complaint, including field work milestones.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {items.length === 0 ? (
+          <p className="text-sm text-gray-400">No updates yet.</p>
+        ) : (
+          <ol className="relative ml-2 border-l-2 border-border-soft pl-6">
+            {items.map((item) => {
+              const dotState = item.status
+                ? (STATUS_ICON[item.status] ?? "done")
+                : "done";
+              return (
+                <li key={item.key} className="relative pb-6 last:pb-0">
+                  <span
+                    className={`absolute -left-[31px] flex h-5 w-5 items-center justify-center rounded-full border-2 bg-surface ${
+                      dotState === "done"
+                        ? "border-primary-600 text-primary-600"
+                        : "border-slate-300 text-slate-400"
+                    }`}
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {item.status ? (
+                      <StatusBadge value={item.status} />
+                    ) : (
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                        {workActionLabel(item.action ?? "")}
+                      </span>
+                    )}
+                    <span className="text-xs text-slate-400">
+                      {formatDateTime(item.recorded_at)}
+                    </span>
+                  </div>
+                  {item.actor && (
+                    <p className="mt-1 text-xs text-slate-400">By {item.actor}</p>
+                  )}
+                  {item.note && (
+                    <p className="mt-1 text-sm text-slate-500">{item.note}</p>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </CardContent>
+    </Card>
   );
 }

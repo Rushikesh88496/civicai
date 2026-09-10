@@ -30,6 +30,17 @@ class CandidateScoreOut(BaseModel):
     distance: float
     workload: float
     equipment: float
+    # Extra explainability criteria (Part 14b): crew/ward/priority + PostGIS km.
+    department: float = 0.0
+    ward: float = 0.0
+    priority: float = 0.0
+    distance_km: float | None = None
+    department_code: str | None = None
+    ward_code: str | None = None
+    # Raw workload snapshot behind the normalized ``workload`` sub-score, so the
+    # recommendation explanation can cite real counts (e.g. "0 active assignments").
+    active_orders: int = 0
+    capacity: int | None = None
     reasons: list[str] = Field(default_factory=list)
 
 
@@ -56,6 +67,10 @@ class DispatchRecommendation(BaseModel):
     required_equipment: list[str] = Field(default_factory=list)
     recommended_worker_id: uuid.UUID | None = None
     recommended_worker_name: str | None = None
+    # Concise, deterministic explanation of the pick, built ONLY from the actual
+    # scored candidate data (skill / department / ward / availability / workload /
+    # distance) — never hardcoded, never raw model chain-of-thought.
+    recommended_worker_explanation: str | None = None
     candidates: list[CandidateScoreOut] = Field(default_factory=list)
     sla_hours: int | None = None
     eta_minutes: int | None = None
@@ -124,6 +139,10 @@ class WorkOrderDetailOut(BaseModel):
     eta_minutes: int | None = None
     eta_source: str | None = None
     worker_name: str | None = None
+    # The worker the Dispatch Agent recommended (frozen at draft time) and its
+    # display name — distinct from ``worker_name`` once an officer overrides.
+    recommended_worker_id: uuid.UUID | None = None
+    recommended_worker_name: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -157,7 +176,14 @@ class WorkOrderStatusHistoryOut(BaseModel):
 
 
 class WorkerAssignmentOut(BaseModel):
-    """A worker/work-order assignment (active + archived)."""
+    """A worker/work-order assignment (active + archived).
+
+    ``origin`` is the Part 32 provenance: ``AI_RECOMMENDATION`` (officer
+    accepted the dispatch agent's pick), ``OFFICER_OVERRIDE`` (different worker
+    chosen — a ``human_overrides`` row is written), or ``MANUAL`` (no
+    recommendation existed). An AI recommendation is never itself an
+    assignment; only a ``worker_assignments`` row is official.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -167,6 +193,7 @@ class WorkerAssignmentOut(BaseModel):
     worker_name: str | None = None
     status: AssignmentStatus
     assigned_by_name: str | None = None
+    origin: str | None = None
     reason: str | None = None
     assigned_at: datetime
 

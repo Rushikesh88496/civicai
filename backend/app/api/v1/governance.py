@@ -38,17 +38,26 @@ from app.services.audit_service import (
     ACTION_ROUTING_OVERRIDE,
     record_audit,
 )
+from app.services.complaint_tracking_service import user_can_view
 from app.services.evidence_validation_service import list_evidence_checks
 
 router = APIRouter(prefix="/governance", tags=["governance"])
 
 _STAFF = Depends(require_roles("OFFICER", "ADMIN", "SUPER_ADMIN", "WARD_REPRESENTATIVE"))
+# Recording a human override of an AI decision is an officer/admin-only action.
+_OVERRIDE_WRITERS = Depends(require_roles("OFFICER", "ADMIN", "SUPER_ADMIN"))
 
 
-async def _get_complaint_or_404(db: AsyncSession, complaint_id: uuid.UUID) -> Complaint:
+async def _get_complaint_or_404(
+    db: AsyncSession, complaint_id: uuid.UUID, user: User
+) -> Complaint:
     complaint = await db.get(Complaint, complaint_id)
     if complaint is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Complaint not found.")
+    if not user_can_view(user, complaint):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "You do not have permission to access this complaint."
+        )
     return complaint
 
 
@@ -74,9 +83,9 @@ def _client_ip(request: Request) -> str | None:
 async def get_complaint_decisions(
     complaint_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = _STAFF,
+    user: User = _STAFF,
 ):
-    await _get_complaint_or_404(db, complaint_id)
+    await _get_complaint_or_404(db, complaint_id, user)
     return await list_ai_decisions(db, complaint_id=complaint_id)
 
 
@@ -84,9 +93,9 @@ async def get_complaint_decisions(
 async def get_complaint_evidence(
     complaint_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = _STAFF,
+    user: User = _STAFF,
 ):
-    await _get_complaint_or_404(db, complaint_id)
+    await _get_complaint_or_404(db, complaint_id, user)
     return await list_evidence_checks(db, complaint_id=complaint_id)
 
 
@@ -94,9 +103,9 @@ async def get_complaint_evidence(
 async def get_complaint_overrides(
     complaint_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = _STAFF,
+    user: User = _STAFF,
 ):
-    await _get_complaint_or_404(db, complaint_id)
+    await _get_complaint_or_404(db, complaint_id, user)
     return await override_service.list_overrides(db, complaint_id=complaint_id)
 
 
@@ -110,10 +119,10 @@ async def create_override(
     payload: OverrideIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    user: User = _STAFF,
+    user: User = _OVERRIDE_WRITERS,
 ):
     """Record a human override of an AI decision (officer/admin only)."""
-    await _get_complaint_or_404(db, complaint_id)
+    await _get_complaint_or_404(db, complaint_id, user)
 
     decision: AIDecisionLog | None = None
     if payload.decision_id is not None:
@@ -162,9 +171,9 @@ async def create_override(
 async def get_governance_summary(
     complaint_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: User = _STAFF,
+    user: User = _STAFF,
 ):
-    await _get_complaint_or_404(db, complaint_id)
+    await _get_complaint_or_404(db, complaint_id, user)
 
     decision_count = (
         await db.execute(

@@ -1,18 +1,29 @@
 """Worker-selection scoring engine for work-order dispatch (Part 14).
 
 Deterministic, explainable candidate scoring — **never random**. Given a work
-order's routing ``department``, its location, and the required skills/equipment,
-each candidate ``FieldWorker`` is scored on five normalized criteria:
+order's routing ``department``, its ward, its location, its priority bucket, and
+the required skills/equipment, each candidate ``FieldWorker`` is scored on eight
+normalized criteria:
 
 * **Availability** — `1.0` when the worker is ACTIVE *and* under their workload
   ceiling, else `0.0` (an unavailable worker is de-prioritized).
 * **Skill** — fraction of the order's required skill tags the worker's
   ``specialty`` + ``skill_tags`` cover.
-* **Distance** — inverse of haversine distance (home → order location), scaled by
+* **Department** — `1.0` when the worker's crew owns the routed department (the
+  legacy seeded crews PW/SN/PR are aliased to the seven routing departments),
+  else `0.0`.
+* **Ward** — `1.0` when the worker's home ward equals the complaint's ward,
+  else `0.0`.
+* **Distance** — inverse of the great-circle distance home → order location
+  (PostGIS when available, haversine fallback), scaled by
   ``DISPATCH_DISTANCE_REF_KILOMETERS``.
 * **Workload** — fraction of capacity still free (current active orders vs the
   worker's ``max_active_orders`` / settings default).
 * **Equipment** — fraction of the order's required equipment the worker possesses.
+* **Priority** — urgency factor from the complaint's dynamic priority bucket
+  (`1.0` for urgent P1/P2/HIGH/CRITICAL, else `0.5`); urgent orders also shift
+  ``DISPATCH_PRIORITY_URGENCY_BOOST`` from the workload weight onto the distance
+  weight so the nearest available skilled worker is preferred.
 
 The weighted sum (setting weights) produces a single 0–1 score; ties break by
 worker id for full determinism. The result includes the sub-scores and a short
@@ -36,7 +47,7 @@ class CandidateInput:
 
     worker_id: uuid.UUID
     name: str
-    department_code: str | None  # the Routing DepartmentCode the crew serves
+    department_code: str | None  # the crew the worker serves (e.g. PW/SN/PR)
     status: WorkerStatus
     specialty: str | None
     skill_tags: list[str]
@@ -45,6 +56,10 @@ class CandidateInput:
     home_lon: float | None
     active_orders: int = 0
     max_active_orders: int | None = None
+    ward_code: str | None = None  # the ward the worker is based in (home ward)
+    # Pre-computed distance home -> order location (PostGIS source). When None
+    # the engine falls back to haversine in-process.
+    precomputed_distance_km: float | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +75,15 @@ class CandidateScore:
     distance: float
     workload: float
     equipment: float
+    department: float = 0.0
+    ward: float = 0.0
+    priority: float = 0.0
+    distance_km: float | None = None
+    department_code: str | None = None
+    ward_code: str | None = None
+    # Raw workload snapshot behind ``workload`` (real counts from CandidateInput).
+    active_orders: int = 0
+    capacity: int | None = None
     reasons: list[str] = field(default_factory=list)
 
 
@@ -71,6 +95,44 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * r * math.asin(math.sqrt(a))
+
+
+# Which legacy seeded maintenance crews own each routing department. This is the
+# bridge between the routing codes (Part 13) and the real seeded crews (PW/SN/PR)
+# so a recommendation can reward the department that actually owns the work.
+_ROUTING_DEPARTMENT_CREW: dict[str, set[str]] = {
+    "WATER": {"PW"},
+    "ROADS": {"PW"},
+    "ELECTRICAL": {"PW"},
+    "WASTE": {"SN"},
+    "DRAINAGE": {"SN"},
+    "PARKS": {"PR"},
+    "EMERGENCY_DISASTER": {"PW", "SN"},
+}
+
+
+def _department_match(worker_code: str | None, order_department: str | None) -> float:
+    """1.0 when the worker's crew owns the routed department (exact or aliased)."""
+    if not worker_code or not order_department:
+        return 0.0
+    order = order_department.upper()
+    code = worker_code.upper()
+    if code == order:
+        return 1.0
+    crew = _ROUTING_DEPARTMENT_CREW.get(order)
+    if crew and code in crew:
+        return 1.0
+    return 0.0
+
+
+_URGENT_PRIORITIES = {"P1_CRITICAL", "P2_HIGH", "HIGH", "CRITICAL"}
+
+
+def _is_urgent(priority: str | None) -> bool:
+    """The complaint's priority bucket/signal counts as urgent."""
+    if not priority:
+        return False
+    return priority.strip().upper() in _URGENT_PRIORITIES
 
 
 def _skill_match(specialty: str | None, skill_tags: list[str], required: list[str]) -> float:
@@ -104,6 +166,9 @@ def score_candidate(
     required_equipment: list[str],
     order_lat: float,
     order_lon: float,
+    order_department: str | None = None,
+    order_ward: str | None = None,
+    priority: str | None = None,
     settings: Settings | None = None,
 ) -> CandidateScore:
     """Score a single worker. Never random — fully deterministic by the formula."""
@@ -113,12 +178,33 @@ def score_candidate(
     available = worker.status == WorkerStatus.ACTIVE and worker.active_orders < capacity
     availability = 1.0 if available else 0.0
 
+    department = _department_match(worker.department_code, order_department)
+    ward = (
+        1.0
+        if order_ward and worker.ward_code and worker.ward_code.upper() == order_ward.upper()
+        else 0.0
+    )
+    urgent = _is_urgent(priority)
+    urgency = 1.0 if urgent else 0.5
+
+    # Urgent orders value "get there now": shift a little weight from workload
+    # onto distance so the nearest available skilled worker is preferred.
+    distance_w = s.DISPATCH_WEIGHT_DISTANCE + (
+        s.DISPATCH_PRIORITY_URGENCY_BOOST if urgent else 0.0
+    )
+    workload_w = max(0.01, s.DISPATCH_WEIGHT_WORKLOAD - (
+        s.DISPATCH_PRIORITY_URGENCY_BOOST if urgent else 0.0
+    ))
+
     total_w = (
         s.DISPATCH_WEIGHT_AVAILABILITY
         + s.DISPATCH_WEIGHT_SKILL
-        + s.DISPATCH_WEIGHT_DISTANCE
-        + s.DISPATCH_WEIGHT_WORKLOAD
+        + distance_w
+        + workload_w
         + s.DISPATCH_WEIGHT_EQUIPMENT
+        + s.DISPATCH_WEIGHT_DEPARTMENT
+        + s.DISPATCH_WEIGHT_WARD
+        + s.DISPATCH_WEIGHT_PRIORITY
     )
     if total_w <= 0:
         total_w = 1.0
@@ -127,30 +213,41 @@ def score_candidate(
     equipment = _equipment_match(worker.equipment, required_equipment)
 
     distance_score = 0.0
-    if (
+    distance_km: float | None = None
+    if worker.precomputed_distance_km is not None:
+        distance_km = worker.precomputed_distance_km
+    elif (
         worker.home_lat is not None
         and worker.home_lon is not None
         and order_lat is not None
         and order_lon is not None
     ):
-        km = haversine_km(worker.home_lat, worker.home_lon, order_lat, order_lon)
+        distance_km = haversine_km(worker.home_lat, worker.home_lon, order_lat, order_lon)
+    if distance_km is not None:
         ref = s.DISPATCH_DISTANCE_REF_KILOMETERS or 1.0
-        distance_score = max(0.0, 1.0 - km / ref)
+        distance_score = max(0.0, 1.0 - distance_km / ref)
 
     workload = _workload_fraction(worker.active_orders, capacity)
 
     score = (
         s.DISPATCH_WEIGHT_AVAILABILITY * availability
         + s.DISPATCH_WEIGHT_SKILL * skill
-        + s.DISPATCH_WEIGHT_DISTANCE * distance_score
-        + s.DISPATCH_WEIGHT_WORKLOAD * workload
+        + distance_w * distance_score
+        + workload_w * workload
         + s.DISPATCH_WEIGHT_EQUIPMENT * equipment
+        + s.DISPATCH_WEIGHT_DEPARTMENT * department
+        + s.DISPATCH_WEIGHT_WARD * ward
+        + s.DISPATCH_WEIGHT_PRIORITY * urgency
     ) / total_w
     score = round(max(0.0, min(1.0, score)), 4)
 
     reasons: list[str] = []
     if not available:
         reasons.append("busy or unavailable")
+    if department < 1.0 and order_department:
+        reasons.append("different department")
+    if order_ward and (not worker.ward_code or worker.ward_code.upper() != order_ward.upper()):
+        reasons.append("different ward")
     if skill < 1.0:
         reasons.append(f"skill match {skill * 100:.0f}%")
     if distance_score < 0.5:
@@ -168,6 +265,14 @@ def score_candidate(
         distance=round(distance_score, 4),
         workload=round(workload, 4),
         equipment=round(equipment, 4),
+        department=round(department, 4),
+        ward=round(ward, 4),
+        priority=round(urgency, 4),
+        distance_km=round(distance_km, 2) if distance_km is not None else None,
+        department_code=worker.department_code,
+        ward_code=worker.ward_code,
+        active_orders=worker.active_orders,
+        capacity=capacity,
         reasons=reasons,
     )
 
@@ -180,6 +285,8 @@ def rank_candidates(
     order_lat: float | None,
     order_lon: float | None,
     department: str | None = None,
+    order_ward: str | None = None,
+    priority: str | None = None,
     settings: Settings | None = None,
 ) -> list[CandidateScore]:
     """Rank workers by score (desc; ties by worker id asc) and cap the results.
@@ -208,6 +315,9 @@ def rank_candidates(
             required_equipment=required_equipment,
             order_lat=lat,
             order_lon=lon,
+            order_department=department,
+            order_ward=order_ward,
+            priority=priority,
             settings=s,
         )
         for w in pool

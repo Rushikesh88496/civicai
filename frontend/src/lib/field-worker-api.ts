@@ -1,42 +1,12 @@
 "use client";
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-    if (Array.isArray(body?.detail)) return body.detail[0]?.msg || "Invalid input.";
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
-}
+import { authorizedFetch as sharedAuthorizedFetch } from "@/lib/auth-api";
 
 async function authorizedFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError(401, "Not authenticated.");
-  }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body && !(options.body instanceof FormData)
-        ? { "Content-Type": "application/json" }
-        : {}),
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  return res.json() as Promise<T>;
+  return sharedAuthorizedFetch<T>(path, options);
 }
 
 // --------------------------------------------------------------------------- //
@@ -47,6 +17,9 @@ export type WorkOrderStatusValue =
   | "PENDING_APPROVAL"
   | "ASSIGNED"
   | "IN_PROGRESS"
+  | "WORK_COMPLETED"
+  | "EVIDENCE_SUBMITTED"
+  | "RETURNED_FOR_REWORK"
   | "COMPLETED"
   | "CLOSED"
   | "REJECTED"
@@ -56,9 +29,14 @@ export interface WorkerJob {
   id: string;
   complaint_id: string;
   incident?: string | null;
+  category?: string | null;
   department: string;
   priority?: string | null;
   status: WorkOrderStatusValue;
+  ward_name?: string | null;
+  ward_code?: string | null;
+  assigned_at?: string | null;
+  assigned_by_name?: string | null;
   address?: string | null;
   location_lat?: number | null;
   location_lon?: number | null;
@@ -68,6 +46,8 @@ export interface WorkerJob {
   accepted_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  evidence_submitted_at?: string | null;
+  rework_reason?: string | null;
   worker_notes?: string | null;
   has_before_photo: boolean;
   has_after_photo: boolean;
@@ -101,6 +81,7 @@ export interface WorkOrderActivity {
   note?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  accuracy_m?: number | null;
   geo_denied: boolean;
   media_id?: string | null;
   worker_name?: string | null;
@@ -148,6 +129,33 @@ export async function fetchWorkerOrderDetail(
 }
 
 // --------------------------------------------------------------------------- //
+// Worker profile (read-only — all fields managed server-side)
+// --------------------------------------------------------------------------- //
+
+export interface WorkerProfile {
+  user_id: string;
+  full_name: string;
+  email: string;
+  role: string;
+  department_name: string | null;
+  department_code: string | null;
+  ward_name: string | null;
+  ward_code: string | null;
+  specialty: string | null;
+  status: string | null;
+  skill_tags: string[];
+  equipment: string[];
+  home_latitude: number | null;
+  home_longitude: number | null;
+  base_location: string | null;
+  max_active_orders: number;
+}
+
+export async function fetchWorkerProfile(): Promise<WorkerProfile> {
+  return authorizedFetch<WorkerProfile>("/api/v1/worker/me");
+}
+
+// --------------------------------------------------------------------------- //
 // Resolution verification (Part 19) — read-only for the assigned worker
 // --------------------------------------------------------------------------- //
 
@@ -186,8 +194,10 @@ export async function fetchWorkerVerification(
 
 export interface WorkerActionPayload {
   note?: string | null;
+  notes?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  accuracy_m?: number | null;
   geo_denied?: boolean;
   client_ref: string;
 }
@@ -253,12 +263,32 @@ export async function uploadWorkOrderPhoto(
   );
 }
 
-export async function completeJob(
+export async function finishJob(
   orderId: string,
   payload: WorkerActionPayload
 ): Promise<WorkerOrderDetail> {
   return authorizedFetch<WorkerOrderDetail>(
-    `/api/v1/worker/orders/${orderId}/complete`,
+    `/api/v1/worker/orders/${orderId}/finish`,
+    { method: "POST", body: JSON.stringify(payload) }
+  );
+}
+
+export async function submitEvidence(
+  orderId: string,
+  payload: WorkerActionPayload
+): Promise<WorkerOrderDetail> {
+  return authorizedFetch<WorkerOrderDetail>(
+    `/api/v1/worker/orders/${orderId}/submit-evidence`,
+    { method: "POST", body: JSON.stringify(payload) }
+  );
+}
+
+export async function startRework(
+  orderId: string,
+  payload: WorkerActionPayload
+): Promise<WorkerOrderDetail> {
+  return authorizedFetch<WorkerOrderDetail>(
+    `/api/v1/worker/orders/${orderId}/start-rework`,
     { method: "POST", body: JSON.stringify(payload) }
   );
 }

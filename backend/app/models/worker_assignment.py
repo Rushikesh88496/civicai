@@ -39,6 +39,12 @@ class WorkerAssignment(Base, UUIDMixin):
     assigned_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
     )
+    # How this assignment was created (Part 32): "AI_RECOMMENDATION" when the
+    # officer accepted the dispatch agent's pick, "OFFICER_OVERRIDE" when they
+    # chose a different worker, "MANUAL" when no AI recommendation existed.
+    # Together with ``ai_decision_logs`` this makes the official assignment
+    # never be confused with — or masquerade as — the AI recommendation.
+    origin: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Selection rationale (skill/distance/workload/equipment scoring) — never random.
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     assigned_at: Mapped[datetime] = mapped_column(

@@ -16,9 +16,11 @@
 import {
   acceptJob,
   checkIn,
-  completeJob,
+  finishJob,
   saveWorkerNotes,
   startJob,
+  startRework,
+  submitEvidence,
   uploadWorkOrderPhoto,
   type WorkerActionPayload,
 } from "@/lib/field-worker-api";
@@ -33,7 +35,9 @@ export type QueuedActionKind =
   | "start"
   | "notes"
   | "photo"
-  | "complete";
+  | "finish"
+  | "submit-evidence"
+  | "start-rework";
 
 export interface QueuedAction {
   id: string;
@@ -121,7 +125,12 @@ export function isOnline(): boolean {
 export interface SyncReport {
   synced: number;
   remaining: number;
+  /** Short message from the first action that failed to sync (session or server). */
   error?: string;
+  /** Non-empty when the server permanently rejected queued actions. These were
+   *  removed from the queue (they can never succeed as-is) but are reported so
+   *  the UI shows a real error instead of a false "synced" success. */
+  failed?: string[];
 }
 
 async function syncOne(action: QueuedAction): Promise<void> {
@@ -160,8 +169,14 @@ async function syncOne(action: QueuedAction): Promise<void> {
       });
       return;
     }
-    case "complete":
-      await completeJob(action.orderId, action.payload);
+    case "finish":
+      await finishJob(action.orderId, action.payload);
+      return;
+    case "submit-evidence":
+      await submitEvidence(action.orderId, action.payload);
+      return;
+    case "start-rework":
+      await startRework(action.orderId, action.payload);
       return;
   }
 }
@@ -184,6 +199,7 @@ export async function processQueue(): Promise<SyncReport> {
   if (items.length === 0) return { synced: 0, remaining: 0 };
 
   let synced = 0;
+  const failed: string[] = [];
   const retained: QueuedAction[] = [];
   for (const item of items) {
     try {
@@ -198,8 +214,12 @@ export async function processQueue(): Promise<SyncReport> {
         return { synced, remaining: retained.length + (items.length - items.indexOf(item) - 1), error: "Session expired." };
       }
       if (status && status < 500) {
-        // A permanent client error — drop the poison action so it can't block
-        // the rest of the queue forever (e.g. an unsupported photo).
+        // A permanent client error (unsupported/oversized photo, bad workflow
+        // state, …). The server will never accept this exact action, so drop it
+        // now that it can't block the rest of the queue — but SURFACE the
+        // rejection so the worker knows it did not sync (never silently drop
+        // and then report success).
+        failed.push(err instanceof Error ? err.message : "Action rejected by the server.");
         continue;
       }
       // Network/server hiccup: keep the item, stop for now.
@@ -213,6 +233,9 @@ export async function processQueue(): Promise<SyncReport> {
     }
   }
   writeQueue(retained);
+  if (failed.length > 0) {
+    return { synced, remaining: 0, error: failed[0], failed };
+  }
   return { synced, remaining: 0 };
 }
 

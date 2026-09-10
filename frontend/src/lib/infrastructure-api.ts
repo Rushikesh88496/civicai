@@ -1,8 +1,6 @@
 "use client";
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { authorizedFetch } from "@/lib/auth-api";
 
 export type InfraRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type InfraReviewStatus = "PENDING" | "APPROVED" | "REJECTED";
@@ -60,18 +58,25 @@ export interface AssetPrediction {
 export interface InfrastructurePredictions {
   ai_prediction: boolean;
   disclaimer: string;
-  inference_at: string;
-  model: InfrastructureModelInfo;
+  prediction_status: string;
+  inference_at: string | null;
+  model: InfrastructureModelInfo | null;
   assets: AssetPrediction[];
   assets_assessed: number;
   assets_skipped: number;
   horizon_days: number;
+  message: string;
+  registered_assets: number;
+  minimum_assets: number;
 }
 
 export interface InfrastructureStatus {
   trained: boolean;
+  prediction_status: string;
   model?: InfrastructureModelInfo | null;
   message: string;
+  registered_assets: number;
+  minimum_assets: number;
 }
 
 export interface InfrastructureTrainingOut {
@@ -107,33 +112,8 @@ export interface PreventiveWorkOrderOut {
   created_at: string;
 }
 
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
-}
-
 async function infraFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError(401, "Not authenticated.");
-  }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...init.headers,
-    },
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  return res.json() as Promise<T>;
+  return authorizedFetch<T>(path, init);
 }
 
 export async function fetchInfrastructureStatus(): Promise<InfrastructureStatus> {

@@ -32,6 +32,7 @@ class WardRepresentativeOut(BaseModel):
     name: str
     email: str
     title: str | None = None
+    status: str | None = None
 
 
 class WardInfoOut(BaseModel):

@@ -56,6 +56,14 @@ from app.schemas.geo import (
 _MIN_LAT, _MAX_LAT = -90.0, 90.0
 _MIN_LNG, _MAX_LNG = -180.0, 180.0
 
+# Registered/base locations for field workers are restricted to the Pune
+# Municipal Corporation area (Maharashtra, India) — Katraj ~18.45S to Pimpri
+# ~18.63N, Hinjewadi ~73.74W to Hadapsar/Kharadi ~73.95E. This is a metro-wide
+# guard so a base location is never a random nation/world-wide point, while the
+# seed + admin flows place each worker at a distinct real locality inside it.
+_PUNE_LAT_MIN, _PUNE_LAT_MAX = 18.42, 18.66
+_PUNE_LON_MIN, _PUNE_LON_MAX = 73.72, 73.97
+
 
 class InvalidCoordinatesError(ValueError):
     """Raised when latitude/longitude fall outside the supported range."""
@@ -80,6 +88,23 @@ class GeoService:
         ):
             raise InvalidCoordinatesError(
                 "Invalid coordinates: latitude must be in [-90, 90] and longitude in [-180, 180]."
+            )
+
+    def validate_pune_base_coordinates(self, latitude: float, longitude: float) -> None:
+        """Raise ``InvalidCoordinatesError`` if the point is outside the Pune metro area.
+
+        Used for field-worker *base* (registered) locations only — the actual
+        GPS position of a worker is never restricted this way.
+        """
+        if (
+            not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not (_PUNE_LAT_MIN <= latitude <= _PUNE_LAT_MAX)
+            or not (_PUNE_LON_MIN <= longitude <= _PUNE_LON_MAX)
+        ):
+            raise InvalidCoordinatesError(
+                "Invalid base location: coordinates must be inside the Pune municipal "
+                f"area (lat {_PUNE_LAT_MIN}..{_PUNE_LAT_MAX}, lon {_PUNE_LON_MIN}..{_PUNE_LON_MAX})."
             )
 
     # ------------------------------------------------------------------ #

@@ -59,6 +59,16 @@ def _policy_error(exc: Exception) -> HTTPException:
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))
 
 
+def _ward_scope(user: User) -> uuid.UUID | None:
+    """WARD_REPRESENTATIVE is scoped to their assigned ward (from the DB record).
+
+    Officers and admins see the whole city.
+    """
+    if user.role.name == RoleName.WARD_REPRESENTATIVE.value:
+        return user.ward_id
+    return None
+
+
 @router.get("/orders", response_model=SlaOrdersPage)
 async def get_sla_orders(
     page: int = Query(1, ge=1),
@@ -81,6 +91,7 @@ async def get_sla_orders(
         department=department,
         priority=priority,
         search=search,
+        ward_id=_ward_scope(user),
     )
     return SlaOrdersPage(items=items, counts=counts, total=total, page=page, page_size=page_size)
 
@@ -89,9 +100,7 @@ async def get_sla_orders(
 async def run_sla_agent(
     department: str | None = Query(None, description="Restrict the scan to one department"),
     priority: str | None = Query(None, description="Restrict the scan to one priority bucket"),
-    user: User = Depends(
-        require_roles(RoleName.OFFICER, RoleName.ADMIN, RoleName.WARD_REPRESENTATIVE)
-    ),
+    user: User = Depends(require_roles(RoleName.OFFICER, RoleName.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> SlaRunResponse:
     _require_staff(user)
@@ -118,7 +127,7 @@ async def get_latest_sla_run(
     db: AsyncSession = Depends(get_db),
 ) -> SlaRunOut | None:
     _require_staff(user)
-    return await sla_service.latest_run(db)
+    return await sla_service.latest_run(db, ward_id=_ward_scope(user))
 
 
 @router.get("/policies", response_model=list[SlaPolicyOut])
@@ -136,9 +145,7 @@ async def list_policies(
 @router.post("/policies", response_model=SlaPolicyOut, status_code=status.HTTP_201_CREATED)
 async def create_policy(
     payload: SlaPolicyIn,
-    user: User = Depends(
-        require_roles(RoleName.OFFICER, RoleName.ADMIN, RoleName.WARD_REPRESENTATIVE)
-    ),
+    user: User = Depends(require_roles(RoleName.OFFICER, RoleName.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> SlaPolicyOut:
     _require_staff(user)
@@ -164,9 +171,7 @@ async def create_policy(
 async def update_policy(
     policy_id: uuid.UUID,
     payload: SlaPolicyIn,
-    user: User = Depends(
-        require_roles(RoleName.OFFICER, RoleName.ADMIN, RoleName.WARD_REPRESENTATIVE)
-    ),
+    user: User = Depends(require_roles(RoleName.OFFICER, RoleName.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> SlaPolicyOut:
     _require_staff(user)
@@ -192,9 +197,7 @@ async def update_policy(
 @router.delete("/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_policy(
     policy_id: uuid.UUID,
-    user: User = Depends(
-        require_roles(RoleName.OFFICER, RoleName.ADMIN, RoleName.WARD_REPRESENTATIVE)
-    ),
+    user: User = Depends(require_roles(RoleName.OFFICER, RoleName.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     _require_staff(user)

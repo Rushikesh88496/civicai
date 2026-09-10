@@ -52,6 +52,7 @@ from app.models.enums import (
 )
 from app.schemas.auth import RegisterIn
 from app.services import auth_service
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/analytics"
@@ -73,7 +74,12 @@ def _unique_email(prefix: str) -> str:
 async def _citizen(email: str) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="AN Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="AN Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
         return user.id

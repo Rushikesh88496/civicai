@@ -43,6 +43,12 @@ class VerificationInput(BaseModel):
     after_photo_id: uuid.UUID | None = None
     # Work-order priority bucket ("P1_CRITICAL" .. "P4_LOW") for the safety gate.
     priority_bucket: str | None = Field(default=None, max_length=16)
+    # The field worker's completion notes (advisory signal the model considers
+    # alongside the photos when judging whether the reported issue is resolved).
+    completion_notes: str | None = Field(default=None, max_length=2000)
+    # Storage key of the original complaint photo (if the citizen attached one) so
+    # the model can compare the reported condition against the repair evidence.
+    original_complaint_key: str | None = Field(default=None, max_length=512)
 
 
 class VerificationOutput(BaseModel):
@@ -156,7 +162,10 @@ class VerificationReviewIn(BaseModel):
     """An authorized human's decision on a verification that needs review.
 
     ``CONFIRM_VERIFIED`` certifies the repair is complete; ``REQUIRES_FOLLOWUP``
-    rejects it and reopens the work order so the worker returns.
+    rejects it and reopens the work order so the worker returns;
+    ``REQUEST_REWORK`` rejects the submitted evidence and moves the order to
+    ``RETURNED_FOR_REWORK`` so the worker performs the required fixes and
+    re-submits fresh evidence.
     """
 
     decision: VerificationReviewDecision
@@ -169,13 +178,69 @@ class VerificationReviewOut(BaseModel):
     verification: WorkOrderVerificationOut
     work_order_status: str
     reopened: bool = False
+    # True when the review moved the order to RETURNED_FOR_REWORK; the worker is
+    # expected to redo the work (fresh GPS check-in + START_REWORK) and re-submit.
+    rework_requested: bool = False
+
+
+class EvidencePhotoOut(BaseModel):
+    """A work-order evidence photo as exposed in the resolution-review bundle."""
+
+    id: uuid.UUID
+    category: str
+    url: str = ""
+    original_filename: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+    created_at: datetime
+    uploaded_by_name: str | None = None
+
+
+class ComplaintMediaOut(BaseModel):
+    """A citizen-attached complaint media asset (photo/video) for comparison."""
+
+    id: uuid.UUID
+    media_type: str
+    url: str = ""
+    original_filename: str = ""
+    content_type: str = ""
+    created_at: datetime
+
+
+class WorkOrderEvidenceOut(BaseModel):
+    """The full resolution-review bundle an officer needs to verify a repair.
+
+    Pairs the work-order details (worker, completion timestamps, notes), the
+    original complaint (title / description / attached media) and the field
+    worker's BEFORE / AFTER evidence photos — all with resolved URLs — so the
+    officer can compare the original issue against the actual repair without a
+    second request.
+    """
+
+    order_id: uuid.UUID
+    order_status: str
+    complaint_id: uuid.UUID
+    complaint_title: str | None = None
+    complaint_description: str | None = None
+    complaint_category: str | None = None
+    complaint_media: list[ComplaintMediaOut] = []
+    worker_id: uuid.UUID | None = None
+    worker_name: str | None = None
+    completed_at: datetime | None = None
+    evidence_submitted_at: datetime | None = None
+    completion_notes: str | None = None
+    before_photos: list[EvidencePhotoOut] = []
+    after_photos: list[EvidencePhotoOut] = []
 
 
 __all__ = [
+    "ComplaintMediaOut",
+    "EvidencePhotoOut",
     "VerificationInput",
     "VerificationOutput",
     "VerificationReviewIn",
     "VerificationReviewOut",
     "VerificationRunResponse",
+    "WorkOrderEvidenceOut",
     "WorkOrderVerificationOut",
 ]

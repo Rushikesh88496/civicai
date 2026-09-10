@@ -4,7 +4,7 @@
 // complaint (Part 4 multimodal flow). Reuses the access-token machinery from
 // auth-api (in-memory token + transparent refresh).
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
+import { ApiError, authorizedFetch, getAccessToken } from "@/lib/auth-api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -24,6 +24,8 @@ export interface ComplaintLocationInput {
   address?: string | null;
   source: "gps" | "manual";
   geopoint_denied: boolean;
+  // Device-reported GPS horizontal accuracy in metres (Part 31).
+  accuracy_m?: number | null;
 }
 
 export interface ComplaintCreateInput {
@@ -52,17 +54,6 @@ async function getAuthHeader(): Promise<Record<string, string>> {
     throw new ApiError(401, "Not authenticated.");
   }
   return { Authorization: `Bearer ${token}` };
-}
-
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-    if (Array.isArray(body?.detail)) return body.detail[0]?.msg || "Invalid input.";
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
 }
 
 export interface UploadOptions {
@@ -126,14 +117,8 @@ export async function uploadMedia(
 export async function submitComplaint(
   payload: ComplaintCreateInput
 ): Promise<ComplaintCreateResult> {
-  const headers = await getAuthHeader();
-  const res = await fetch(`${API_BASE_URL}/api/v1/complaints`, {
+  return authorizedFetch<ComplaintCreateResult>("/api/v1/complaints", {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  return res.json() as Promise<ComplaintCreateResult>;
 }

@@ -1,8 +1,6 @@
 "use client";
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { authorizedFetch } from "@/lib/auth-api";
 
 export interface HotspotModelInfo {
   version: number;
@@ -29,12 +27,21 @@ export interface HotspotRiskCell {
   trailing7: number;
 }
 
-export interface HotspotPredictions {
+export interface ModelReadiness {
+  prediction_status: string;
+  message: string;
+  records_available: number;
+  observations_available: number;
+  minimum_records: number;
+  minimum_observations: number;
+}
+
+export interface HotspotPredictions extends ModelReadiness {
   ai_prediction: boolean;
   disclaimer: string;
   horizon_days: number;
-  inference_at: string;
-  model: HotspotModelInfo;
+  inference_at: string | null;
+  model: HotspotModelInfo | null;
   cells: HotspotRiskCell[];
   population_cells: number;
   complaint_events_used: number;
@@ -51,51 +58,21 @@ export interface HotspotTrainingOut {
   duration_seconds: number;
 }
 
-export interface HotspotStatus {
+export interface HotspotStatus extends ModelReadiness {
   trained: boolean;
   model?: HotspotModelInfo | null;
-  message: string;
-}
-
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
-}
-
-async function hotspotFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError(401, "Not authenticated.");
-  }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...init.headers,
-    },
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  return res.json() as Promise<T>;
 }
 
 export async function fetchHotspotStatus(): Promise<HotspotStatus> {
-  return hotspotFetch<HotspotStatus>("/api/v1/hotspots/status");
+  return authorizedFetch<HotspotStatus>("/api/v1/hotspots/status");
 }
 
 export async function fetchHotspotPredictions(): Promise<HotspotPredictions> {
-  return hotspotFetch<HotspotPredictions>("/api/v1/hotspots/predictions");
+  return authorizedFetch<HotspotPredictions>("/api/v1/hotspots/predictions");
 }
 
 export async function trainHotspotModel(): Promise<HotspotTrainingOut> {
-  return hotspotFetch<HotspotTrainingOut>("/api/v1/hotspots/train", { method: "POST" });
+  return authorizedFetch<HotspotTrainingOut>("/api/v1/hotspots/train", { method: "POST" });
 }
 
 export function riskTierColor(tier: RiskTier): string {

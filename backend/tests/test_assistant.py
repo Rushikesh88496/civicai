@@ -48,6 +48,7 @@ from app.schemas.auth import RegisterIn
 from app.services import auth_service
 from app.services.ai_service import AIRateLimitError, AIService
 from main import app
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/assistant"
@@ -65,7 +66,12 @@ def _auth(token: str) -> dict:
 async def _citizen(email: str) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Assistant Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Assistant Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
         return user.id
@@ -444,6 +450,11 @@ async def _unknown_citizen() -> User:
     email = _unique_email("ast-unknown")
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Unknown")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Unknown",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         return await db.scalar(select(User).where(User.email == email))

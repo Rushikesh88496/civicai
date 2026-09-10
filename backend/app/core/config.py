@@ -233,6 +233,17 @@ class Settings(BaseSettings):
     DISPATCH_WEIGHT_DISTANCE: float = 0.20
     DISPATCH_WEIGHT_WORKLOAD: float = 0.15
     DISPATCH_WEIGHT_EQUIPMENT: float = 0.10
+    # "Department match" — prefer the crew that owns the routed department. The
+    # legacy seeded crews (PW/SN/PR) are aliased to the seven routing departments.
+    DISPATCH_WEIGHT_DEPARTMENT: float = 0.10
+    # "Ward match" — prefer a worker whose home ward equals the complaint's ward.
+    DISPATCH_WEIGHT_WARD: float = 0.10
+    # "Priority" — the complaint's dynamic priority bucket (P1..P4) as a scored
+    # factor; urgent orders (P1/P2/HIGH/CRITICAL) get the urgency factor 1.0.
+    DISPATCH_WEIGHT_PRIORITY: float = 0.05
+    # For urgent orders, this small amount is moved from the workload weight onto
+    # the distance weight so the nearest available skilled worker is preferred.
+    DISPATCH_PRIORITY_URGENCY_BOOST: float = 0.05
     # Default ceiling on a worker's concurrent active orders (per-worker override
     # stored in field_workers.max_active_orders takes precedence).
     DISPATCH_MAX_ACTIVE_ORDERS: int = 3
@@ -299,19 +310,42 @@ class Settings(BaseSettings):
     # human-approval rule the UI + service enforce.
     VERIFICATION_HUMAN_REVIEW_CRITICAL: bool = True
 
-    # ===== Predictive Civic Hotspots (Part 23) =====
+    # ===== ML readiness gating (Part 31) =====
+    # Predictive models are ONLY trained / served once the platform holds a
+    # minimum amount of REAL operational data. Below the thresholds every ML
+    # surface reports ``INSUFFICIENT_DATA`` instead of producing forecasts from
+    # synthetic demo data:
+    #   * MINIMUM_TRAINING_RECORDS — minimum number of real complaints (with a
+    #     mapped location inside the hotspot grid) required to train/serve the
+    #     hotspot model.
+    #   * MINIMUM_AREA_TIME_OBSERVATIONS — minimum number of distinct
+    #     (grid cell, calendar day) observation buckets from that history, so a
+    #     single-day flash of reports cannot unlock the forecast.
+    #   * ML_GATING_LOOKBACK_DAYS — how far back history is counted for the gate.
+    MINIMUM_TRAINING_RECORDS: int = 25
+    MINIMUM_AREA_TIME_OBSERVATIONS: int = 15
+    ML_GATING_LOOKBACK_DAYS: int = 365
+    # Minimum registered infra assets required before the infrastructure model
+    # is trained/served (same INSUFFICIENT_DATA gating otherwise).
+    INFRA_MIN_ASSETS: int = 5
+
+    # ===== Predictive Civic Hotspots (Part 23, Part 36) =====
     # Grid cell size in decimal degrees (~1.1 km at this latitude).
     HOTSPOT_CELL_DEG: float = 0.01
-    # Demo city bounding box (matches the seeded demo ward boundaries).
+    # Demo city bounding box (matches the seeded reference ward boundaries).
     HOTSPOT_BBOX: str = "17.40,78.35,17.50,78.49"  # min_lat,min_lon,max_lat,max_lon
     # Target: >=1 complaint in the next N days (binary) + expected volume (reg).
     HOTSPOT_HORIZON_DAYS: int = 7
-    # The model is trained on a DETERMINISTIC synthetic historical corpus (fixed
-    # seed) because the live demo database has too few complaints to supervise a
-    # meaningful model. Live inference consumes the same feature extractor.
-    HOTSPOT_CORPUS_YEARS: int = 2
-    HOTSPOT_CORPUS_SEED: int = 20260906
-    # Snapshot cadence (days) used to build training rows from the corpus.
+    # The model is trained ONLY on real complaint records stored in the database
+    # (user GPS or explicit manual map selection). This is how far back that real
+    # history is drawn for training; spatial/rolling features need a long enough
+    # window to build trailing context. There is no synthetic/demo corpus.
+    HOTSPOT_TRAIN_LOOKBACK_DAYS: int = 730
+    # Random seed for training reproducibility (external-feature dropout +
+    # XGBoost random_state). It only steers model fitting variance — it never
+    # fabricates complaint locations.
+    HOTSPOT_TRAIN_SEED: int = 20260906
+    # Snapshot cadence (days) used to build training rows from real history.
     HOTSPOT_SNAPSHOT_EVERY_DAYS: int = 2
     # Final period (days) held out for final evaluation ("test inference").
     HOTSPOT_TEST_FINAL_DAYS: int = 180

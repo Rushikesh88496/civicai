@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save } from "lucide-react";
+import { Loader2, MapPin, Save } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -60,6 +60,18 @@ export default function ProfilePage() {
             <span className="mt-2 rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-600">
               {user?.role.name}
             </span>
+            {user?.ward ? (
+              <div className="mt-4 flex w-full items-start gap-2 rounded-lg border border-border-soft bg-slate-50 px-3 py-2.5">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-primary-600" />
+                <div className="text-left">
+                  <p className="text-xs font-medium text-slate-500">My Ward</p>
+                  <p className="text-sm font-medium text-slate-900">
+                    {user.ward.name || user.ward.code}
+                  </p>
+                  <p className="text-xs text-slate-500">{user.ward.code}</p>
+                </div>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

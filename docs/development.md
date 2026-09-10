@@ -44,6 +44,24 @@ cd backend
 alembic upgrade head
 ```
 
+### 5b. Seed Reference Data
+
+The platform ships genuinely empty (no demo complaints/analytics). `seed.py`
+installs reference data only — roles, departments, demo-critical facility
+placeholders, the AI knowledge base, and a single bootstrap super-admin:
+
+```bash
+cd backend
+python seed.py          # idempotent reference seed
+python seed.py --reset  # wipe demo/operational data, keep reference + admin
+```
+
+The four reference wards (`WARD-1` .. `WARD-4`) and their boundaries arrive via
+the `31a2b3c4d5e6` migration, so fresh deploys always have sign-up wards.
+Registration is ward-required (`GET /api/v1/wards` is the public picker).
+Documented login for the Super-Admin Panel: `admin@example.com` /
+`CivicAgent#2026` (change after first sign-in in production).
+
 ### 6. Start Development Servers
 
 **Backend:**

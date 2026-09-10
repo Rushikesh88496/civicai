@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { CommandCenterMap } from "@/lib/officer-api";
+import { fitBoundsSafely, isUsableLatLng } from "@/lib/leaflet";
 
 const PRIORITY_COLOR: Record<string, string> = {
   P1_CRITICAL: "#dc2626",
@@ -38,6 +39,10 @@ export default function CommandCenterMapCanvas({ data }: { data: CommandCenterMa
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
 
+  const hasLocatedItems =
+    data.complaints.some((c) => c.latitude != null && c.longitude != null) ||
+    data.work_orders.some((w) => w.latitude != null && w.longitude != null);
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -53,8 +58,8 @@ export default function CommandCenterMapCanvas({ data }: { data: CommandCenterMa
     }).addTo(map);
 
     for (const c of data.complaints) {
-      if (c.latitude != null && c.longitude != null) {
-        L.marker([c.latitude, c.longitude], {
+      if (isUsableLatLng(c.latitude, c.longitude)) {
+        L.marker([Number(c.latitude), Number(c.longitude)], {
           icon: complaintIcon(complaintColor(c.priority)),
         })
           .addTo(map)
@@ -67,8 +72,8 @@ export default function CommandCenterMapCanvas({ data }: { data: CommandCenterMa
     }
 
     for (const wo of data.work_orders) {
-      if (wo.latitude != null && wo.longitude != null) {
-        L.marker([wo.latitude, wo.longitude], { icon: workOrderIcon() })
+      if (isUsableLatLng(wo.latitude, wo.longitude)) {
+        L.marker([Number(wo.latitude), Number(wo.longitude)], { icon: workOrderIcon() })
           .addTo(map)
           .bindPopup(
             `<strong>Work Order</strong><br/>Dept: ${wo.department}<br/>Status: ${wo.status}` +
@@ -78,17 +83,11 @@ export default function CommandCenterMapCanvas({ data }: { data: CommandCenterMa
       }
     }
 
-    const latlngs: [number, number][] = [];
-    for (const c of data.complaints) {
-      if (c.latitude != null && c.longitude != null) latlngs.push([c.latitude, c.longitude]);
-    }
-    for (const wo of data.work_orders) {
-      if (wo.latitude != null && wo.longitude != null) latlngs.push([wo.latitude, wo.longitude]);
-    }
+    const latlngs: [unknown, unknown][] = [];
+    for (const c of data.complaints) latlngs.push([c.latitude, c.longitude]);
+    for (const wo of data.work_orders) latlngs.push([wo.latitude, wo.longitude]);
 
-    if (latlngs.length > 0) {
-      map.fitBounds(L.latLngBounds(latlngs).pad(0.25));
-    }
+    fitBoundsSafely(map, latlngs, 0.25);
 
     return () => {
       map.remove();
@@ -96,7 +95,18 @@ export default function CommandCenterMapCanvas({ data }: { data: CommandCenterMa
     };
   }, [data]);
 
-  return <div ref={containerRef} className="h-96 w-full z-0" />;
+  return (
+    <div className="relative h-96 w-full">
+      <div ref={containerRef} className="h-96 w-full z-0" />
+      {!hasLocatedItems && (
+        <div className="pointer-events-none absolute inset-0 z-[500] flex items-center justify-center">
+          <div className="rounded-lg bg-white/90 px-4 py-2 text-sm text-slate-600 shadow">
+            No complaint or work-order locations to map yet.
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function escapeHtml(value: string): string {

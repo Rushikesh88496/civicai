@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { WardMap } from "@/lib/ward-rep-api";
+import { fitBoundsSafely, isUsableLatLng } from "@/lib/leaflet";
 
 const PRIORITY_COLOR: Record<string, string> = {
   P1_CRITICAL: "#dc2626",
@@ -53,8 +54,8 @@ export default function WardMapCanvas({ data }: { data: WardMap }) {
     }).addTo(map);
 
     for (const c of data.complaints) {
-      if (c.latitude != null && c.longitude != null) {
-        L.marker([c.latitude, c.longitude], {
+      if (isUsableLatLng(c.latitude, c.longitude)) {
+        L.marker([Number(c.latitude), Number(c.longitude)], {
           icon: complaintIcon(complaintColor(c.priority)),
         })
           .addTo(map)
@@ -67,8 +68,8 @@ export default function WardMapCanvas({ data }: { data: WardMap }) {
     }
 
     for (const wo of data.work_orders) {
-      if (wo.latitude != null && wo.longitude != null) {
-        L.marker([wo.latitude, wo.longitude], { icon: workOrderIcon() })
+      if (isUsableLatLng(wo.latitude, wo.longitude)) {
+        L.marker([Number(wo.latitude), Number(wo.longitude)], { icon: workOrderIcon() })
           .addTo(map)
           .bindPopup(
             `<strong>Work Order</strong><br/>Dept: ${wo.department}<br/>Status: ${wo.status}` +
@@ -78,16 +79,11 @@ export default function WardMapCanvas({ data }: { data: WardMap }) {
       }
     }
 
-    const latlngs: [number, number][] = [];
-    for (const c of data.complaints) {
-      if (c.latitude != null && c.longitude != null) latlngs.push([c.latitude, c.longitude]);
-    }
-    for (const wo of data.work_orders) {
-      if (wo.latitude != null && wo.longitude != null) latlngs.push([wo.latitude, wo.longitude]);
-    }
-    if (latlngs.length > 0) {
-      map.fitBounds(L.latLngBounds(latlngs).pad(0.25));
-    }
+    const latlngs: [unknown, unknown][] = [];
+    for (const c of data.complaints) latlngs.push([c.latitude, c.longitude]);
+    for (const wo of data.work_orders) latlngs.push([wo.latitude, wo.longitude]);
+
+    fitBoundsSafely(map, latlngs, 0.25);
 
     return () => {
       map.remove();

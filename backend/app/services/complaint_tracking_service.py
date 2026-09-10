@@ -14,7 +14,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Complaint, ComplaintDepartmentHistory, DepartmentOverride, User
+from app.models import (
+    Complaint,
+    ComplaintDepartmentHistory,
+    DepartmentOverride,
+    User,
+    WorkOrder,
+    WorkOrderStatusHistory,
+)
 from app.models.enums import ComplaintStatus, RoleName
 from app.schemas.complaint import (
     ComplaintDetailOut,
@@ -22,6 +29,7 @@ from app.schemas.complaint import (
     ComplaintStatusHistoryOut,
     ComplaintTimelineOut,
     WardOut,
+    WorkOrderTimelineEvent,
 )
 from app.services.complaint_service import media_out, record_status_transition
 
@@ -107,6 +115,7 @@ async def get_complaint_detail(
             address=loc.address,
             source=loc.source,
             geopoint_denied=loc.geopoint_denied,
+            accuracy_m=loc.accuracy_m,
         )
 
     return ComplaintDetailOut(
@@ -147,10 +156,42 @@ async def get_complaint_timeline(
         for e in complaint.status_history
     ]
     events.sort(key=lambda e: e.recorded_at)
+
+    # Part 32: merge the work-order milestone trail (officer review → assignment
+    # → acceptance → in-progress → evidence → verification) so the complaint
+    # timeline renders the complete human-in-the-loop lifecycle.
+    orders = (
+        (
+            await db.execute(
+                select(WorkOrder)
+                .where(WorkOrder.complaint_id == complaint_id)
+                .options(
+                    selectinload(WorkOrder.status_history).selectinload(
+                        WorkOrderStatusHistory.actor
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    work_order_events = [
+        WorkOrderTimelineEvent(
+            work_order_id=order.id,
+            action=h.action,
+            status=h.to_status,
+            actor_name=h.actor.full_name if h.actor is not None else None,
+            note=h.note,
+            recorded_at=h.recorded_at,
+        )
+        for order in orders
+        for h in sorted(order.status_history, key=lambda h: h.recorded_at)
+    ]
     return ComplaintTimelineOut(
         complaint_id=complaint.id,
         current_status=complaint.status,
         events=events,
+        work_order_events=work_order_events,
     )
 
 

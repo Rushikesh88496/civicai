@@ -37,6 +37,9 @@ class WorkOrderActivity(Base, UUIDMixin):
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     geo_denied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Browser/device GPS horizontal accuracy in metres at capture time (Part 18
+    # check-in with GPS). Optional — geo-denied / older clients record None.
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     media_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("work_order_photos.id", ondelete="SET NULL"),

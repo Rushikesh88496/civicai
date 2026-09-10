@@ -19,6 +19,8 @@ from app.models import (
     ComplaintStatusHistory,
     Role,
     User,
+    Ward,
+    WardBoundary,
 )
 from app.models.enums import ComplaintStatus, MediaType, RoleName
 from app.schemas.complaint import ComplaintCreateIn, ComplaintLocationIn, ComplaintMediaOut
@@ -192,6 +194,28 @@ async def _title_for(category: str, description: str) -> str:
     return f"{label} complaint"
 
 
+async def _geographic_ward(db: AsyncSession, latitude: float, longitude: float) -> Ward | None:
+    """Resolve the ward whose boundary contains a coordinate (Part 31).
+
+    Uses PostGIS ``ST_Contains`` against the reference ward boundaries, so the
+    complaint's *operational* ward is purely geographic. Returns ``None`` when
+    the point falls outside every active boundary (e.g. outside the demo box).
+    """
+    return await db.scalar(
+        select(Ward)
+        .join(WardBoundary, WardBoundary.ward_id == Ward.id)
+        .where(
+            Ward.is_active.is_(True),
+            func.ST_Contains(
+                WardBoundary.geom,
+                func.ST_SetSRID(func.ST_MakePoint(longitude, latitude), 4326),
+            ),
+        )
+        .order_by(Ward.code)
+        .limit(1)
+    )
+
+
 async def create_complaint(
     db: AsyncSession,
     user: User,
@@ -255,8 +279,17 @@ async def create_complaint(
             address=loc_in.address,
             source=loc_in.source,
             geopoint_denied=loc_in.geopoint_denied,
+            accuracy_m=loc_in.accuracy_m,
         )
         db.add(complaint_location)
+
+    # Part 31: the complaint's operational ward is detected from its actual
+    # geographic point (PostGIS containment), NEVER the citizen's registered
+    # ward. The citizen's registered ward still drives rep alerting below.
+    if payload.location is not None:
+        ward = await _geographic_ward(db, payload.location.latitude, payload.location.longitude)
+        if ward is not None:
+            complaint.ward_id = ward.id
 
     await _notify_received(db, user, complaint)
     await db.commit()

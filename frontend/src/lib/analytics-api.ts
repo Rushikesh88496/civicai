@@ -1,6 +1,6 @@
 "use client";
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
+import { ApiError, getAccessToken, authorizedFetch, readErrorMessage } from "@/lib/auth-api";
 import { CATEGORY_LABELS } from "@/components/dashboard/format";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -148,16 +148,6 @@ export const ANALYTICS_PRIORITIES: Array<{ value: string; label: string }> = [
 // API calls
 // --------------------------------------------------------------------------- //
 
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
-}
-
 function toQuery(filters: AnalyticsFilters): string {
   const params = new URLSearchParams();
   if (filters.date_from) params.set("date_from", filters.date_from);
@@ -173,7 +163,7 @@ function toQuery(filters: AnalyticsFilters): string {
 export async function fetchAnalyticsOverview(
   filters: AnalyticsFilters
 ): Promise<AnalyticsOverview> {
-  return authorizedGet<AnalyticsOverview>(
+  return authorizedFetch<AnalyticsOverview>(
     `/api/v1/analytics/overview${toQuery(filters)}`
   );
 }
@@ -181,17 +171,23 @@ export async function fetchAnalyticsOverview(
 export async function fetchAnalyticsHeatmap(
   filters: AnalyticsFilters
 ): Promise<HeatmapOut> {
-  return authorizedGet<HeatmapOut>(`/api/v1/analytics/heatmap${toQuery(filters)}`);
+  return authorizedFetch<HeatmapOut>(`/api/v1/analytics/heatmap${toQuery(filters)}`);
 }
 
 export async function downloadAnalyticsCsv(filters: AnalyticsFilters): Promise<void> {
-  const token = await getAccessToken();
+  let token = await getAccessToken();
   if (!token) {
     throw new ApiError(401, "Not authenticated.");
   }
-  const res = await fetch(`${API_BASE_URL}/api/v1/analytics/export${toQuery(filters)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const url = `${API_BASE_URL}/api/v1/analytics/export${toQuery(filters)}`;
+  const doFetch = (bearer: string) =>
+    fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
+
+  let res = await doFetch(token);
+  if (res.status === 401) {
+    token = await getAccessToken();
+    if (token) res = await doFetch(token);
+  }
   if (!res.ok) {
     throw new ApiError(res.status, await readErrorMessage(res));
   }
@@ -199,26 +195,12 @@ export async function downloadAnalyticsCsv(filters: AnalyticsFilters): Promise<v
   const match = /filename="?([^";]+)"?/i.exec(disposition);
   const filename = match ? match[1] : `analytics_complaints_${Date.now()}.csv`;
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
+  const blobUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  link.href = url;
+  link.href = blobUrl;
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
-}
-
-async function authorizedGet<T>(path: string): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError(401, "Not authenticated.");
-  }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  return res.json() as Promise<T>;
+  URL.revokeObjectURL(blobUrl);
 }

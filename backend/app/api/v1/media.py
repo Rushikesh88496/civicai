@@ -16,6 +16,7 @@ import uuid
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.blacklist import is_blacklisted
@@ -23,8 +24,9 @@ from app.core.config import get_settings
 from app.core.media_signing import verify_media_token
 from app.core.security import decode_token
 from app.db.session import get_db
-from app.models import User
+from app.models import Complaint, ComplaintMedia, MessageAttachment, User, WorkOrder, WorkOrderPhoto
 from app.storage.local import LocalStorage
+from app.services.complaint_tracking_service import user_can_view
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -57,6 +59,31 @@ async def _resolve_bearer(db: AsyncSession, raw_token: str) -> User | None:
     return user
 
 
+async def _complaint_for_media_key(db: AsyncSession, key: str) -> Complaint | None:
+    """Resolve the complaint that owns a media storage key, if any."""
+    media = await db.scalar(
+        select(ComplaintMedia).where(ComplaintMedia.storage_key == key)
+    )
+    if media is not None and media.complaint_id is not None:
+        return await db.get(Complaint, media.complaint_id)
+
+    photo = await db.scalar(
+        select(WorkOrderPhoto).where(WorkOrderPhoto.storage_key == key)
+    )
+    if photo is not None:
+        order = await db.get(WorkOrder, photo.work_order_id)
+        if order is not None:
+            return await db.get(Complaint, order.complaint_id)
+
+    attachment = await db.scalar(
+        select(MessageAttachment).where(MessageAttachment.storage_key == key)
+    )
+    if attachment is not None:
+        return await db.get(Complaint, attachment.complaint_id)
+
+    return None
+
+
 @router.get("/{key:path}")
 async def serve_media(
     key: str,
@@ -80,6 +107,12 @@ async def serve_media(
     if auth.lower().startswith("bearer "):
         user = await _resolve_bearer(db, auth[7:].strip())
         if user is not None:
+            complaint = await _complaint_for_media_key(db, key)
+            if complaint is not None and not user_can_view(user, complaint):
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "You do not have permission to access this media.",
+                )
             return await _file_response(key)
 
     raise _denied()

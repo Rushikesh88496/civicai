@@ -58,6 +58,7 @@ from app.models.enums import (
 from app.schemas.verification import VerificationOutput
 from app.services import auth_service
 from app.storage import get_storage
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1"
@@ -142,8 +143,7 @@ async def _citizen_token(email: str) -> str:
             auth_service.RegisterIn(
                 email=email,
                 password=_PASSWORD,
-                full_name="Notification Citizen",
-            ),
+                full_name="Notification Citizen", ward_id=await any_active_ward_id(db)),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -214,8 +214,8 @@ async def _create_complaint(client, token: str, *, category: str = "GARBAGE") ->
     return r.json()["id"]
 
 
-async def _dispatch(client, token: str, cid: str) -> str:
-    d = await client.post(f"{_COMPLAINTS}/{cid}/dispatch", headers=_auth(token))
+async def _dispatch(client, dispatch_token: str, cid: str) -> str:
+    d = await client.post(f"{_COMPLAINTS}/{cid}/dispatch", headers=_auth(dispatch_token))
     assert d.status_code in (200, 201), d.text
     return d.json()["work_order_id"]
 
@@ -509,10 +509,11 @@ async def test_mark_read_owner_only(client):
 async def test_priority_assigns_and_change_notify(client):
     email = _unique_email("notif-prio")
     token = await _citizen_token(email)
+    otoken = await _user_with_role(_unique_email("notif-prio-officer"), RoleName.OFFICER)
     cid = await _create_complaint(client, token)
     wtoken, wid = await _seed_worker(email=_unique_email("notif-prio-worker"))
     try:
-        first = await client.post(f"{_COMPLAINTS}/{cid}/priority", headers=_auth(token))
+        first = await client.post(f"{_COMPLAINTS}/{cid}/priority", headers=_auth(otoken))
         assert first.status_code == 200, first.text
         await asyncio.sleep(0)
         assert "PRIORITY_ASSIGNED" in await _notification_types(client, token)
@@ -522,7 +523,7 @@ async def test_priority_assigns_and_change_notify(client):
         # (a bare complaint computes P4_LOW deterministically).
         await _seed_priority_history(cid, DynamicPriority.P1_CRITICAL, 90)
 
-        second = await client.post(f"{_COMPLAINTS}/{cid}/priority", headers=_auth(token))
+        second = await client.post(f"{_COMPLAINTS}/{cid}/priority", headers=_auth(otoken))
         assert second.status_code == 200, second.text
         await asyncio.sleep(0)
 
@@ -549,7 +550,7 @@ async def test_dispatch_work_order_created_and_p1_alert(client, monkeypatch):
     cid = await _create_complaint(client, token)
     try:
         await _seed_priority_history(cid, DynamicPriority.P1_CRITICAL, 95)
-        work_id = await _dispatch(client, token, cid)
+        work_id = await _dispatch(client, otoken, cid)
 
         assert "WORK_ORDER_CREATED" in await _notification_types(client, token)
         staff_o = await _notification_types(client, otoken)
@@ -576,7 +577,7 @@ async def test_assign_new_notifies_citizen_and_worker(client, monkeypatch):
     wtoken, _ = await _seed_worker(email=_unique_email("notif-assign-worker"))
     cid = await _create_complaint(client, token)
     try:
-        work_id = await _dispatch(client, token, cid)
+        work_id = await _dispatch(client, otoken, cid)
         await _approve(client, otoken, work_id)
 
         assert "WORKER_ASSIGNED" in await _notification_types(client, token)
@@ -597,7 +598,7 @@ async def test_reassign_notifies_second_worker(client, monkeypatch):
     _, wid1 = await _seed_worker(email=_unique_email("notif-reassign-w1"))
     cid = await _create_complaint(client, token)
     try:
-        work_id = await _dispatch(client, token, cid)
+        work_id = await _dispatch(client, otoken, cid)
         await _approve(client, otoken, work_id)
         w2token, wid2 = await _seed_worker(
             email=_unique_email("notif-reassign-w2"),
@@ -625,6 +626,23 @@ async def test_reassign_notifies_second_worker(client, monkeypatch):
 async def test_worker_start_and_complete_notify(client, monkeypatch):
     monkeypatch.setattr(_SETTINGS, "ROUTING_API_URL", "")
     monkeypatch.setattr(_SETTINGS, "ROUTING_API_KEY", "")
+
+    class _FakeVerifyAI:
+        async def structured_vision_completion(self, content, schema, **kwargs):
+            return VerificationOutput(
+                repair_evidence="AFTER photo shows the site cleared.",
+                remaining_issue="",
+                confidence=0.94,
+                verification_status=VerificationStatus.VERIFIED,
+                issue_fixed=True,
+                human_review_required=True,
+            )
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(ai=_FakeVerifyAI()),
+    )
+
     await _clear_workers()
     email = _unique_email("notif-fw")
     token = await _citizen_token(email)
@@ -632,7 +650,7 @@ async def test_worker_start_and_complete_notify(client, monkeypatch):
     wtoken, _ = await _seed_worker(email=_unique_email("notif-fw-worker"))
     cid = await _create_complaint(client, token)
     try:
-        work_id = await _dispatch(client, token, cid)
+        work_id = await _dispatch(client, otoken, cid)
         await _approve(client, otoken, work_id)
 
         acc = await client.post(
@@ -641,6 +659,12 @@ async def test_worker_start_and_complete_notify(client, monkeypatch):
             headers=_auth(wtoken),
         )
         assert acc.status_code == 200, acc.text
+        cin = await client.post(
+            f"{_WORKER}/orders/{work_id}/check-in",
+            json={"activity_type": "ARRIVED", "latitude": _LAT, "longitude": _LON},
+            headers=_auth(wtoken),
+        )
+        assert cin.status_code == 200, cin.text
         st = await client.post(
             f"{_WORKER}/orders/{work_id}/start",
             json={"client_ref": "n-start"},
@@ -649,14 +673,46 @@ async def test_worker_start_and_complete_notify(client, monkeypatch):
         assert st.status_code == 200, st.text
         assert "REPAIR_STARTED" in await _notification_types(client, token)
 
-        cmb = await client.post(
-            f"{_WORKER}/orders/{work_id}/complete",
-            json={"notes": "Done", "client_ref": "n-complete"},
+        # BEFORE / AFTER evidence photos (the verify stage needs both).
+        for cat, color in (("BEFORE", (20, 30, 40)), ("AFTER", (140, 230, 90))):
+            ph = await client.post(
+                f"{_WORKER}/orders/{work_id}/photos",
+                files={"file": (f"{cat.lower()}.png", _png_bytes(color), "image/png")},
+                data={"category": cat},
+                headers=_auth(wtoken),
+            )
+            assert ph.status_code == 200, ph.text
+
+        fin = await client.post(
+            f"{_WORKER}/orders/{work_id}/finish",
+            json={"notes": "Done", "client_ref": "n-finish"},
             headers=_auth(wtoken),
         )
-        assert cmb.status_code == 200, cmb.text
-        assert "WORK_ORDER_COMPLETED" in await _notification_types(client, token)
+        assert fin.status_code == 200, fin.text
+        assert "WORK_ORDER_COMPLETED" not in await _notification_types(client, token)
 
+        evid = await client.post(
+            f"{_WORKER}/orders/{work_id}/submit-evidence",
+            json={"notes": "Evidence attached.", "client_ref": "n-evidence"},
+            headers=_auth(wtoken),
+        )
+        assert evid.status_code == 200, evid.text
+
+        cd = await client.get(f"{_COMPLAINTS}/{cid}", headers=_auth(token))
+        assert cd.json()["status"] == "IN_PROGRESS"  # worker never resolves
+
+        # The verification stage confirming the repair resolves the complaint.
+        verify_run = await client.post(
+            f"{_WO}/{work_id}/verify", headers=_auth(otoken)
+        )
+        assert verify_run.status_code == 200, verify_run.text
+        rev = await client.post(
+            f"{_WO}/{work_id}/verification/review",
+            json={"decision": "CONFIRM_VERIFIED", "note": "Confirmed."},
+            headers=_auth(otoken),
+        )
+        assert rev.status_code == 200, rev.text
+        assert "WORK_ORDER_COMPLETED" in await _notification_types(client, token)
         cd = await client.get(f"{_COMPLAINTS}/{cid}", headers=_auth(token))
         assert cd.json()["status"] == "RESOLVED"
     finally:
@@ -686,7 +742,7 @@ async def test_officer_escalate_notifies_ward_reps(client, monkeypatch):
             complaint = await db.get(Complaint, uuid.UUID(cid))
             complaint.ward_id = ward_id
             await db.commit()
-        work_id = await _dispatch(client, token, cid)
+        work_id = await _dispatch(client, otoken, cid)
         await _approve(client, otoken, work_id)
         es = await client.post(
             f"{_WO}/{work_id}/escalate", json={"reason": "out of SLA"}, headers=_auth(otoken)
@@ -819,8 +875,7 @@ async def _ws_user(factory, email: str) -> str:
             auth_service.RegisterIn(
                 email=email,
                 password=_PASSWORD,
-                full_name="WS Citizen",
-            ),
+                full_name="WS Citizen", ward_id=await any_active_ward_id(db)),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")

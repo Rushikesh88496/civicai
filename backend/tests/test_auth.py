@@ -13,8 +13,9 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.security import create_access_token, create_refresh_token
 from app.db.session import async_session_factory
-from app.models import User
+from app.models import User, Ward
 from app.models.enums import RoleName
+from tests.helpers import any_active_ward_id
 
 settings = get_settings()
 
@@ -45,9 +46,16 @@ async def _delete_user(email: str) -> None:
 @pytest.fixture
 async def registered_user(client):
     email = _unique_email("reg")
+    async with async_session_factory() as db:
+        ward_id = await any_active_ward_id(db)
     response = await client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": _PASSWORD, "full_name": "Test User"},
+        json={
+            "email": email,
+            "password": _PASSWORD,
+            "full_name": "Test User",
+            "ward_id": str(ward_id),
+        },
     )
     yield {"response": response, "email": email, "data": response.json()}
     await _delete_user(email)
@@ -77,9 +85,10 @@ async def test_password_is_not_stored_in_plaintext(registered_user):
 @pytest.mark.asyncio
 async def test_register_duplicate_email(registered_user, client):
     email = registered_user["email"]
+    ward_id = registered_user["data"]["user"]["ward"]["id"]
     response = await client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": _PASSWORD, "full_name": "Other"},
+        json={"email": email, "password": _PASSWORD, "full_name": "Other", "ward_id": ward_id},
     )
     assert response.status_code == 409
 
@@ -102,6 +111,67 @@ async def test_register_rejects_invalid_email(client):
         json={"email": "not-an-email", "password": _PASSWORD, "full_name": "Bad"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_register_requires_ward(client):
+    email = _unique_email("noward")
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": _PASSWORD, "full_name": "No Ward"},
+    )
+    assert response.status_code == 422
+    await _delete_user(email)
+
+
+@pytest.mark.asyncio
+async def test_register_rejects_unknown_ward(client):
+    email = _unique_email("badward")
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email,
+            "password": _PASSWORD,
+            "full_name": "Bad Ward",
+            "ward_id": str(uuid.uuid4()),
+        },
+    )
+    assert response.status_code == 404
+    await _delete_user(email)
+
+
+@pytest.mark.asyncio
+async def test_register_rejects_inactive_ward(client):
+    email = _unique_email("inactward")
+    async with async_session_factory() as db:
+        ward = Ward(
+            name=f"Inactive Ward {uuid.uuid4().hex[:6]}",
+            code=f"INACT-{uuid.uuid4().hex[:6]}",
+            description="test inactive ward",
+            is_active=False,
+        )
+        db.add(ward)
+        await db.flush()
+        ward_id = ward.id
+        await db.commit()
+    try:
+        response = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": email,
+                "password": _PASSWORD,
+                "full_name": "Inactive Ward",
+                "ward_id": str(ward_id),
+            },
+        )
+        assert response.status_code == 422
+        await _delete_user(email)
+    finally:
+        async with async_session_factory() as db:
+            ward = await db.get(Ward, ward_id)
+            if ward is not None:
+                await db.delete(ward)
+                await db.commit()
 
 
 @pytest.mark.asyncio
@@ -138,6 +208,8 @@ async def test_me_round_trip(client, registered_user):
     body = response.json()["user"]
     assert body["email"] == registered_user["email"]
     assert body["role"]["name"] == RoleName.CITIZEN.value
+    assert body["ward"]["id"] == registered_user["data"]["user"]["ward"]["id"]
+    assert body["ward"]["code"]
 
 
 @pytest.mark.asyncio

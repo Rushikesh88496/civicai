@@ -1,48 +1,17 @@
 "use client";
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
+import { authorizedFetch } from "@/lib/auth-api";
 import type { SlaPolicy, SlaPolicyIn } from "@/lib/officer-api";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-    if (Array.isArray(body?.detail)) return body.detail[0]?.msg || "Invalid input.";
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
-}
-
 async function authorizedGet<T>(path: string): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) throw new ApiError(401, "Not authenticated.");
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new ApiError(res.status, await readErrorMessage(res));
-  return res.json() as Promise<T>;
+  return authorizedFetch<T>(path);
 }
 
 async function authorizedRequest<T>(
   path: string,
   init: RequestInit = {}
 ): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) throw new ApiError(401, "Not authenticated.");
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...init.headers,
-    },
-  });
-  if (!res.ok) throw new ApiError(res.status, await readErrorMessage(res));
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
+  return authorizedFetch<T>(path, init);
 }
 
 export interface Page<T> {
@@ -121,6 +90,9 @@ export interface AdminUserCreate {
   worker_status?: string;
   skill_tags?: string[];
   equipment?: string[];
+  home_latitude?: number | null;
+  home_longitude?: number | null;
+  base_location?: string | null;
   rep_title?: string | null;
   rep_status?: string;
 }
@@ -139,6 +111,7 @@ export interface AdminUserUpdate {
   equipment?: string[] | null;
   home_latitude?: number | null;
   home_longitude?: number | null;
+  base_location?: string | null;
   max_active_orders?: number | null;
   rep_title?: string | null;
   rep_status?: string | null;
@@ -338,6 +311,7 @@ export interface AdminFieldWorker {
   equipment: string[];
   home_latitude?: number | null;
   home_longitude?: number | null;
+  base_location?: string | null;
   max_active_orders?: number | null;
   created_at: string;
 }
@@ -350,6 +324,7 @@ export interface AdminFieldWorkerUpdate {
   equipment?: string[] | null;
   home_latitude?: number | null;
   home_longitude?: number | null;
+  base_location?: string | null;
   max_active_orders?: number | null;
 }
 

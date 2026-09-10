@@ -17,6 +17,9 @@ Layers exercised:
 * **Regression** — retraining bumps the version and deactivates the old model.
 * **Review workflow** — officer review (APPROVE / REJECT) and the optional
   preventive work order (only on approved predictions).
+* **Part 31 gating** — forecasts/training/status refuse to serve until the
+  registered-asset fleet clears ``INFRA_MIN_ASSETS``; a pinned test covers the
+  gated responses. Behaviour tests set the minimum to 0 so they stay cheap.
 """
 
 import uuid
@@ -51,6 +54,7 @@ from app.models import (
 from app.models.enums import ComplaintCategory, InfrastructureRiskLevel, RoleName
 from app.schemas.auth import RegisterIn
 from app.services import auth_service
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/infrastructure"
@@ -70,7 +74,12 @@ def _auth(token: str) -> dict:
 async def _citizen(email: str) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Infra Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Infra Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
         return user.id
@@ -140,6 +149,9 @@ async def _fast_settings(tmp_path, monkeypatch):
         ("INFRA_CV_FOLDS", 1),
         ("INFRA_N_ESTIMATORS", 80),
         ("INFRA_ARTIFACT_DIR", str(tmp_path)),
+        # Part 31 gating: behaviour tests are about the pipeline, not the fleet
+        # gate, so the minimum asset fleet is lowered to zero here.
+        ("INFRA_MIN_ASSETS", 0),
     ):
         monkeypatch.setattr(_SETTINGS, attr, value)
     yield
@@ -246,6 +258,34 @@ async def test_rbac_forbids_non_city_roles(client: TestClient):
 # --------------------------------------------------------------------------- #
 # Training + registry versioning
 # --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_gating_refuses_serving_without_fleet(client: TestClient, monkeypatch):
+    # Defaults are lowered to 0 by the fixture; re-raise to pin the gate.
+    monkeypatch.setattr(_SETTINGS, "INFRA_MIN_ASSETS", 1000)
+    token = await _officer_token()
+    headers = _auth(token)
+
+    r = await client.get(f"{_BASE}/predictions", headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["prediction_status"] == "INSUFFICIENT_DATA"
+    assert data["model"] is None and data["assets"] == []
+    assert data["registered_assets"] == 0
+    assert data["message"] and "assets" in data["message"]
+
+    st = await client.get(f"{_BASE}/status", headers=headers)
+    assert st.json()["trained"] is False
+    assert st.json()["prediction_status"] == "INSUFFICIENT_DATA"
+
+    tr = await client.post(f"{_BASE}/train", headers=headers)
+    assert tr.json()["trained"] is False
+    assert tr.json()["status"] == "INSUFFICIENT_DATA"
+
+    async with async_session_factory() as db:
+        rows = (await db.execute(select(InfrastructureModel))).scalars().all()
+    assert rows == []
+
+
 @pytest.mark.asyncio
 async def test_train_persists_artifact_and_version_bumps(client: TestClient):
     token = await _officer_token()

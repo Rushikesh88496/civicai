@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 
 import "leaflet/dist/leaflet.css";
+import { isUsableLatLng } from "@/lib/leaflet";
 
 interface ComplaintMapCanvasProps {
   latitude: number;
@@ -20,6 +21,7 @@ export default function ComplaintMapCanvas({
   const mapRef = useRef<L.Map | null>(null);
 
   useEffect(() => {
+    if (!isUsableLatLng(latitude, longitude)) return;
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {

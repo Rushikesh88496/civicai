@@ -20,7 +20,7 @@ Layers exercised:
 import uuid
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.core.config import get_settings
 from app.core.security import create_access_token, hash_password
@@ -32,10 +32,12 @@ from app.models import (
     Role,
     User,
     UserProfile,
+    Ward,
 )
 from app.models.enums import RoleName, WorkerStatus
 from app.schemas.auth import RegisterIn
 from app.services import auth_service
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -52,7 +54,12 @@ def _unique_email(prefix: str) -> str:
 async def _citizen_token(email: str, full_name: str = "Dispatch Citizen") -> str:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name=full_name)
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name=full_name,
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -122,6 +129,7 @@ async def _seed_worker(
     max_active_orders: int | None = None,
     status: WorkerStatus = WorkerStatus.ACTIVE,
     user_id: uuid.UUID | None = None,
+    ward_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     async with async_session_factory() as db:
         dept = await db.scalar(select(Department).where(Department.code == dept_code))
@@ -139,6 +147,7 @@ async def _seed_worker(
                 role_id=rrole.id,
                 is_active=True,
                 is_email_verified=True,
+                ward_id=ward_id,
             )
             db.add(user)
             await db.flush()
@@ -181,6 +190,148 @@ def _auth(token: str) -> dict:
 
 # --------------------------------------------------------------------------- #
 # Engine: determinism, availability, scoring, ties
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_engine_department_crew_alias_prefers_owning_crew():
+    from app.services.dispatch_engine import CandidateInput, rank_candidates
+
+    # Two workers identical on every criterion except their crew. The routed
+    # department is WASTE, which the Sanitation crew (SN) owns — so SN must
+    # out-rank PW solely because of the department-match factor.
+    pw = CandidateInput(
+        worker_id=uuid.uuid4(),
+        name="PW Worker",
+        department_code="PW",
+        status=WorkerStatus.ACTIVE,
+        specialty="waste-audit",
+        skill_tags=["collections"],
+        equipment=["garbage-truck"],
+        home_lat=_LAT,
+        home_lon=_LON,
+        active_orders=0,
+    )
+    sn = CandidateInput(
+        worker_id=uuid.uuid4(),
+        name="SN Worker",
+        department_code="SN",
+        status=WorkerStatus.ACTIVE,
+        specialty="waste-audit",
+        skill_tags=["collections"],
+        equipment=["garbage-truck"],
+        home_lat=_LAT,
+        home_lon=_LON,
+        active_orders=0,
+    )
+    scored = rank_candidates(
+        [pw, sn],
+        required_skills=["waste-audit"],
+        required_equipment=["garbage-truck"],
+        order_lat=_LAT,
+        order_lon=_LON,
+        department="WASTE",
+    )
+    by_id = {c.worker_id: c for c in scored}
+    assert by_id[sn.worker_id].department == 1.0
+    assert by_id[pw.worker_id].department == 0.0
+    assert scored[0].worker_id == sn.worker_id
+
+
+@pytest.mark.asyncio
+async def test_engine_exact_department_code_matches():
+    from app.services.dispatch_engine import CandidateInput, score_candidate
+
+    w = CandidateInput(
+        worker_id=uuid.uuid4(),
+        name="Direct Crew",
+        department_code="WASTE",
+        status=WorkerStatus.ACTIVE,
+        specialty="collections",
+        skill_tags=[],
+        equipment=[],
+        home_lat=_LAT,
+        home_lon=_LON,
+    )
+    c = score_candidate(
+        w, required_skills=[], required_equipment=[], order_lat=_LAT, order_lon=_LON,
+        order_department="WASTE",
+    )
+    assert c.department == 1.0
+    assert "different department" not in c.reasons
+
+
+@pytest.mark.asyncio
+async def test_engine_ward_match_prefers_same_ward():
+    from app.services.dispatch_engine import CandidateInput, rank_candidates
+
+    w1 = CandidateInput(
+        worker_id=uuid.uuid4(),
+        name="Ward One",
+        department_code="WASTE",
+        status=WorkerStatus.ACTIVE,
+        specialty="waste-audit",
+        skill_tags=["collections"],
+        equipment=["garbage-truck"],
+        home_lat=_LAT,
+        home_lon=_LON,
+        ward_code="WARD-1",
+    )
+    w2 = CandidateInput(
+        worker_id=uuid.uuid4(),
+        name="Ward Two",
+        department_code="WASTE",
+        status=WorkerStatus.ACTIVE,
+        specialty="waste-audit",
+        skill_tags=["collections"],
+        equipment=["garbage-truck"],
+        home_lat=_LAT,
+        home_lon=_LON,
+        ward_code="WARD-2",
+    )
+    scored = rank_candidates(
+        [w1, w2],
+        required_skills=["waste-audit"],
+        required_equipment=["garbage-truck"],
+        order_lat=_LAT,
+        order_lon=_LON,
+        department="WASTE",
+        order_ward="WARD-1",
+    )
+    by_id = {c.worker_id: c for c in scored}
+    assert by_id[w1.worker_id].ward == 1.0
+    assert by_id[w2.worker_id].ward == 0.0
+    assert scored[0].worker_id == w1.worker_id
+    assert "different ward" in by_id[w2.worker_id].reasons
+
+
+@pytest.mark.asyncio
+async def test_engine_priority_urgency_factor():
+    from app.services.dispatch_engine import CandidateInput, score_candidate
+
+    w = CandidateInput(
+        worker_id=uuid.uuid4(),
+        name="Any Worker",
+        department_code="WASTE",
+        status=WorkerStatus.ACTIVE,
+        specialty="waste-audit",
+        skill_tags=["collections"],
+        equipment=["garbage-truck"],
+        home_lat=_LAT,
+        home_lon=_LON,
+    )
+    urgent = score_candidate(
+        w, required_skills=["waste-audit"], required_equipment=[], order_lat=_LAT,
+        order_lon=_LON, priority="P1_CRITICAL",
+    )
+    calm = score_candidate(
+        w, required_skills=["waste-audit"], required_equipment=[], order_lat=_LAT,
+        order_lon=_LON, priority="P4_LOW",
+    )
+    assert urgent.priority == 1.0
+    assert calm.priority == 0.5
+
+
+# --------------------------------------------------------------------------- #
+# Agent + service + API
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_engine_ranks_deterministically():
@@ -270,6 +421,7 @@ async def test_dispatch_selects_available_worker(client, monkeypatch):
     await _clear_workers()
     email = _unique_email("dispatch-avail")
     token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-avail-officer"))
     wid = await _seed_worker(
         email=_unique_email("worker-avail"),
         dept_code="WASTE",
@@ -280,7 +432,7 @@ async def test_dispatch_selects_available_worker(client, monkeypatch):
     )
     cid = await _create_complaint(client, token)
     try:
-        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         assert r.status_code == 201, r.text
         data = r.json()
         assert data["work_order_id"] is not None
@@ -302,9 +454,10 @@ async def test_dispatch_no_worker_sets_reason(client, monkeypatch):
     await _clear_workers()
     email = _unique_email("dispatch-none")
     token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-none-officer"))
     cid = await _create_complaint(client, token)
     try:
-        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         assert r.status_code == 201, r.text
         data = r.json()
         rec = data["result"]["recommendation"]
@@ -322,6 +475,7 @@ async def test_dispatch_wrong_skill_worker_scores_low(client, monkeypatch):
     await _clear_workers()
     email = _unique_email("dispatch-skill")
     token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-skill-officer"))
     wid = await _seed_worker(
         email=_unique_email("worker-skill"),
         dept_code="WASTE",
@@ -332,7 +486,7 @@ async def test_dispatch_wrong_skill_worker_scores_low(client, monkeypatch):
     )
     cid = await _create_complaint(client, token)
     try:
-        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         assert r.status_code == 201, r.text
         data = r.json()
         rec = data["result"]["recommendation"]
@@ -353,6 +507,7 @@ async def test_dispatch_busy_worker_sets_no_worker(client, monkeypatch):
     await _clear_workers()
     email = _unique_email("dispatch-busy")
     token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-busy-officer"))
     busy_wid = await _seed_worker(
         email=_unique_email("worker-busy"),
         dept_code="WASTE",
@@ -388,7 +543,7 @@ async def test_dispatch_busy_worker_sets_no_worker(client, monkeypatch):
         await db.commit()
     cid = await _create_complaint(client, token)
     try:
-        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         assert r.status_code == 201, r.text
         rec = r.json()["result"]["recommendation"]
         assert rec["recommended_worker_id"] is None
@@ -408,6 +563,7 @@ async def test_dispatch_closest_skilled_worker_wins(client, monkeypatch):
     await _clear_workers()
     email = _unique_email("dispatch-multi")
     token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-multi-officer"))
     far_id = await _seed_worker(
         email=_unique_email("worker-far"),
         dept_code="WASTE",
@@ -430,7 +586,7 @@ async def test_dispatch_closest_skilled_worker_wins(client, monkeypatch):
     )
     cid = await _create_complaint(client, token)
     try:
-        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         assert r.status_code == 201, r.text
         rec = r.json()["result"]["recommendation"]
         assert rec["recommended_worker_id"] == str(near_id)
@@ -452,6 +608,7 @@ async def test_dispatch_multi_department_flooding(client, monkeypatch):
     await _clear_workers()
     email = _unique_email("dispatch-flood")
     token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-flood-officer"))
     wid = await _seed_worker(
         email=_unique_email("worker-drain"),
         dept_code="DRAINAGE",
@@ -462,11 +619,129 @@ async def test_dispatch_multi_department_flooding(client, monkeypatch):
     )
     cid = await _create_complaint(client, token, category="FLOODING")
     try:
-        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         assert r.status_code == 201, r.text
         rec = r.json()["result"]["recommendation"]
         assert rec["department"] == "DRAINAGE"
         assert rec["recommended_worker_id"] == str(wid)
+    finally:
+        await _delete_complaint(cid)
+        await _delete_user(email)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_real_seeded_worker_vocabulary_matches_routing(client, monkeypatch):
+    """A worker seeded exactly like the 25 real field workers (PW crew, real
+    skill tags) must score >0 on skill for its routed department and be the
+    recommended worker — this is what connects dispatch to the real crews."""
+    monkeypatch.setattr(_SETTINGS, "ROUTING_API_URL", "")
+    monkeypatch.setattr(_SETTINGS, "ROUTING_API_KEY", "")
+    await _clear_workers()
+    email = _unique_email("dispatch-vocab")
+    token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-vocab-officer"))
+    wid = await _seed_worker(
+        email=_unique_email("worker-vocab"),
+        dept_code="PW",
+        name="Road Ramesh",
+        specialty="Road Maintenance",
+        skill_tags=["road-maintenance", "asphalt", "patching"],
+        equipment=["road-roller", "compactor"],
+    )
+    cid = await _create_complaint(client, token, category="ROAD")
+    try:
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
+        assert r.status_code == 201, r.text
+        rec = r.json()["result"]["recommendation"]
+        assert rec["department"] == "ROADS"
+        assert "road-maintenance" in rec["required_skills"]
+        cands = {c["worker_id"]: c for c in rec["candidates"]}
+        assert str(wid) in cands
+        assert cands[str(wid)]["department"] == 1.0
+        assert cands[str(wid)]["skill"] > 0.0
+        assert cands[str(wid)]["available"] is True
+        assert rec["recommended_worker_id"] == str(wid)
+    finally:
+        await _delete_complaint(cid)
+        await _delete_user(email)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_prefers_same_ward_worker(client, monkeypatch):
+    monkeypatch.setattr(_SETTINGS, "ROUTING_API_URL", "")
+    monkeypatch.setattr(_SETTINGS, "ROUTING_API_KEY", "")
+    await _clear_workers()
+    email = _unique_email("dispatch-ward")
+    token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-ward-officer"))
+    async with async_session_factory() as db:
+        w1 = await db.scalar(select(Ward).where(Ward.code == "WARD-1"))
+        w2 = await db.scalar(select(Ward).where(Ward.code == "WARD-2"))
+        assert w1 is not None and w2 is not None
+        ward1_id, ward2_id = w1.id, w2.id
+    inw = await _seed_worker(
+        email=_unique_email("worker-in-ward"),
+        dept_code="WASTE",
+        name="In Ward",
+        specialty="waste-audit",
+        skill_tags=["waste-audit"],
+        equipment=["garbage-truck"],
+        ward_id=ward1_id,
+    )
+    outw = await _seed_worker(
+        email=_unique_email("worker-out-ward"),
+        dept_code="WASTE",
+        name="Out Ward",
+        specialty="waste-audit",
+        skill_tags=["waste-audit"],
+        equipment=["garbage-truck"],
+        ward_id=ward2_id,
+    )
+    cid = await _create_complaint(client, token)
+    # Pin the complaint to WARD-1 so the ward factor is deterministic.
+    async with async_session_factory() as db:
+        await db.execute(update(Complaint).where(Complaint.id == cid).values(ward_id=ward1_id))
+        await db.commit()
+    try:
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
+        assert r.status_code == 201, r.text
+        rec = r.json()["result"]["recommendation"]
+        assert rec["recommended_worker_id"] == str(inw)
+        cands = {c["worker_id"]: c for c in rec["candidates"]}
+        assert cands[str(inw)]["ward"] == 1.0
+        assert cands[str(outw)]["ward"] == 0.0
+        order = [c["worker_id"] for c in rec["candidates"]]
+        assert order.index(str(inw)) < order.index(str(outw))
+    finally:
+        await _delete_complaint(cid)
+        await _delete_user(email)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_candidate_reports_postgis_distance_km(client, monkeypatch):
+    monkeypatch.setattr(_SETTINGS, "ROUTING_API_URL", "")
+    monkeypatch.setattr(_SETTINGS, "ROUTING_API_KEY", "")
+    await _clear_workers()
+    email = _unique_email("dispatch-km")
+    token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-km-officer"))
+    wid = await _seed_worker(
+        email=_unique_email("worker-km"),
+        dept_code="WASTE",
+        name="Km Wendy",
+        specialty="waste-audit",
+        skill_tags=["waste-audit"],
+        equipment=["garbage-truck"],
+    )
+    cid = await _create_complaint(client, token)
+    try:
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
+        assert r.status_code == 201, r.text
+        cands = r.json()["result"]["recommendation"]["candidates"]
+        cand = next(c for c in cands if c["worker_id"] == str(wid))
+        assert cand["distance_km"] is None or cand["distance_km"] >= 0.0
+        if cand["distance_km"] is not None:
+            assert cand["distance_km"] < 60.0  # home is right at the complaint point
     finally:
         await _delete_complaint(cid)
         await _delete_user(email)
@@ -478,21 +753,22 @@ async def test_dispatch_persists_draft_work_order(client, monkeypatch):
     monkeypatch.setattr(_SETTINGS, "ROUTING_API_KEY", "")
     email = _unique_email("dispatch-persist")
     token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-persist-officer"))
     cid = await _create_complaint(client, token)
     try:
-        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        r = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         assert r.status_code == 201, r.text
         wid = r.json()["work_order_id"]
-        lr = await client.get(f"{_BASE}/{cid}/work-orders", headers=_auth(token))
+        lr = await client.get(f"{_BASE}/{cid}/work-orders", headers=_auth(otoken))
         assert lr.status_code == 200, lr.text
         orders = lr.json()["work_orders"]
         assert any(o["id"] == wid for o in orders)
-        detail = await client.get(f"{_WO}/{wid}", headers=_auth(token))
+        detail = await client.get(f"{_WO}/{wid}", headers=_auth(otoken))
         assert detail.status_code == 200, detail.text
         d = detail.json()
         assert d["work_order"]["status"] == "PENDING_APPROVAL"
         assert d["work_order"]["complaint_id"] == cid
-        hist = await client.get(f"{_WO}/{wid}/history", headers=_auth(token))
+        hist = await client.get(f"{_WO}/{wid}/history", headers=_auth(otoken))
         assert hist.status_code == 200
         assert hist.json()["entries"]
     finally:
@@ -512,10 +788,10 @@ async def test_dispatch_requires_auth(client):
 @pytest.mark.asyncio
 async def test_dispatch_unknown_complaint_404(client):
     email = _unique_email("dispatch-404")
-    token = await _citizen_token(email)
+    otoken = await _officer(email)
     try:
         r = await client.post(
-            f"{_BASE}/00000000-0000-0000-0000-000000000000/dispatch", headers=_auth(token)
+            f"{_BASE}/00000000-0000-0000-0000-000000000000/dispatch", headers=_auth(otoken)
         )
         assert r.status_code == 404
     finally:
@@ -526,9 +802,10 @@ async def test_dispatch_unknown_complaint_404(client):
 async def test_citizen_cannot_approve(client):
     email = _unique_email("dispatch-rbac")
     token = await _citizen_token(email)
+    otoken = await _officer(_unique_email("dispatch-rbac-officer"))
     cid = await _create_complaint(client, token)
     try:
-        d = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        d = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         wid = d.json()["work_order_id"]
         r = await client.post(f"{_WO}/{wid}/approve", json={"note": "nope"}, headers=_auth(token))
         assert r.status_code == 403
@@ -555,7 +832,7 @@ async def test_officer_approve_assign_reassign_escalate(client, monkeypatch):
     )
     cid = await _create_complaint(client, token)
     try:
-        d = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        d = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         work_id = d.json()["work_order_id"]
 
         ap = await client.post(
@@ -604,7 +881,7 @@ async def test_officer_reject_draft(client, monkeypatch):
     otoken = await _officer(_unique_email("dispatch-reject-role"))
     cid = await _create_complaint(client, token)
     try:
-        d = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(token))
+        d = await client.post(f"{_BASE}/{cid}/dispatch", headers=_auth(otoken))
         work_id = d.json()["work_order_id"]
         rj = await client.post(
             f"{_WO}/{work_id}/reject", json={"note": "no"}, headers=_auth(otoken)

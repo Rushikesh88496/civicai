@@ -21,11 +21,13 @@ from app.api.v1.ratings import router as ratings_router
 from app.api.v1.sla import router as sla_router
 from app.api.v1.verifications import router as verifications_router
 from app.api.v1.ward_rep import router as ward_rep_router
+from app.api.v1.wards import router as wards_router
 from app.api.v1.work_orders import complaints_router as work_orders_complaints_router
 from app.api.v1.work_orders import work_orders_router
 
 api_router = APIRouter()
 api_router.include_router(health_router, tags=["health"])
+api_router.include_router(wards_router, tags=["wards"])
 api_router.include_router(auth_router)
 api_router.include_router(languages_router)
 api_router.include_router(citizen_router)

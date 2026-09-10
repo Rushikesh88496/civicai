@@ -255,7 +255,7 @@ export function AdminUsers() {
                         <div className="text-xs text-slate-500">{user.email}</div>
                       </TableCell>
                       <TableCell><RoleBadge role={user.role} /></TableCell>
-                      <TableCell className="text-slate-600">{user.ward_code || "—"}</TableCell>
+                      <TableCell className="text-slate-600">{user.ward_name || user.ward_code || "—"}</TableCell>
                       <TableCell>
                         <Badge variant={user.is_active ? "success" : "destructive"}>
                           {user.is_active ? "Active" : "Disabled"}

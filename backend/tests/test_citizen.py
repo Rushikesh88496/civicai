@@ -14,6 +14,7 @@ from app.db.session import async_session_factory
 from app.models import Complaint, User, Ward
 from app.models.enums import ComplaintCategory, ComplaintPriority, ComplaintStatus, RoleName
 from app.services.auth_service import register_user
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 
@@ -37,7 +38,12 @@ async def _citizen_token_and_user(email: str) -> tuple[str, User]:
     async with async_session_factory() as db:
         await register_user(
             db,
-            RegisterIn(email=email, password=_PASSWORD, full_name="Citizen Test"),
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="Citizen Test",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
     token = create_access_token(str(user.id), RoleName.CITIZEN.value)
@@ -79,7 +85,7 @@ async def empty_citizen(client):
 async def citizen_with_data(client):
     email = _unique_email("cit-data")
     token, _ = await _citizen_token_and_user(email)
-    await _add_complaints(email, count=3, ward_code="W-001")
+    await _add_complaints(email, count=3, ward_code="WARD-1")
     yield {"email": email, "token": token}
     await _delete_user(email)
 
@@ -135,7 +141,12 @@ async def test_dashboard_new_citizen_all_zero(empty_citizen, client):
         "escalated": 0,
     }
     assert data["recent_complaints"] == []
-    assert data["ward"]["code"] is None
+    # The citizen is bound to the ward they registered under (Part 31).
+    async with async_session_factory() as db:
+        user = await db.scalar(select(User).where(User.email == empty_citizen["email"]))
+        ward = await db.get(Ward, user.ward_id)
+        expected = ward.code
+    assert data["ward"]["code"] == expected
 
 
 @pytest.mark.asyncio
@@ -150,8 +161,8 @@ async def test_dashboard_with_data(citizen_with_data, client):
     assert data["complaints"]["open"] == 2
     assert data["complaints"]["resolved"] == 1
     assert len(data["recent_complaints"]) == 3
-    assert data["ward"]["code"] == "W-001"
-    assert data["ward"]["name"] == "Downtown"
+    assert data["ward"]["code"] == "WARD-1"
+    assert data["ward"]["name"] == "Ward 1"
 
 
 @pytest.mark.asyncio
@@ -160,7 +171,7 @@ async def test_dashboard_only_returns_own_data(client):
     a_token, _ = await _citizen_token_and_user(_unique_email("iso-a"))
     b_email = _unique_email("iso-b")
     await _citizen_token_and_user(b_email)
-    await _add_complaints(b_email, count=2, ward_code="W-002")
+    await _add_complaints(b_email, count=2, ward_code="WARD-2")
 
     response = await client.get(
         "/api/v1/citizen/dashboard", headers={"Authorization": f"Bearer {a_token}"}

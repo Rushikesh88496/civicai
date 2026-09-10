@@ -38,6 +38,7 @@ from app.models.enums import (
     TriageSeverity,  # noqa: F401  (kept for parity with other suites)
 )
 from app.services import auth_service
+from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -92,7 +93,12 @@ async def _citizen_token(email: str) -> str:
 
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Correlation Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Correlation Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -425,7 +431,7 @@ async def test_api_officer_confirm_marks_duplicate(client, monkeypatch):
         lon=73.85,
     )
     seed_a = await client.post(
-        f"{_BASE}/{a}/correlate", headers={"Authorization": f"Bearer {citizen_token}"}
+        f"{_BASE}/{a}/correlate", headers={"Authorization": f"Bearer {officer_token}"}
     )
     assert seed_a.status_code == 200, seed_a.text
 
@@ -438,7 +444,7 @@ async def test_api_officer_confirm_marks_duplicate(client, monkeypatch):
         lon=73.8501,
     )
     resp = await client.post(
-        f"{_BASE}/{b}/correlate", headers={"Authorization": f"Bearer {citizen_token}"}
+        f"{_BASE}/{b}/correlate", headers={"Authorization": f"Bearer {officer_token}"}
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -550,13 +556,11 @@ async def test_api_correlate_requires_access(client):
 
 @pytest.mark.asyncio
 async def test_api_correlate_404_unknown_complaint(client):
-    email = _unique_email("corr-404")
-    token = await _citizen_token(email)
+    otoken = await _officer_token(_unique_email("corr-404-officer"))
     resp = await client.post(
-        f"{_BASE}/{uuid.uuid4()}/correlate", headers={"Authorization": f"Bearer {token}"}
+        f"{_BASE}/{uuid.uuid4()}/correlate", headers={"Authorization": f"Bearer {otoken}"}
     )
     assert resp.status_code == 404, resp.text
-    await _delete_user(email)
 
 
 # --------------------------------------------------------------------------- #

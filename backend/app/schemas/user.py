@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.schemas.complaint import WardOut
+
 
 class RoleOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -35,6 +37,9 @@ class UserOut(BaseModel):
     is_email_verified: bool
     role: RoleOut
     profile: UserProfileOut | None = None
+    # The citizen's registered ward (Part 31). Required for citizens, None for
+    # staff that don't belong to a single ward.
+    ward: WardOut | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -1,7 +1,7 @@
 """Work Orders & Autonomous Dispatch API (Part 14).
 
 Endpoints:
-- POST   /complaints/{complaint_id}/dispatch           — run dispatch agent (staff or owner)
+- POST   /complaints/{complaint_id}/dispatch           — run dispatch agent (staff only)
 - GET    /complaints/{complaint_id}/dispatch-result     — latest dispatch agent run
 - GET    /complaints/{complaint_id}/work-orders          — all work orders for a complaint
 - GET    /work-orders/{work_order_id}                    — work-order detail bundle
@@ -11,6 +11,10 @@ Endpoints:
 - POST   /work-orders/{work_order_id}/reassign           — officer reassigns to another worker
 - POST   /work-orders/{work_order_id}/escalate           — officer escalates
 - POST   /work-orders/{work_order_id}/reject             — officer rejects draft
+
+Dispatch + work-order endpoints are OFFICER/ADMIN/WARD_REPRESENTATIVE-only. Citizens
+never see recommendation, dispatch or worker data; their view is the complaint
+detail + timeline endpoints (which include citizen-safe resolution milestones).
 """
 
 from __future__ import annotations
@@ -60,6 +64,10 @@ from app.services.work_order_service import (
 
 # --- Router: complaint-scoped dispatch + list endpoints -----------------------------------
 
+_STAFF_DEPS = [
+    Depends(require_roles(RoleName.OFFICER, RoleName.ADMIN, RoleName.WARD_REPRESENTATIVE))
+]
+
 complaints_router = APIRouter(
     prefix="/complaints",
     tags=["complaints", "work-orders"],
@@ -84,6 +92,7 @@ def _dispatch_error(exc: Exception) -> HTTPException:
     "/{complaint_id}/dispatch",
     response_model=DispatchRunResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=_STAFF_DEPS,
 )
 async def run_dispatch(
     complaint_id: uuid.UUID,
@@ -100,6 +109,7 @@ async def run_dispatch(
 @complaints_router.get(
     "/{complaint_id}/dispatch-result",
     response_model=DispatchRunOut | None,
+    dependencies=_STAFF_DEPS,
 )
 async def get_dispatch(
     complaint_id: uuid.UUID,
@@ -116,6 +126,7 @@ async def get_dispatch(
 @complaints_router.get(
     "/{complaint_id}/work-orders",
     response_model=WorkOrderListOut,
+    dependencies=_STAFF_DEPS,
 )
 async def list_work_orders_for_complaint(
     complaint_id: uuid.UUID,
@@ -135,10 +146,6 @@ work_orders_router = APIRouter(
     prefix="/work-orders",
     tags=["work-orders"],
 )
-
-_STAFF_DEPS = [
-    Depends(require_roles(RoleName.OFFICER, RoleName.ADMIN, RoleName.WARD_REPRESENTATIVE))
-]
 
 
 def _work_order_error(exc: Exception) -> HTTPException:
@@ -176,9 +183,65 @@ async def _audit_work_order_action(
     await db.commit()
 
 
+def _assignment_audit_after(
+    bundle: WorkOrderDetailBundle,
+    *,
+    work_order_id: uuid.UUID,
+    user: User,
+    reason: str,
+) -> dict:
+    """Build the required assignment-audit fields (Part 32).
+
+    Captures complaint + work-order ids, previous/new assignee, the assigning
+    officer, the reason/source, whether the assignment came from the AI
+    recommendation, and whether the officer accepted or overrode it. An AI
+    recommendation is never presented as (nor recorded as) an official
+    assignment — only a persisted ``worker_assignments`` row counts.
+
+    ``assignments`` is ordered by ``assigned_at`` ASC, so the *new* assignment
+    is the last row (status ``ASSIGNED`` on approve/assign, ``REASSIGNED`` on
+    reassign) and the *previous* one — if any — is the penultimate row.
+    """
+    ordered = list(bundle.assignments)
+    new = ordered[-1] if ordered else None
+    prev = ordered[-2] if len(ordered) > 1 else None
+    origin = new.origin if new is not None else None
+    decision = (
+        "accepted"
+        if origin == "AI_RECOMMENDATION"
+        else "overridden"
+        if origin == "OFFICER_OVERRIDE"
+        else "manual"
+        if origin == "MANUAL"
+        else None
+    )
+    return {
+        "complaint_id": str(bundle.work_order.complaint_id),
+        "work_order_id": str(work_order_id),
+        "recommended_worker_id": (
+            str(bundle.work_order.recommended_worker_id)
+            if bundle.work_order.recommended_worker_id is not None
+            else None
+        ),
+        "recommended_worker_name": bundle.work_order.recommended_worker_name,
+        "previous_assignee_id": str(prev.worker_id) if prev else None,
+        "previous_assignee_name": prev.worker_name if prev else None,
+        "new_assignee_id": str(new.worker_id) if new else None,
+        "new_assignee_name": new.worker_name if new else None,
+        "assigning_user_id": str(user.id),
+        "assigned_at": new.assigned_at.isoformat() if new is not None else None,
+        "assignment_reason": reason,
+        "assignment_source": origin,
+        "is_ai_recommended": origin == "AI_RECOMMENDATION",
+        "officer_decision": decision,
+        "status": bundle.work_order.status.value,
+    }
+
+
 @work_orders_router.get(
     "/{work_order_id}",
     response_model=WorkOrderDetailBundle,
+    dependencies=_STAFF_DEPS,
 )
 async def get_work_order_detail(
     work_order_id: uuid.UUID,
@@ -195,6 +258,7 @@ async def get_work_order_detail(
 @work_orders_router.get(
     "/{work_order_id}/history",
     response_model=WorkOrderStatusHistoryOut,
+    dependencies=_STAFF_DEPS,
 )
 async def get_work_order_status_history(
     work_order_id: uuid.UUID,
@@ -235,7 +299,16 @@ async def approve(
         request=request,
         action=ACTION_WORK_ORDER_APPROVE,
         work_order_id=work_order_id,
-        after={"status": bundle.work_order.status.value},
+        after=_assignment_audit_after(
+            bundle,
+            work_order_id=work_order_id,
+            user=user,
+            reason=(
+                payload.note
+                if payload and payload.note
+                else "AI recommendation accepted on approval."
+            ),
+        ),
     )
     return bundle
 
@@ -265,10 +338,12 @@ async def assign(
         request=request,
         action=ACTION_WORK_ORDER_ASSIGN,
         work_order_id=work_order_id,
-        after={
-            "status": bundle.work_order.status.value,
-            "worker_id": str(payload.worker_id),
-        },
+        after=_assignment_audit_after(
+            bundle,
+            work_order_id=work_order_id,
+            user=user,
+            reason=payload.reason,
+        ),
     )
     return bundle
 
@@ -298,10 +373,12 @@ async def reassign(
         request=request,
         action=ACTION_WORK_ORDER_REASSIGN,
         work_order_id=work_order_id,
-        after={
-            "status": bundle.work_order.status.value,
-            "worker_id": str(payload.worker_id),
-        },
+        after=_assignment_audit_after(
+            bundle,
+            work_order_id=work_order_id,
+            user=user,
+            reason=payload.reason,
+        ),
     )
     return bundle
 

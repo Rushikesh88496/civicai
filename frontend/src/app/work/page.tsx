@@ -1,42 +1,79 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, LocateFixed, RefreshCw, AlertCircle } from "lucide-react";
-import { Tabs } from "@/components/ui/tabs";
+import Link from "next/link";
+import {
+  Activity,
+  CalendarClock,
+  CheckCircle2,
+  ListChecks,
+  ListPlus,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
 import { JobList } from "@/components/field-worker/job-list";
-import NearbyJobsMap from "@/components/field-worker/nearby-jobs-map";
 import {
   fetchWorkerDashboard,
   type WorkerDashboard,
 } from "@/lib/field-worker-api";
-import { useWorkerGeoLocation } from "@/hooks/use-worker-geo";
+import { isSameLocalDay } from "@/lib/worker-workflow";
 
-type TabKey = "assigned" | "nearby" | "p1" | "completed";
+function SectionHeader({ title, count }: { title: string; count?: number }) {
+  return (
+    <div className="flex items-center justify-between">
+      <h2 className="text-[13px] font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </h2>
+      {count != null && (
+        <span className="rounded-full bg-primary-50 px-2.5 py-0.5 text-xs font-semibold text-primary-700">
+          {count}
+        </span>
+      )}
+    </div>
+  );
+}
 
-export default function FieldWorkerDashboardPage() {
+function StatTile({
+  icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  tone: string;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-border-soft bg-surface p-3 shadow-sm">
+      <div
+        className={cn(
+          "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+          tone
+        )}
+      >
+        {icon}
+      </div>
+      <div className="min-w-0 leading-tight">
+        <p className="text-xl font-bold tabular-nums text-slate-900">{value}</p>
+        <p className="truncate text-[11px] font-medium text-slate-500">{label}</p>
+      </div>
+    </div>
+  );
+}
+
+export default function FieldWorkerJobsPage() {
   const [data, setData] = React.useState<WorkerDashboard | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
-  const [tab, setTab] = React.useState<TabKey>("assigned");
   const [reloadKey, setReloadKey] = React.useState(0);
-  const [gpsCoords, setGpsCoords] = React.useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
-
-  // GPS location: preferred origin for the nearby list; server falls back to the
-  // worker's home coordinates when no override is passed.
-  const { status: geoStatus, error: geoError, locate } = useWorkerGeoLocation(
-    (c) => {
-      if (!c.denied) setGpsCoords({ latitude: c.latitude, longitude: c.longitude });
-    }
-  );
 
   React.useEffect(() => {
     let cancelled = false;
-    fetchWorkerDashboard(gpsCoords?.latitude, gpsCoords?.longitude)
+    fetchWorkerDashboard()
       .then((d) => {
         if (!cancelled) {
           setData(d);
@@ -53,133 +90,149 @@ export default function FieldWorkerDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadKey, gpsCoords]);
+  }, [reloadKey]);
 
-  const tabs = [
-    { label: "Assigned", value: "assigned" },
-    { label: "Nearby", value: "nearby" },
-    { label: "P1", value: "p1" },
-    { label: "Done", value: "completed" },
-  ];
+  if (error && !data) {
+    return (
+      <ErrorState
+        title="Could not load your jobs"
+        description={error}
+        action={
+          <Button onClick={() => setReloadKey((k) => k + 1)} variant="outline">
+            Try Again
+          </Button>
+        }
+      />
+    );
+  }
 
-  const renderList = () => {
-    if (!data) return null;
-    if (loading) {
-      return <div className="flex justify-center py-10"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>;
-    }
-    switch (tab) {
-      case "assigned":
-        return (
-          <JobList
-            jobs={data.assigned}
-            emptyTitle="No assigned jobs"
-            emptyNote="New jobs appear here once assigned to you."
-          />
-        );
-      case "nearby":
-        return (
-          <div className="space-y-3">
-            <NearbyJobsMap
-              jobs={data.nearby}
-              origin={gpsCoords}
-            />
-            <div className="rounded-xl border border-border-soft bg-surface p-3">
-              <p className="text-xs text-slate-500">
-                {gpsCoords
-                  ? `Ranked by distance from your location (${gpsCoords.latitude.toFixed(4)}, ${gpsCoords.longitude.toFixed(4)}).`
-                  : "Ranked by your assigned home base. Use 'Locate me' to rank by your current position."}
-              </p>
-            </div>
-            <JobList
-              jobs={data.nearby}
-              emptyTitle="No nearby open jobs"
-              emptyNote="All open jobs in your area are already assigned."
-              showPriority
-            />
-          </div>
-        );
-      case "p1":
-        return (
-          <JobList
-            jobs={data.p1}
-            emptyTitle="No P1 priority jobs"
-            emptyNote="Critical-priority tasks assigned to you show up here."
-            showPriority
-          />
-        );
-      case "completed":
-        return (
-          <JobList
-            jobs={data.completed}
-            emptyTitle="No completed jobs"
-            emptyNote="Jobs you have finished are archived here."
-          />
-        );
-      default:
-        return null;
-    }
-  };
+  const assigned = data?.assigned ?? [];
+  const completed = data?.completed ?? [];
+  const active = assigned.filter((j) => j.status === "IN_PROGRESS");
+  const available = assigned.filter((j) => j.status === "ASSIGNED");
+  const today = new Date();
+  const todayJobs = assigned.filter((j) => isSameLocalDay(j.assigned_at, today));
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900">Your Jobs</h1>
-          <p className="text-sm text-slate-500">Accept, work, and close field tasks.</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Jobs</h1>
+          <p className="mt-0.5 text-sm text-slate-500">
+            {assigned.length === 0
+              ? "You have no assigned jobs right now."
+              : `${active.length} active · ${available.length} available · ${completed.length} completed`}
+          </p>
         </div>
-        <div className="flex gap-1.5">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              locate();
-            }}
-            disabled={geoStatus === "locating"}
-          >
-            {geoStatus === "locating" ? (
-              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-            ) : (
-              <LocateFixed className="mr-1.5 h-4 w-4" />
-            )}
-            Locate
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setReloadKey((k) => k + 1)}
-            disabled={loading}
-          >
-            <RefreshCw className="mr-1.5 h-4 w-4" />
-            Refresh
-          </Button>
-        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setReloadKey((k) => k + 1)}
+          disabled={loading}
+          aria-label="Refresh jobs"
+        >
+          {loading && !data ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-1.5 h-4 w-4" />}
+          Refresh
+        </Button>
       </div>
 
-      {geoError && (
-        <div className="flex items-start gap-2 rounded-lg border border-warning-200 bg-warning-50 px-3 py-2 text-sm text-warning-800">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{geoError}</span>
+      {loading && !data ? (
+        <div className="flex justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
         </div>
-      )}
-
-      {error ? (
-        <ErrorState
-          title="Could not load your jobs"
-          description={error}
-          action={
-            <Button onClick={() => setReloadKey((k) => k + 1)} variant="outline">
-              Try Again
-            </Button>
-          }
-        />
       ) : (
         <>
-          <Tabs
-            tabs={tabs}
-            value={tab}
-            onChange={(v) => setTab(v as TabKey)}
-          />
-          {renderList()}
+          {assigned.length > 0 && (
+            <div className="grid grid-cols-2 gap-3">
+              <StatTile
+                icon={<Activity className="h-5 w-5 text-info-600" />}
+                label="Active now"
+                value={active.length}
+                tone="bg-info-50"
+              />
+              <StatTile
+                icon={<ListChecks className="h-5 w-5 text-ai-600" />}
+                label="Available"
+                value={available.length}
+                tone="bg-ai-50"
+              />
+              <StatTile
+                icon={<CalendarClock className="h-5 w-5 text-primary-600" />}
+                label="Assigned today"
+                value={todayJobs.length}
+                tone="bg-primary-50"
+              />
+              <StatTile
+                icon={<CheckCircle2 className="h-5 w-5 text-success-600" />}
+                label="Completed"
+                value={completed.length}
+                tone="bg-success-50"
+              />
+            </div>
+          )}
+
+          <section className="space-y-2.5">
+            <SectionHeader title="Active Job" count={active.length} />
+            {active.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border-strong bg-surface p-5">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-info-50 text-info-600">
+                    <ListPlus className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-700">No active job right now</p>
+                    <p className="mt-0.5 text-xs leading-5 text-slate-500">
+                      Accept an assigned job or pick up open work nearby to begin.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <JobList jobs={active} showPriority />
+            )}
+          </section>
+
+          <section className="space-y-2.5">
+            <SectionHeader title="Today's Jobs" count={todayJobs.length} />
+            <JobList
+              jobs={todayJobs}
+              emptyTitle="No jobs assigned yet."
+              emptyNote="New assignments will appear here when an officer or the dispatch engine assigns them to you."
+            />
+          </section>
+
+          <section className="space-y-2.5">
+            <SectionHeader title="Assigned Jobs" count={available.length} />
+            <JobList
+              jobs={available}
+              showPriority
+              emptyTitle="No jobs waiting"
+              emptyNote="All your assignments are in progress or completed."
+            />
+          </section>
+
+          <section className="space-y-2.5">
+            <SectionHeader title="Completed Jobs" count={completed.length} />
+            {completed.length > 0 ? (
+              <div className="space-y-3">
+                <JobList jobs={completed.slice(0, 5)} />
+                {completed.length > 5 && (
+                  <Link
+                    href="/work/completed"
+                    className="block text-center text-xs font-semibold text-amber-700 hover:underline"
+                  >
+                    View all {completed.length} completed jobs
+                  </Link>
+                )}
+              </div>
+            ) : (
+              <JobList
+                jobs={[]}
+                emptyTitle="No completed jobs yet"
+                emptyNote="Finished jobs are archived here for your records."
+              />
+            )}
+          </section>
         </>
       )}
     </div>

@@ -32,6 +32,9 @@ class ComplaintLocation(Base, UUIDMixin):
     )
     latitude: Mapped[float] = mapped_column(Float, nullable=False)
     longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    # Browser/device GPS horizontal accuracy in metres, when the coordinate came
+    # from navigator.geolocation (Part 31). None for manual map picks.
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Geographic POINT in EPSG:4326 (SRID 4326). The GiST spatial index is
     # created explicitly in the migration (controlled name).
     geom: Mapped[object] = mapped_column(

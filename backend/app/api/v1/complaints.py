@@ -67,6 +67,16 @@ from app.services.audit_service import ACTION_COMPLAINT_CREATE, record_audit
 
 router = APIRouter(prefix="/complaints", tags=["complaints"])
 
+# Officer-only operational endpoints (AI triage/vision/correlation/context/
+# priority/routing + dispatch + work orders). Citizens view their complaint via
+# the detail + timeline endpoints only; this callable keeps internal analysis
+# and recommendation data out of citizen-accessible API responses.
+_OPERATIONAL_DEPS = require_roles(
+    RoleName.OFFICER.value,
+    RoleName.ADMIN.value,
+    RoleName.WARD_REPRESENTATIVE.value,
+)
+
 
 def _handle_upload_error(exc: complaint_service.MediaValidationError) -> HTTPException:
     return HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
@@ -210,6 +220,7 @@ def _triage_error(exc: Exception) -> HTTPException:
 @router.post(
     "/{complaint_id}/triage",
     response_model=TriageRunResponse,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def run_complaint_triage(
     complaint_id: uuid.UUID,
@@ -249,6 +260,7 @@ async def run_complaint_triage(
 @router.get(
     "/{complaint_id}/ai-triage",
     response_model=AgentRunOut | None,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_ai_triage(
     complaint_id: uuid.UUID,
@@ -273,6 +285,7 @@ def _vision_error(exc: Exception) -> HTTPException:
 @router.post(
     "/{complaint_id}/vision",
     response_model=VisionRunResponse,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def run_complaint_vision(
     complaint_id: uuid.UUID,
@@ -300,6 +313,7 @@ async def run_complaint_vision(
 @router.get(
     "/{complaint_id}/vision-result",
     response_model=VisionRunOut | None,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_vision_result(
     complaint_id: uuid.UUID,
@@ -330,6 +344,7 @@ def _correlation_error(exc: Exception) -> HTTPException:
 @router.post(
     "/{complaint_id}/correlate",
     response_model=CorrelationRunResponse,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def run_complaint_correlation(
     complaint_id: uuid.UUID,
@@ -358,6 +373,7 @@ async def run_complaint_correlation(
 @router.get(
     "/{complaint_id}/correlation-result",
     response_model=CorrelationRunOut | None,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_correlation_result(
     complaint_id: uuid.UUID,
@@ -374,6 +390,7 @@ async def get_complaint_correlation_result(
 @router.get(
     "/{complaint_id}/correlations",
     response_model=list[CorrelationMatch],
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def list_complaint_correlations(
     complaint_id: uuid.UUID,
@@ -448,6 +465,7 @@ def _context_error(exc: Exception) -> HTTPException:
 @router.post(
     "/{complaint_id}/context",
     response_model=ContextRunResponse,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def run_complaint_context(
     complaint_id: uuid.UUID,
@@ -476,6 +494,7 @@ async def run_complaint_context(
 @router.get(
     "/{complaint_id}/context-result",
     response_model=ContextRunOut | None,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_context_result(
     complaint_id: uuid.UUID,
@@ -500,6 +519,7 @@ def _priority_error(exc: Exception) -> HTTPException:
 @router.post(
     "/{complaint_id}/priority",
     response_model=PriorityRunResponse,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def run_complaint_priority(
     complaint_id: uuid.UUID,
@@ -528,6 +548,7 @@ async def run_complaint_priority(
 @router.get(
     "/{complaint_id}/priority-result",
     response_model=PriorityRunOut | None,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_priority_result(
     complaint_id: uuid.UUID,
@@ -544,6 +565,7 @@ async def get_complaint_priority_result(
 @router.get(
     "/{complaint_id}/priority-history",
     response_model=PriorityHistoryOut,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_priority_history(
     complaint_id: uuid.UUID,
@@ -568,6 +590,7 @@ def _routing_error(exc: Exception) -> HTTPException:
 @router.post(
     "/{complaint_id}/routing",
     response_model=RoutingRunResponse,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def run_complaint_routing(
     complaint_id: uuid.UUID,
@@ -596,6 +619,7 @@ async def run_complaint_routing(
 @router.get(
     "/{complaint_id}/routing-result",
     response_model=RoutingRunOut | None,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_routing_result(
     complaint_id: uuid.UUID,
@@ -612,6 +636,7 @@ async def get_complaint_routing_result(
 @router.get(
     "/{complaint_id}/routing-history",
     response_model=RoutingHistoryOut,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_routing_history(
     complaint_id: uuid.UUID,
@@ -667,6 +692,7 @@ async def override_complaint_department(
 @router.get(
     "/{complaint_id}/routing/overrides",
     response_model=DepartmentOverrideHistoryOut,
+    dependencies=[Depends(_OPERATIONAL_DEPS)],
 )
 async def get_complaint_routing_overrides(
     complaint_id: uuid.UUID,

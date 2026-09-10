@@ -28,6 +28,7 @@ from app.models.enums import (
 )
 from app.schemas.triage import TriageInput, TriageOutput
 from app.services import auth_service
+from tests.helpers import any_active_ward_id, any_officer_token
 
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
@@ -92,7 +93,12 @@ async def _citizen_token(email: str) -> str:
 
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(email=email, password=_PASSWORD, full_name="Triage Citizen")
+            db, RegisterIn(
+                    email=email,
+                    password=_PASSWORD,
+                    full_name="Triage Citizen",
+                    ward_id=await any_active_ward_id(db),
+                )
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -360,6 +366,7 @@ async def test_triage_missing_api_key_marks_failed(client):
 async def test_api_run_triage_success(client, monkeypatch):
     email = _unique_email("trg-api")
     token = await _citizen_token(email)
+    otoken = await any_officer_token(_unique_email("trg-api-officer"))
     complaint_id = await _create_complaint(client, token, "ROAD")
 
     from app.services.triage_service import TriageAgent as _AgentCls
@@ -373,7 +380,7 @@ async def test_api_run_triage_success(client, monkeypatch):
     resp = await client.post(
         f"{_BASE}/{complaint_id}/triage",
         json={"language": "en"},
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {otoken}"},
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -398,6 +405,13 @@ async def test_api_ai_triage_requires_access(client):
     owner_token = await _citizen_token(owner_email)
     other_token = await _citizen_token(other_email)
     complaint_id = await _create_complaint(client, owner_token)
+
+    # Officers-only: even the complaint owner (a citizen) gets 403.
+    owner_resp = await client.get(
+        f"{_BASE}/{complaint_id}/ai-triage",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert owner_resp.status_code == 403, owner_resp.text
 
     resp = await client.get(
         f"{_BASE}/{complaint_id}/ai-triage",

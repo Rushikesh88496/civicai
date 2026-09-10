@@ -4,9 +4,7 @@
 // machinery from auth-api (in-memory access token + transparent refresh) so the
 // dashboard is only ever populated with the authenticated user's own data.
 
-import { ApiError, getAccessToken } from "@/lib/auth-api";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { authorizedFetch } from "@/lib/auth-api";
 
 export type ComplaintStatus =
   | "OPEN"
@@ -53,6 +51,8 @@ export interface ComplaintLocation {
   address: string | null;
   source: string;
   geopoint_denied: boolean;
+  // Device-reported GPS horizontal accuracy in metres (Part 31/33).
+  accuracy_m: number | null;
 }
 
 export interface WardInfo {
@@ -88,6 +88,19 @@ export interface ComplaintTimeline {
   complaint_id: string;
   current_status: ComplaintStatus;
   events: TimelineEvent[];
+  // Part 32: work-order milestones merged into the complaint timeline so the
+  // UI can render the full lifecycle (officer review → official assignment →
+  // worker accepted → in progress → verification → resolved → closed).
+  work_order_events: WorkOrderTimelineEvent[];
+}
+
+export interface WorkOrderTimelineEvent {
+  work_order_id: string;
+  action: string;
+  status: string;
+  actor_name: string | null;
+  note: string | null;
+  recorded_at: string;
 }
 
 export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -122,6 +135,7 @@ export interface WardRepresentative {
   name: string;
   email: string;
   title: string | null;
+  status: string | null;
 }
 
 export interface ComplaintSummary {
@@ -139,31 +153,15 @@ export interface DashboardData {
 }
 
 async function authorizedGet<T>(path: string): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError(401, "Not authenticated.");
-  }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  return res.json() as Promise<T>;
-}
-
-async function readErrorMessage(res: Response): Promise<string> {
-  try {
-    const body = await res.json();
-    if (typeof body?.detail === "string") return body.detail;
-  } catch {
-    // ignore parse errors
-  }
-  return res.statusText || "Request failed.";
+  return authorizedFetch<T>(path);
 }
 
 export async function fetchDashboard(): Promise<DashboardData> {
   return authorizedGet<DashboardData>("/api/v1/citizen/dashboard");
+}
+
+export async function fetchMyWardRepresentative(): Promise<WardInfo> {
+  return authorizedGet<WardInfo>("/api/v1/citizen/my-ward-representative");
 }
 
 export async function fetchComplaintDetail(id: string): Promise<ComplaintDetail> {
@@ -178,23 +176,10 @@ async function authorizedSend<T>(
   path: string,
   options: { method?: string; body?: unknown } = {}
 ): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) {
-    throw new ApiError(401, "Not authenticated.");
-  }
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  return authorizedFetch<T>(path, {
     method: options.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
   });
-  if (!res.ok) {
-    throw new ApiError(res.status, await readErrorMessage(res));
-  }
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
 }
 
 export async function fetchAiTriage(
@@ -825,6 +810,9 @@ export type WorkOrderStatus =
   | "APPROVED"
   | "ASSIGNED"
   | "IN_PROGRESS"
+  | "WORK_COMPLETED"
+  | "EVIDENCE_SUBMITTED"
+  | "RETURNED_FOR_REWORK"
   | "COMPLETED"
   | "ESCALATED"
   | "REJECTED"
@@ -837,7 +825,9 @@ export type WorkOrderAction =
   | "ESCALATE"
   | "REJECT"
   | "CLOSE"
-  | "DISPATCH";
+  | "DISPATCH"
+  | "REWORK_REQUESTED"
+  | "START_REWORK";
 
 export interface DispatchCandidate {
   worker_id: string;
@@ -849,6 +839,14 @@ export interface DispatchCandidate {
   distance: number;
   workload: number;
   equipment: number;
+  department: number;
+  ward: number;
+  priority: number;
+  distance_km: number | null;
+  department_code: string | null;
+  ward_code: string | null;
+  active_orders: number;
+  capacity: number | null;
   reasons: string[];
 }
 
@@ -860,6 +858,10 @@ export interface DispatchRecommendation {
   required_equipment: string[];
   recommended_worker_id: string | null;
   recommended_worker_name: string | null;
+  // Concise deterministic explanation of the pick, built only from the actual
+  // scored candidate data (skill / department / ward / availability / workload /
+  // distance). Displayed to staff, never to citizens.
+  recommended_worker_explanation: string | null;
   candidates: DispatchCandidate[];
   sla_hours: number | null;
   eta_minutes: number | null;
@@ -919,6 +921,10 @@ export interface WorkOrderDetail {
   eta_minutes: number | null;
   eta_source: string | null;
   worker_name: string | null;
+  // Part 32: the worker the Dispatch Agent recommended, frozen at draft time.
+  // Distinct from ``worker_name`` once an officer overrides the pick.
+  recommended_worker_id: string | null;
+  recommended_worker_name: string | null;
   created_at: string;
   updated_at: string | null;
 }
@@ -950,6 +956,9 @@ export interface WorkerAssignment {
   worker_name: string | null;
   status: "ASSIGNED" | "REASSIGNED" | "UNASSIGNED";
   assigned_by_name: string | null;
+  // Part 32 provenance: AI_RECOMMENDATION (officer accepted the pick),
+  // OFFICER_OVERRIDE (different worker chosen), or MANUAL (no recommendation).
+  origin: string | null;
   reason: string | null;
   assigned_at: string;
 }
@@ -1059,7 +1068,10 @@ export type VerificationStatus =
   | "NOT_RESOLVED"
   | "NEEDS_HUMAN_REVIEW";
 
-export type VerificationReviewDecision = "CONFIRM_VERIFIED" | "REQUIRES_FOLLOWUP";
+export type VerificationReviewDecision =
+  | "CONFIRM_VERIFIED"
+  | "REQUIRES_FOLLOWUP"
+  | "REQUEST_REWORK";
 
 export interface WorkOrderVerification {
   id: string;
@@ -1094,6 +1106,7 @@ export interface VerificationReviewOut {
   verification: WorkOrderVerification;
   work_order_status: WorkOrderStatus;
   reopened: boolean;
+  rework_requested?: boolean;
 }
 
 export async function runVerification(orderId: string): Promise<RunVerificationResponse> {
@@ -1108,6 +1121,51 @@ export async function fetchWorkOrderVerification(
 ): Promise<WorkOrderVerification | null> {
   return authorizedSend<WorkOrderVerification | null>(
     `/api/v1/work-orders/${orderId}/verification`
+  );
+}
+
+export interface EvidencePhoto {
+  id: string;
+  category: "BEFORE" | "AFTER";
+  url: string;
+  original_filename: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  created_at: string;
+  uploaded_by_name: string | null;
+}
+
+export interface ComplaintMediaItem {
+  id: string;
+  media_type: string;
+  url: string;
+  original_filename: string;
+  content_type: string;
+  created_at: string;
+}
+
+export interface WorkOrderEvidence {
+  order_id: string;
+  order_status: WorkOrderStatus;
+  complaint_id: string;
+  complaint_title: string | null;
+  complaint_description: string | null;
+  complaint_category: string | null;
+  complaint_media: ComplaintMediaItem[];
+  worker_id: string | null;
+  worker_name: string | null;
+  completed_at: string | null;
+  evidence_submitted_at: string | null;
+  completion_notes: string | null;
+  before_photos: EvidencePhoto[];
+  after_photos: EvidencePhoto[];
+}
+
+export async function fetchWorkOrderEvidence(
+  orderId: string
+): Promise<WorkOrderEvidence> {
+  return authorizedSend<WorkOrderEvidence>(
+    `/api/v1/work-orders/${orderId}/evidence`
   );
 }
 

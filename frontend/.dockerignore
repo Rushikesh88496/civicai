@@ -1,0 +1,21 @@
+# --- Never bake environment files or secrets into the image ---
+.env
+.env.*
+!.env.docker.example
+
+# --- Dependencies / build output ---
+node_modules
+.next
+out
+build
+coverage
+*.tsbuildinfo
+
+# --- Sources kept: src/, public/, config files, tests, middleware ---
+
+# --- VCS / scratch ---
+.git
+.github
+*.md
+*.log
+AppData

@@ -1,0 +1,35 @@
+# ===========================================================================
+# CivicAgent — test overrides.
+#
+# Runs the full test suites inside the real (containerized) topology:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml run backend
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml run frontend
+#
+# The backend entrypoint still applies migrations (+ demo seed) before pytest.
+# ===========================================================================
+
+services:
+  backend:
+    build:
+      target: test
+    command: ["pytest", "-q", "-p", "no:cacheprovider"]
+    environment:
+      DEBUG: "false"
+      SEED_DEMO_DATA: "true"
+      JWT_SECRET: ${JWT_SECRET:-test-only-insecure-secret-0123456789abcdef0123456789abcdef}
+      # conftest.py disables rate limiting; keep Redis out of the test path.
+      REDIS_URL: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  frontend:
+    command: ["npm", "run", "test"]
+    healthcheck:
+      disable: true

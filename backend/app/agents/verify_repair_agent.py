@@ -154,7 +154,11 @@ def _build_content_array(
     issue = "the reported civic issue"
     if category:
         issue = f"the reported '{category}' complaint"
-    notes = f"\n\nThe field worker's completion notes: \"{completion_notes}\"" if completion_notes else ""
+    notes = (
+        f'\n\nThe field worker\'s completion notes: "{completion_notes}"'
+        if completion_notes
+        else ""
+    )
     complaint_photo_hint = (
         "\n\nThe first image is the citizen's ORIGINAL complaint photo (the reported "
         "condition); compare it against the before/after evidence."

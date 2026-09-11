@@ -277,9 +277,7 @@ async def _profile_language(db: AsyncSession, user: User) -> str | None:
     return language_service.supported(profile.language)
 
 
-def _resolve_reply_language(
-    detected: str, explicit: str | None, preference: str | None
-) -> str:
+def _resolve_reply_language(detected: str, explicit: str | None, preference: str | None) -> str:
     """Priority for the reply language (Part 26):
 
     1. explicit request ``language`` wins;
@@ -335,17 +333,14 @@ async def _top_ward_issues(db: AsyncSession, ward_id: uuid.UUID | None) -> list[
     if ward_id is None:
         return []
     rows = (
-        (
-            await db.execute(
-                select(Complaint.category, func.count(Complaint.id).label("n"))
-                .where(Complaint.ward_id == ward_id)
-                .group_by(Complaint.category)
-                .order_by(func.count(Complaint.id).desc())
-                .limit(3)
-            )
+        await db.execute(
+            select(Complaint.category, func.count(Complaint.id).label("n"))
+            .where(Complaint.ward_id == ward_id)
+            .group_by(Complaint.category)
+            .order_by(func.count(Complaint.id).desc())
+            .limit(3)
         )
-        .all()
-    )
+    ).all()
     return [{"category": _humanize(str(row.category.value)), "count": int(row.n)} for row in rows]
 
 
@@ -470,19 +465,16 @@ async def _retrieve(
     column = KnowledgeDocument.embedding
     similarity = (1 - column.cosine_distance(query_vec)).label("similarity")  # type: ignore[arg-type]
     rows = (
-        (
-            await db.execute(
-                select(KnowledgeDocument, similarity)
-                .where(
-                    KnowledgeDocument.is_active.is_(True),
-                    column.is_not(None),
-                )
-                .order_by(column.cosine_distance(query_vec).asc())  # type: ignore[arg-type]
-                .limit(top_k)
+        await db.execute(
+            select(KnowledgeDocument, similarity)
+            .where(
+                KnowledgeDocument.is_active.is_(True),
+                column.is_not(None),
             )
+            .order_by(column.cosine_distance(query_vec).asc())  # type: ignore[arg-type]
+            .limit(top_k)
         )
-        .all()
-    )
+    ).all()
     documents: list[KnowledgeDocument] = []
     sources: list[AssistantSource] = []
     for doc, sim in rows:

@@ -45,9 +45,7 @@ async def _preflight_clean_test_data():
         # Children before parents, RESTRICT-referencing tables before users.
         # ML artifacts (train/review referenced by test users).
         await db.execute(
-            delete(m.PredictiveModel).where(
-                m.PredictiveModel.trained_by_user_id.in_(test_ids)
-            )
+            delete(m.PredictiveModel).where(m.PredictiveModel.trained_by_user_id.in_(test_ids))
         )
         await db.execute(
             delete(m.InfrastructureModel).where(
@@ -76,12 +74,9 @@ async def _preflight_clean_test_data():
         )
         # Work-order family (children before the order rows).
         wo_ids = select(m.WorkOrder.id).where(
-            (m.WorkOrder.created_by.in_(test_ids))
-            | (m.WorkOrder.approved_by.in_(test_ids))
+            (m.WorkOrder.created_by.in_(test_ids)) | (m.WorkOrder.approved_by.in_(test_ids))
         )
-        await db.execute(
-            delete(m.WorkOrderPhoto).where(m.WorkOrderPhoto.work_order_id.in_(wo_ids))
-        )
+        await db.execute(delete(m.WorkOrderPhoto).where(m.WorkOrderPhoto.work_order_id.in_(wo_ids)))
         await db.execute(
             delete(m.WorkOrderActivity).where(m.WorkOrderActivity.work_order_id.in_(wo_ids))
         )
@@ -107,37 +102,24 @@ async def _preflight_clean_test_data():
         )
         await db.execute(
             delete(m.WorkOrder).where(
-                (m.WorkOrder.created_by.in_(test_ids))
-                | (m.WorkOrder.approved_by.in_(test_ids))
+                (m.WorkOrder.created_by.in_(test_ids)) | (m.WorkOrder.approved_by.in_(test_ids))
             )
         )
         # Complaint + department + rating families.
         await db.execute(
-            delete(m.DepartmentOverride).where(
-                m.DepartmentOverride.override_by.in_(test_ids)
-            )
+            delete(m.DepartmentOverride).where(m.DepartmentOverride.override_by.in_(test_ids))
         )
-        await db.execute(
-            delete(m.ComplaintRating).where(m.ComplaintRating.user_id.in_(test_ids))
-        )
+        await db.execute(delete(m.ComplaintRating).where(m.ComplaintRating.user_id.in_(test_ids)))
         await db.execute(delete(m.Complaint).where(m.Complaint.user_id.in_(test_ids)))
         # User-owned children (explicit, though cascades would also clean up).
+        await db.execute(delete(m.Notification).where(m.Notification.user_id.in_(test_ids)))
+        await db.execute(delete(m.MessageRead).where(m.MessageRead.user_id.in_(test_ids)))
         await db.execute(
-            delete(m.Notification).where(m.Notification.user_id.in_(test_ids))
-        )
-        await db.execute(
-            delete(m.MessageRead).where(m.MessageRead.user_id.in_(test_ids))
-        )
-        await db.execute(
-            delete(m.MessageAttachment).where(
-                m.MessageAttachment.uploader_id.in_(test_ids)
-            )
+            delete(m.MessageAttachment).where(m.MessageAttachment.uploader_id.in_(test_ids))
         )
         await db.execute(delete(m.Message).where(m.Message.author_id.in_(test_ids)))
         await db.execute(
-            delete(m.AssistantConversation).where(
-                m.AssistantConversation.user_id.in_(test_ids)
-            )
+            delete(m.AssistantConversation).where(m.AssistantConversation.user_id.in_(test_ids))
         )
         # Finally the test users and test wards.
         # Part 27 admin-panel artifacts (audit rows reference users via SET NULL;
@@ -220,10 +202,7 @@ async def _restore_zero_baseline():
         # KB). Restore the reference documents with real embeddings so the dev
         # database ends exactly at its full seed baseline, as ``seed.py`` would.
         knowledge_docs = int(
-            await db.scalar(
-                select(func.count()).select_from(m.KnowledgeDocument)
-            )
-            or 0
+            await db.scalar(select(func.count()).select_from(m.KnowledgeDocument)) or 0
         )
         if knowledge_docs == 0:
             from app.rag.knowledge_base import ensure_knowledge_base

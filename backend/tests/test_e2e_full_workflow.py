@@ -204,9 +204,7 @@ async def _clear_workers() -> None:
         for fw in fws:
             await db.delete(fw)
         role = await db.scalar(select(Role).where(Role.name == RoleName.FIELD_WORKER.value))
-        users = (
-            await db.execute(select(User).where(User.role_id == role.id))
-        ).scalars().all()
+        users = (await db.execute(select(User).where(User.role_id == role.id))).scalars().all()
         for u in users:
             await db.delete(u)
         await db.execute(delete(WorkOrderPhoto))
@@ -259,9 +257,7 @@ async def test_full_citizen_to_analytics_workflow(client, monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.correlation_service._agent",
-        lambda: CorrelationAgent(
-            embedding_service=EmbeddingService(embedder=FakeEmbedder())
-        ),
+        lambda: CorrelationAgent(embedding_service=EmbeddingService(embedder=FakeEmbedder())),
     )
     monkeypatch.setattr(
         "app.services.verify_repair_service._agent", lambda: VerifyRepairAgent(ai=FakeVerifyAI())
@@ -351,9 +347,7 @@ async def test_full_citizen_to_analytics_workflow(client, monkeypatch):
     assert detail.json()["status"] == ComplaintStatus.EVIDENCE_VERIFIED.value
 
     # Priorities persisted as history
-    ph = await client.get(
-        f"{_API}/complaints/{cid}/priority-history", headers=_auth(officer_token)
-    )
+    ph = await client.get(f"{_API}/complaints/{cid}/priority-history", headers=_auth(officer_token))
     assert ph.status_code == 200
     assert len(ph.json()["entries"]) >= 1
 
@@ -401,7 +395,8 @@ async def test_full_citizen_to_analytics_workflow(client, monkeypatch):
     assert checkin.status_code == 200, checkin.text
 
     start = await client.post(
-        f"{_API}/worker/orders/{wid}/start", json={"client_ref": "e2e-start"},
+        f"{_API}/worker/orders/{wid}/start",
+        json={"client_ref": "e2e-start"},
         headers=_auth(worker_token),
     )
     assert start.status_code == 200, start.text
@@ -471,9 +466,7 @@ async def test_full_citizen_to_analytics_workflow(client, monkeypatch):
     assert "REPAIR_STARTED" in await _notification_types(client, citizen_token)
 
     # --- 14. Resolution verification + human review ----------------------------
-    ver = await client.post(
-        f"{_API}/work-orders/{wid}/verify", headers=_auth(officer_token)
-    )
+    ver = await client.post(f"{_API}/work-orders/{wid}/verify", headers=_auth(officer_token))
     assert ver.status_code == 200, ver.text
     assert ver.json()["status"] == "SUCCEEDED"
     assert ver.json()["result"]["verification_status"] == VerificationStatus.VERIFIED.value
@@ -600,9 +593,7 @@ async def test_verification_reopen_cycle(client, monkeypatch):
         headers=_auth(officer_token),
     )
     # Worker lifecycle: accept → GPS check-in → start (start is gated on check-in).
-    await client.post(
-        f"{_API}/worker/orders/{wid}/accept", json={}, headers=_auth(worker_token)
-    )
+    await client.post(f"{_API}/worker/orders/{wid}/accept", json={}, headers=_auth(worker_token))
     await client.post(
         f"{_API}/worker/orders/{wid}/check-in",
         json={"activity_type": "ARRIVED", "client_ref": "reopen-cin"},
@@ -617,11 +608,13 @@ async def test_verification_reopen_cycle(client, monkeypatch):
             headers=_auth(worker_token),
         )
     await client.post(
-        f"{_API}/worker/orders/{wid}/finish", json={"client_ref": "reopen-finish-1"},
+        f"{_API}/worker/orders/{wid}/finish",
+        json={"client_ref": "reopen-finish-1"},
         headers=_auth(worker_token),
     )
     await client.post(
-        f"{_API}/worker/orders/{wid}/submit-evidence", json={"client_ref": "reopen-evidence-1"},
+        f"{_API}/worker/orders/{wid}/submit-evidence",
+        json={"client_ref": "reopen-evidence-1"},
         headers=_auth(worker_token),
     )
 
@@ -645,11 +638,13 @@ async def test_verification_reopen_cycle(client, monkeypatch):
 
     # Worker redoes the job (order was reopened to IN_PROGRESS, so no second start)
     await client.post(
-        f"{_API}/worker/orders/{wid}/finish", json={"client_ref": "reopen-finish-2"},
+        f"{_API}/worker/orders/{wid}/finish",
+        json={"client_ref": "reopen-finish-2"},
         headers=_auth(worker_token),
     )
     await client.post(
-        f"{_API}/worker/orders/{wid}/submit-evidence", json={"client_ref": "reopen-evidence-2"},
+        f"{_API}/worker/orders/{wid}/submit-evidence",
+        json={"client_ref": "reopen-evidence-2"},
         headers=_auth(worker_token),
     )
 

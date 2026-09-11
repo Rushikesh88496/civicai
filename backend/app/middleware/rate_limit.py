@@ -48,6 +48,7 @@ limiter = Limiter(
 # Custom error handler — returns a clean JSON 429.
 # ---------------------------------------------------------------------------
 
+
 def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
     """Render rate-limit errors as a structured JSON response."""
     return JSONResponse(

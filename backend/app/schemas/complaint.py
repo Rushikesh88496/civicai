@@ -48,9 +48,7 @@ class ComplaintLocationIn(BaseModel):
             )
         # Accuracy is a device measurement — it only makes sense for GPS points.
         if self.source != "gps" and self.accuracy_m is not None:
-            raise ValueError(
-                "accuracy_m is only allowed for source='gps' coordinates."
-            )
+            raise ValueError("accuracy_m is only allowed for source='gps' coordinates.")
         return self
 
 

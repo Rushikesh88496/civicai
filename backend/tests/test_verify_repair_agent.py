@@ -139,7 +139,9 @@ async def _citizen_token(email: str) -> str:
             auth_service.RegisterIn(
                 email=email,
                 password=_PASSWORD,
-                full_name="Verify Citizen", ward_id=await any_active_ward_id(db)),
+                full_name="Verify Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -1004,7 +1006,8 @@ async def test_api_complaint_owner_cannot_read(client, monkeypatch):
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_api_ai_verified_does_not_auto_resolve(client, monkeypatch):
-    """A high-confidence AI VERIFIED is advisory — the complaint stays open until an officer reviews."""
+    """A high-confidence AI VERIFIED is advisory — the complaint
+    stays open until an officer reviews."""
     citizen = await _citizen_token(_unique_email("vf-api-nor"))
     otoken = await _staff_token(_unique_email("vf-api-nor-off"))
     wtoken, wid = await _seed_worker(_unique_email("vf-api-nor-wk"))
@@ -1228,11 +1231,7 @@ async def test_api_audit_trail_for_verify_review_evidence(client, monkeypatch):
 
     async with async_session_factory() as db:
         rows = (
-            (
-                await db.execute(
-                    select(AuditLog).where(AuditLog.entity_id == str(order_id))
-                )
-            )
+            (await db.execute(select(AuditLog).where(AuditLog.entity_id == str(order_id))))
             .scalars()
             .all()
         )
@@ -1241,11 +1240,7 @@ async def test_api_audit_trail_for_verify_review_evidence(client, monkeypatch):
         assert ACTION_WORK_ORDER_VERIFICATION_COMPLETED in actions
         assert ACTION_WORK_ORDER_EVIDENCE_VIEWED in actions
         assert ACTION_WORK_ORDER_RESOLUTION_CONFIRMED in actions
-        confirmed = next(
-            a for a in rows if a.action == ACTION_WORK_ORDER_RESOLUTION_CONFIRMED
-        )
+        confirmed = next(a for a in rows if a.action == ACTION_WORK_ORDER_RESOLUTION_CONFIRMED)
         assert confirmed.after["decision"] == "CONFIRM_VERIFIED"
         assert confirmed.after["actor_role"] == RoleName.OFFICER.value
-        assert all(
-            a.after.get("actor_role") == RoleName.OFFICER.value for a in rows
-        )
+        assert all(a.after.get("actor_role") == RoleName.OFFICER.value for a in rows)

@@ -261,9 +261,7 @@ async def test_analytics_overview_scoped_and_spoof_safe(client, isolation_scope)
     assert overview.status_code == 200, overview.text
     assert overview.json()["kpis"]["total_complaints"] == 1
 
-    spoofed = await client.get(
-        f"{_BASE}/analytics/overview?ward_id={s['ward_b']}", headers=headers
-    )
+    spoofed = await client.get(f"{_BASE}/analytics/overview?ward_id={s['ward_b']}", headers=headers)
     assert spoofed.status_code == 200, spoofed.text
     assert spoofed.json()["kpis"]["total_complaints"] == 0
 
@@ -323,9 +321,7 @@ async def test_sla_board_scoped_and_writes_denied(client, isolation_scope):
     async with async_session_factory() as db:
         from app.models import SlaPolicy
 
-        leftover = await db.scalar(
-            select(SlaPolicy).where(SlaPolicy.name == "x")
-        )
+        leftover = await db.scalar(select(SlaPolicy).where(SlaPolicy.name == "x"))
         assert leftover is None
 
     listed = await client.get(f"{_BASE}/sla/policies", headers=headers)
@@ -351,7 +347,9 @@ async def test_governance_scoped_and_override_write_denied(client, isolation_sco
     await _seed_decision(uuid.UUID(s["complaint_b"]))
 
     for path in ("decisions", "evidence", "overrides", "summary"):
-        r = await client.get(f"{_BASE}/governance/complaints/{s['complaint_b']}/{path}", headers=headers)
+        r = await client.get(
+            f"{_BASE}/governance/complaints/{s['complaint_b']}/{path}", headers=headers
+        )
         assert r.status_code == 403, (path, r.status_code)
 
     for cid in (s["complaint_a"], s["complaint_b"]):
@@ -377,9 +375,7 @@ async def test_verification_cross_ward_denied(client, isolation_scope):
     s = isolation_scope
     headers = _auth(s["wr"])
 
-    order_b = await _insert_order(
-        uuid.UUID(s["complaint_b"]), status=WorkOrderStatus.COMPLETED
-    )
+    order_b = await _insert_order(uuid.UUID(s["complaint_b"]), status=WorkOrderStatus.COMPLETED)
 
     run = await client.post(f"{_BASE}/work-orders/{order_b}/verify", headers=headers)
     assert run.status_code == 403, run.text

@@ -360,9 +360,7 @@ async def latest_run(db: AsyncSession, *, ward_id: uuid.UUID | None = None) -> d
     )
     if ward_id is not None and result is not None and result.orders:
         complaint_ids = (
-            await db.scalars(
-                select(Complaint.id).where(Complaint.ward_id == ward_id)
-            )
+            await db.scalars(select(Complaint.id).where(Complaint.ward_id == ward_id))
         ).all()
         allowed = set(complaint_ids)
         result.orders = [o for o in result.orders if o.complaint_id in allowed]

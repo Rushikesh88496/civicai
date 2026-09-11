@@ -74,7 +74,7 @@ async def record_audit(
     ip_address: str | None = None,
 ) -> AuditLog:
     """Persist an audit entry. The caller is responsible for committing later."""
-    ip = (ip_address or "")[: _MAX_IP_LEN] or None
+    ip = (ip_address or "")[:_MAX_IP_LEN] or None
     row = AuditLog(
         actor_id=actor_id,
         action=action[:64],
@@ -119,7 +119,9 @@ async def list_audit_logs(
     if actor_id:
         conditions.append(AuditLog.actor_id == actor_id)
     if search:
-        conditions.append(AuditLog.actor.has(func.lower(AuditLog.actor.email).contains(search.lower())))
+        conditions.append(
+            AuditLog.actor.has(func.lower(AuditLog.actor.email).contains(search.lower()))
+        )
 
     base = select(AuditLog).options(joinedload(AuditLog.actor))
     if conditions:
@@ -130,10 +132,14 @@ async def list_audit_logs(
         total_stmt = total_stmt.where(*conditions)
     total = await db.scalar(total_stmt)
     rows = (
-        await db.execute(
-            base.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
+        (
+            await db.execute(
+                base.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return list(rows), int(total or 0)

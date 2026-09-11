@@ -36,9 +36,7 @@ async def get_dashboard(db: AsyncSession, user: User) -> DashboardResponse:
     )
 
 
-async def get_my_ward_representative(
-    db: AsyncSession, user: User
-) -> WardInfoOut:
+async def get_my_ward_representative(db: AsyncSession, user: User) -> WardInfoOut:
     """Return the authenticated citizen's ward and its representative.
 
     The ward is always derived from ``user.ward_id`` (set by the auth flow, not
@@ -101,11 +99,7 @@ async def _ward_info(db: AsyncSession, ward_id: uuid.UUID | None) -> WardInfoOut
                 name=rep_user.full_name,
                 email=rep_user.email,
                 title=representative.title,
-                status=(
-                    representative.status.value
-                    if representative.status is not None
-                    else None
-                ),
+                status=(representative.status.value if representative.status is not None else None),
             )
 
     return WardInfoOut(

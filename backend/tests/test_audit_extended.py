@@ -34,11 +34,7 @@ async def _register_json(email: str) -> dict:
 
 async def _audit_rows(entity_id: str) -> list[str]:
     async with async_session_factory() as db:
-        rows = (
-            await db.execute(
-                select(AuditLog.action).where(AuditLog.entity_id == entity_id)
-            )
-        )
+        rows = await db.execute(select(AuditLog.action).where(AuditLog.entity_id == entity_id))
         return list(rows.scalars().all())
 
 
@@ -180,18 +176,14 @@ async def test_complaint_create_writes_audit_row(client):
     assert "complaint.create" in actions
 
     async with async_session_factory() as db:
-        await db.execute(
-            delete(AuditLog).where(AuditLog.entity_id == str(complaint_id))
-        )
+        await db.execute(delete(AuditLog).where(AuditLog.entity_id == str(complaint_id)))
         await db.execute(
             delete(AuditLog).where(
                 AuditLog.entity_id == str(user_id),
                 AuditLog.action.in_(["auth.register"]),
             )
         )
-        complaint = await db.scalar(
-            select(Complaint).where(Complaint.id == complaint_id)
-        )
+        complaint = await db.scalar(select(Complaint).where(Complaint.id == complaint_id))
         if complaint is not None:
             await db.delete(complaint)
         await db.commit()
@@ -245,9 +237,7 @@ async def test_audit_service_accepts_extended_verbs():
         await db.commit()
 
         actions = set(
-            (
-                await db.execute(select(AuditLog.action).where(AuditLog.actor_id == uid))
-            )
+            (await db.execute(select(AuditLog.action).where(AuditLog.actor_id == uid)))
             .scalars()
             .all()
         )

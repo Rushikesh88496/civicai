@@ -114,26 +114,21 @@ def _complaint_filters(
     return filters
 
 
-async def _base_rows(
-    db: AsyncSession, user: User, filters: list
-) -> tuple[list, Select]:
+async def _base_rows(db: AsyncSession, user: User, filters: list) -> tuple[list, Select]:
     """Per-complaint rows (id/status/category/ward/timestamps/effective dept/bucket)."""
     priority_scalar = _latest_priority_priority()
     department_scalar = _latest_department_subq()
     sub = select(Complaint.id).where(*filters)
-    stmt = (
-        select(
-            Complaint.id,
-            Complaint.status,
-            Complaint.category,
-            Complaint.ward_id,
-            Complaint.created_at,
-            Complaint.updated_at,
-            priority_scalar.label("bucket"),
-            department_scalar.label("department"),
-        )
-        .where(*filters)
-    )
+    stmt = select(
+        Complaint.id,
+        Complaint.status,
+        Complaint.category,
+        Complaint.ward_id,
+        Complaint.created_at,
+        Complaint.updated_at,
+        priority_scalar.label("bucket"),
+        department_scalar.label("department"),
+    ).where(*filters)
     rows = (await db.execute(stmt)).all()
     return rows, sub
 
@@ -362,9 +357,7 @@ async def get_overview(
             "escalated": 0,
         }
     )
-    sla_index: dict[str, dict] = defaultdict(
-        lambda: {"total": 0, "within": 0, "overdue": 0}
-    )
+    sla_index: dict[str, dict] = defaultdict(lambda: {"total": 0, "within": 0, "overdue": 0})
     sla_within = sla_overdue = 0
     sla_queue = sla_none = 0
     for dept, wo_priority, wo_status, completed_at, wo_created, due_at in wo_rows:
@@ -642,8 +635,9 @@ async def get_export_csv(
 
     rating_rows = (
         await db.execute(
-            select(ComplaintRating.complaint_id, ComplaintRating.rating)
-            .where(ComplaintRating.complaint_id.in_(sub))
+            select(ComplaintRating.complaint_id, ComplaintRating.rating).where(
+                ComplaintRating.complaint_id.in_(sub)
+            )
         )
     ).all()
     ratings = {cid: int(rr) for cid, rr in rating_rows}

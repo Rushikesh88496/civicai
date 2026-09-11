@@ -123,12 +123,16 @@ def run_infra_training(settings: Settings) -> dict:
         )
         proba = clf.predict_proba(train_frame.loc[va_mask, columns])[:, 1]
         fold_metrics.append(_clf_metrics(train_frame.loc[va_mask, "y_fail"], proba))
-    mean_f1 = float(
-        np.mean([m["f1"] for m in fold_metrics if m.get("f1") is not None])
-    ) if any(m.get("f1") is not None for m in fold_metrics) else None
-    mean_roc = float(
-        np.mean([m["roc_auc"] for m in fold_metrics if m.get("roc_auc") is not None])
-    ) if any(m.get("roc_auc") is not None for m in fold_metrics) else None
+    mean_f1 = (
+        float(np.mean([m["f1"] for m in fold_metrics if m.get("f1") is not None]))
+        if any(m.get("f1") is not None for m in fold_metrics)
+        else None
+    )
+    mean_roc = (
+        float(np.mean([m["roc_auc"] for m in fold_metrics if m.get("roc_auc") is not None]))
+        if any(m.get("roc_auc") is not None for m in fold_metrics)
+        else None
+    )
     cv_summary = {"folds": len(folds), "mean_f1": mean_f1, "mean_roc_auc": mean_roc}
 
     clf = _fit_clf(train_frame[columns], train_frame["y_fail"], settings, seed)

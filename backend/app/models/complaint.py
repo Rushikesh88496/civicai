@@ -52,7 +52,9 @@ class Complaint(Base, UUIDMixin, TimestampMixin):
     # ISO 639-1 language code detected at complaint submission (Part 26).
     # Null on legacy rows (treated as English by the pipeline).
     language: Mapped[str | None] = mapped_column(
-        String(10), nullable=True, index=True,
+        String(10),
+        nullable=True,
+        index=True,
     )
 
     user = relationship("User", back_populates="complaints")

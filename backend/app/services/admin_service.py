@@ -30,7 +30,6 @@ from app.models import (
     WardRepresentative,
 )
 from app.models.enums import RepresentativeStatus, RoleName, WorkerStatus
-from app.services.geo_service import GeoService, InvalidCoordinatesError
 from app.schemas.admin import (
     DepartmentIn,
     DepartmentUpdate,
@@ -48,6 +47,7 @@ from app.schemas.admin import (
     WardIn,
     WardUpdate,
 )
+from app.services.geo_service import GeoService, InvalidCoordinatesError
 
 # The Priority Engine's six factor keys (mirrors Weights in priority_engine.py).
 PRIORITY_WEIGHT_KEYS = frozenset({"severity", "weather", "location", "crowd", "history", "time"})
@@ -178,18 +178,22 @@ async def list_users(
 
     total = await db.scalar(count_stmt)
     rows = (
-        await db.execute(
-            stmt.options(
-                selectinload(User.field_worker),
-                selectinload(User.ward_representative),
-                selectinload(User.ward),
-                selectinload(User.role),
+        (
+            await db.execute(
+                stmt.options(
+                    selectinload(User.field_worker),
+                    selectinload(User.ward_representative),
+                    selectinload(User.ward),
+                    selectinload(User.role),
+                )
+                .order_by(User.created_at.desc(), User.id.desc())
+                .offset((cur_page - 1) * cur_size)
+                .limit(cur_size)
             )
-            .order_by(User.created_at.desc(), User.id.desc())
-            .offset((cur_page - 1) * cur_size)
-            .limit(cur_size)
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [_user_out(u) for u in rows], int(total or 0)
 
 
@@ -380,9 +384,7 @@ async def set_user_active(
     if user.id == actor.id and not is_active:
         raise HTTPException(status.HTTP_409_CONFLICT, "You cannot disable your own account.")
     if is_active is False and user.role.name == RoleName.SUPER_ADMIN.value:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "A SUPER_ADMIN account cannot be disabled."
-        )
+        raise HTTPException(status.HTTP_409_CONFLICT, "A SUPER_ADMIN account cannot be disabled.")
     user.is_active = is_active
     await db.flush()
     return _user_out(await _reload_user(db, user.id))
@@ -455,7 +457,11 @@ async def update_role(db: AsyncSession, role_id: uuid.UUID, payload: RoleUpdate)
 # Wards & Departments
 # --------------------------------------------------------------------------- #
 async def list_wards(
-    db: AsyncSession, *, page: int = 1, page_size: int = 25, search: str | None = None,
+    db: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    search: str | None = None,
     is_active: bool | None = None,
 ) -> tuple[list[Ward], int]:
     cur_page, cur_size = _page(page, page_size)
@@ -471,11 +477,10 @@ async def list_wards(
         else select(func.count(Ward.id))
     )
     rows = (
-        await db.execute(
-            select(Ward)
-            .where(*conditions) if conditions else select(Ward)
-        )
-    ).scalars().all()
+        (await db.execute(select(Ward).where(*conditions) if conditions else select(Ward)))
+        .scalars()
+        .all()
+    )
     _all = list(rows)
     rows_page = _all[(cur_page - 1) * cur_size : cur_page * cur_size]
     return rows_page, int(total or 0)
@@ -513,7 +518,11 @@ async def update_ward(db: AsyncSession, ward_id: uuid.UUID, payload: WardUpdate)
 
 
 async def list_departments(
-    db: AsyncSession, *, page: int = 1, page_size: int = 25, search: str | None = None,
+    db: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    search: str | None = None,
     is_active: bool | None = None,
 ) -> tuple[list[Department], int]:
     cur_page, cur_size = _page(page, page_size)
@@ -533,7 +542,9 @@ async def list_departments(
             await db.execute(
                 select(Department).where(*conditions) if conditions else select(Department)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     return rows[(cur_page - 1) * cur_size : cur_page * cur_size], int(total or 0)
 
@@ -592,9 +603,7 @@ def _update_worker_home(worker: FieldWorker, data: dict) -> None:
         worker.base_location = data["base_location"]
     if worker.home_latitude is not None and worker.home_longitude is not None:
         try:
-            GeoService().validate_pune_base_coordinates(
-                worker.home_latitude, worker.home_longitude
-            )
+            GeoService().validate_pune_base_coordinates(worker.home_latitude, worker.home_longitude)
         except InvalidCoordinatesError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
@@ -633,12 +642,16 @@ async def list_field_workers(
     conditions = []
     if search:
         needle = f"%{search.strip()}%"
-        conditions.append(or_(FieldWorker.user.has(User.full_name.ilike(needle)),
-                              FieldWorker.user.has(User.email.ilike(needle))))
+        conditions.append(
+            or_(
+                FieldWorker.user.has(User.full_name.ilike(needle)),
+                FieldWorker.user.has(User.email.ilike(needle)),
+            )
+        )
     if department_code:
         conditions.append(
-        FieldWorker.department.has(Department.code == department_code.strip().upper())
-    )
+            FieldWorker.department.has(Department.code == department_code.strip().upper())
+        )
     if status_filter:
         conditions.append(FieldWorker.status == status_filter.strip().upper())
     total = await db.scalar(
@@ -647,13 +660,20 @@ async def list_field_workers(
         else select(func.count(FieldWorker.id))
     )
     rows = (
-        await db.execute(
-            select(FieldWorker)
-            .options(joinedload(FieldWorker.user), joinedload(FieldWorker.department))
-            .where(*conditions) if conditions else select(FieldWorker)
-            .options(joinedload(FieldWorker.user), joinedload(FieldWorker.department))
+        (
+            await db.execute(
+                select(FieldWorker)
+                .options(joinedload(FieldWorker.user), joinedload(FieldWorker.department))
+                .where(*conditions)
+                if conditions
+                else select(FieldWorker).options(
+                    joinedload(FieldWorker.user), joinedload(FieldWorker.department)
+                )
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     all_rows = [r for r in rows]
     page_rows = all_rows[(cur_page - 1) * cur_size : cur_page * cur_size]
     return [_worker_out(r) for r in page_rows], int(total or 0)
@@ -724,8 +744,12 @@ async def list_representatives(
     conditions = []
     if search:
         needle = f"%{search.strip()}%"
-        conditions.append(or_(WardRepresentative.user.has(User.full_name.ilike(needle)),
-                              WardRepresentative.user.has(User.email.ilike(needle))))
+        conditions.append(
+            or_(
+                WardRepresentative.user.has(User.full_name.ilike(needle)),
+                WardRepresentative.user.has(User.email.ilike(needle)),
+            )
+        )
     if ward_code:
         conditions.append(WardRepresentative.ward.has(Ward.code == ward_code.strip().upper()))
     if status_filter:
@@ -742,10 +766,13 @@ async def list_representatives(
                 .options(joinedload(WardRepresentative.user), joinedload(WardRepresentative.ward))
                 .where(*conditions)
                 if conditions
-                else select(WardRepresentative)
-                .options(joinedload(WardRepresentative.user), joinedload(WardRepresentative.ward))
+                else select(WardRepresentative).options(
+                    joinedload(WardRepresentative.user), joinedload(WardRepresentative.ward)
+                )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     page_reps = rows[(cur_page - 1) * cur_size : cur_page * cur_size]
     return [_rep_out(r) for r in page_reps], int(total or 0)

@@ -132,9 +132,7 @@ async def rbac_tokens(client):
                 user_ids[role] = user.id
     await _add_worker_profile(emails[RoleName.FIELD_WORKER])
 
-    tokens = {
-        role: create_access_token(str(user_ids[role]), role.value) for role in _ROLES
-    }
+    tokens = {role: create_access_token(str(user_ids[role]), role.value) for role in _ROLES}
     yield tokens
 
     async with async_session_factory() as db:

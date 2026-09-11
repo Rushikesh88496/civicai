@@ -45,12 +45,13 @@ async def _citizen_token(email: str) -> str:
 
     async with async_session_factory() as db:
         await register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="Citizen Tracker",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="Citizen Tracker",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
         role_name = await db.scalar(select(Role.name).where(Role.id == user.role_id))

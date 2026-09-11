@@ -56,8 +56,18 @@ _GRID = HotspotGrid(17.40, 78.35, 17.50, 78.49, _SETTINGS.HOTSPOT_CELL_DEG)
 
 _HOTSPOT_CELLS = ("r3c3", "r3c4", "r4c3")
 _SCATTER_CELLS = (
-    "r0c0", "r0c14", "r2c7", "r5c1", "r6c10", "r8c5",
-    "r9c12", "r11c2", "r12c8", "r13c11", "r14c3", "r7c6",
+    "r0c0",
+    "r0c14",
+    "r2c7",
+    "r5c1",
+    "r6c10",
+    "r8c5",
+    "r9c12",
+    "r11c2",
+    "r12c8",
+    "r13c11",
+    "r14c3",
+    "r7c6",
 )
 _CATEGORIES = ("GARBAGE", "ROAD", "WATER", "SANITATION")
 
@@ -78,12 +88,13 @@ def _offset(lat: float, lon: float) -> tuple[float, float]:
 async def _citizen(email: str) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="HS Citizen",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="HS Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
         return user.id
@@ -130,9 +141,7 @@ async def _insert_complaint(
         if created_at is not None:
             complaint.created_at = created_at
         db.add(
-            ComplaintLocation(
-                complaint_id=complaint.id, latitude=lat, longitude=lon, source=source
-            )
+            ComplaintLocation(complaint_id=complaint.id, latitude=lat, longitude=lon, source=source)
         )
         await db.commit()
         return complaint.id
@@ -285,9 +294,7 @@ def test_features_are_strictly_before_and_labels_are_next_window():
     # Events at days 0, 2 and 10; day 13 only extends the grid so the day-5
     # label window [6, 12] is fully observed (it stays 0 for that row).
     events = [_event(0), _event(2), _event(10), _event(13)]
-    snapshots = [
-        datetime(2026, 1, 1, 0, 0, tzinfo=UTC) + timedelta(days=d) for d in (0, 1, 2, 5)
-    ]
+    snapshots = [datetime(2026, 1, 1, 0, 0, tzinfo=UTC) + timedelta(days=d) for d in (0, 1, 2, 5)]
     frame = build_feature_frame(events, snapshots, _GRID, provider, horizon_days=7)
     only_cell = frame[frame["cell_id"] == "r0c0"]
     row = {r["date"].date(): r for r in only_cell.to_dict("records")}
@@ -357,9 +364,7 @@ async def _officer_token() -> str:
 async def test_rbac_forbids_non_city_roles(client: TestClient):
     citizen_id = await _citizen(_unique_email("hs-cit"))
     citizen_token = create_access_token(str(citizen_id), "CITIZEN")
-    rep_token = await _role_user(
-        _unique_email("hs-rep"), RoleName.WARD_REPRESENTATIVE.value
-    )
+    rep_token = await _role_user(_unique_email("hs-rep"), RoleName.WARD_REPRESENTATIVE.value)
     worker_token = await _role_user(_unique_email("hs-worker"), RoleName.FIELD_WORKER.value)
 
     # Citizen + field worker are denied every hotspot surface.

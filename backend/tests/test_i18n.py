@@ -68,12 +68,13 @@ def _auth(token: str) -> dict:
 async def _citizen(email: str, language: str | None = None) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="i18n Citizen",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="i18n Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
         if language:
@@ -104,16 +105,40 @@ async def _officer_token(email: str) -> str:
 class KeywordEmbedder:
     _DIMS = 384
     _KEYWORDS = {
-        "sla": 0, "deadline": 0, "hours": 0, "response": 0,
-        "department": 1, "responsib": 1, "handle": 1,
-        "water": 2, "road": 3, "electrical": 4, "street": 4, "light": 4,
-        "waste": 5, "garbage": 5, "sanit": 5,
-        "drainage": 6, "flood": 6, "park": 7,
-        "emergency": 8, "disaster": 8, "safety": 8,
-        "p1": 10, "priority": 11, "score": 11, "bucket": 11,
-        "complaint": 12, "track": 12, "status": 12,
-        "ward": 13, "common": 14, "issue": 14,
-        "work": 15, "order": 15, "repair": 15,
+        "sla": 0,
+        "deadline": 0,
+        "hours": 0,
+        "response": 0,
+        "department": 1,
+        "responsib": 1,
+        "handle": 1,
+        "water": 2,
+        "road": 3,
+        "electrical": 4,
+        "street": 4,
+        "light": 4,
+        "waste": 5,
+        "garbage": 5,
+        "sanit": 5,
+        "drainage": 6,
+        "flood": 6,
+        "park": 7,
+        "emergency": 8,
+        "disaster": 8,
+        "safety": 8,
+        "p1": 10,
+        "priority": 11,
+        "score": 11,
+        "bucket": 11,
+        "complaint": 12,
+        "track": 12,
+        "status": 12,
+        "ward": 13,
+        "common": 14,
+        "issue": 14,
+        "work": 15,
+        "order": 15,
+        "repair": 15,
     }
 
     async def embed_text(self, text: str) -> list[float]:
@@ -140,6 +165,7 @@ class EchoAI:
 
 class UnconfiguredAI:
     """Stub whose disabled config forces the deterministic rules path."""
+
     is_configured = False
 
 
@@ -416,9 +442,7 @@ async def test_notifications_list_translates_with_language_query(client):
         db.add(notif)
         await db.commit()
 
-    res = await client.get(
-        "/api/v1/notifications", params={"language": "mr"}, headers=_auth(token)
-    )
+    res = await client.get("/api/v1/notifications", params={"language": "mr"}, headers=_auth(token))
     assert res.status_code == 200
     item = res.json()["items"][0]
     assert "रस्ता" in item["body"]

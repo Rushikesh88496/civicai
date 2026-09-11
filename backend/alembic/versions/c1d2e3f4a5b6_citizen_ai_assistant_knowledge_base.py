@@ -104,9 +104,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         sa.UniqueConstraint("user_id"),
     )
-    op.create_index(
-        "ix_assistant_conversations_user_id", "assistant_conversations", ["user_id"]
-    )
+    op.create_index("ix_assistant_conversations_user_id", "assistant_conversations", ["user_id"])
 
     op.create_table(
         "assistant_messages",
@@ -126,7 +124,9 @@ def upgrade() -> None:
             ["conversation_id"], ["assistant_conversations.id"], ondelete="CASCADE"
         ),
     )
-    op.create_index("ix_assistant_messages_conversation_id", "assistant_messages", ["conversation_id"])
+    op.create_index(
+        "ix_assistant_messages_conversation_id", "assistant_messages", ["conversation_id"]
+    )
     op.create_index("ix_assistant_messages_role", "assistant_messages", ["role"])
 
 

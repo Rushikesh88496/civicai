@@ -34,12 +34,8 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column("complaints", sa.Column("language", sa.String(length=10), nullable=True))
     op.add_column("user_profiles", sa.Column("language", sa.String(length=10), nullable=True))
-    op.add_column(
-        "assistant_messages", sa.Column("language", sa.String(length=10), nullable=True)
-    )
-    op.create_index(
-        "ix_complaints_language", "complaints", ["language"], unique=False
-    )
+    op.add_column("assistant_messages", sa.Column("language", sa.String(length=10), nullable=True))
+    op.create_index("ix_complaints_language", "complaints", ["language"], unique=False)
 
 
 def downgrade() -> None:

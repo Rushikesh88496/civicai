@@ -48,9 +48,7 @@ _STAFF = Depends(require_roles("OFFICER", "ADMIN", "SUPER_ADMIN", "WARD_REPRESEN
 _OVERRIDE_WRITERS = Depends(require_roles("OFFICER", "ADMIN", "SUPER_ADMIN"))
 
 
-async def _get_complaint_or_404(
-    db: AsyncSession, complaint_id: uuid.UUID, user: User
-) -> Complaint:
+async def _get_complaint_or_404(db: AsyncSession, complaint_id: uuid.UUID, user: User) -> Complaint:
     complaint = await db.get(Complaint, complaint_id)
     if complaint is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Complaint not found.")
@@ -177,23 +175,17 @@ async def get_governance_summary(
 
     decision_count = (
         await db.execute(
-            select(func.count(AIDecisionLog.id)).where(
-                AIDecisionLog.complaint_id == complaint_id
-            )
+            select(func.count(AIDecisionLog.id)).where(AIDecisionLog.complaint_id == complaint_id)
         )
     ).scalar_one()
     evidence_count = (
         await db.execute(
-            select(func.count(EvidenceCheck.id)).where(
-                EvidenceCheck.complaint_id == complaint_id
-            )
+            select(func.count(EvidenceCheck.id)).where(EvidenceCheck.complaint_id == complaint_id)
         )
     ).scalar_one()
     override_count = (
         await db.execute(
-            select(func.count(HumanOverride.id)).where(
-                HumanOverride.complaint_id == complaint_id
-            )
+            select(func.count(HumanOverride.id)).where(HumanOverride.complaint_id == complaint_id)
         )
     ).scalar_one()
     mismatch_count = (

@@ -41,9 +41,7 @@ async def test_cors_allows_configured_origin(client):
 
 @pytest.mark.asyncio
 async def test_cors_rejects_unconfigured_origin(client):
-    resp = await client.get(
-        "/api/v1/health", headers={"Origin": "http://evil.example.com"}
-    )
+    resp = await client.get("/api/v1/health", headers={"Origin": "http://evil.example.com"})
     assert resp.status_code == 200
     assert "access-control-allow-origin" not in resp.headers
 

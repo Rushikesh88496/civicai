@@ -559,9 +559,7 @@ async def _seed_field_workers(
             # Idempotent CONVERGENCE: an existing dev worker is re-pointed to its
             # registered Pune base + ward without touching the account password
             # or any operational data (complaints/work orders are never created).
-            worker = await db.scalar(
-                select(FieldWorker).where(FieldWorker.user_id == existing.id)
-            )
+            worker = await db.scalar(select(FieldWorker).where(FieldWorker.user_id == existing.id))
             if worker is None:
                 db.add(
                     FieldWorker(
@@ -631,25 +629,19 @@ async def _seed_field_workers(
         print("[seed] field workers already present — nothing to do")
 
 
-async def _seed_ward_representatives(
-    db, wards_by_code: dict[str, Ward]
-) -> None:
+async def _seed_ward_representatives(db, wards_by_code: dict[str, Ward]) -> None:
     """Create the 4 ward representatives (idempotent, keyed by email).
 
     Each rep is assigned to exactly one ward and given the WARD_REPRESENTATIVE
     role.  No complaints, work orders or other operational data are created.
     """
-    rep_role = await db.scalar(
-        select(Role).where(Role.name == RoleName.WARD_REPRESENTATIVE.value)
-    )
+    rep_role = await db.scalar(select(Role).where(Role.name == RoleName.WARD_REPRESENTATIVE.value))
     if rep_role is None:
         raise RuntimeError("WARD_REPRESENTATIVE role missing — run roles seeding first.")
 
     created = 0
     for spec in _WARD_REPRESENTATIVES:
-        if await db.scalar(
-            select(User).where(User.email == spec["email"])
-        ) is not None:
+        if await db.scalar(select(User).where(User.email == spec["email"])) is not None:
             continue
         ward = wards_by_code[spec["ward_code"]]
         user = User(
@@ -674,10 +666,7 @@ async def _seed_ward_representatives(
         )
         await db.flush()
         created += 1
-        print(
-            f"[seed] created ward representative: {spec['email']} "
-            f"({spec['name']}, {ward.code})"
-        )
+        print(f"[seed] created ward representative: {spec['email']} ({spec['name']}, {ward.code})")
     if created:
         print(f"[seed] ward representatives created: {created}")
     else:
@@ -718,10 +707,7 @@ async def main() -> None:
         # Reference wards are installed by the migration; verify + summarise.
         ref_wards = (await db.scalars(select(Ward).order_by(Ward.code))).all()
         if ref_wards:
-            print(
-                "[seed] reference wards: "
-                + ", ".join(f"{w.code} ({w.name})" for w in ref_wards)
-            )
+            print("[seed] reference wards: " + ", ".join(f"{w.code} ({w.name})" for w in ref_wards))
             await _seed_field_workers(
                 db,
                 wards_by_code={w.code: w for w in ref_wards},

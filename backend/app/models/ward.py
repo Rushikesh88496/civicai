@@ -20,9 +20,7 @@ class Ward(Base, UUIDMixin, TimestampMixin):
     representatives = relationship("WardRepresentative", back_populates="ward", uselist=True)
     residents = relationship("User", back_populates="ward", uselist=True)
     complaints = relationship("Complaint", back_populates="ward", uselist=True)
-    infrastructure_assets = relationship(
-        "InfrastructureAsset", back_populates="ward", uselist=True
-    )
+    infrastructure_assets = relationship("InfrastructureAsset", back_populates="ward", uselist=True)
     boundary = relationship(
         "WardBoundary", back_populates="ward", uselist=False, cascade="all, delete-orphan"
     )

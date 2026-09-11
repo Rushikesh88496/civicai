@@ -85,8 +85,8 @@ from app.services.audit_service import (
     ACTION_WORK_ORDER_VERIFICATION_STARTED,
     record_audit,
 )
-from app.services.complaint_tracking_service import ComplaintNotFoundError, user_can_view
 from app.services.complaint_service import record_status_transition
+from app.services.complaint_tracking_service import user_can_view
 from app.storage import get_storage
 
 _STAFF_ROLES = (
@@ -244,9 +244,7 @@ async def _record_verification_audit(
     )
 
 
-async def _latest_complaint_image_key(
-    db: AsyncSession, complaint: Complaint | None
-) -> str | None:
+async def _latest_complaint_image_key(db: AsyncSession, complaint: Complaint | None) -> str | None:
     """The storage key of the newest IMAGE attached to the complaint (if any)."""
     if complaint is None:
         return None
@@ -272,7 +270,9 @@ def _evidence_photo_out(photo: WorkOrderPhoto) -> EvidencePhotoOut:
         size_bytes=photo.size_bytes,
         created_at=photo.created_at,
         uploaded_by_name=(
-            photo.worker.user.full_name if photo.worker is not None and photo.worker.user is not None else None
+            photo.worker.user.full_name
+            if photo.worker is not None and photo.worker.user is not None
+            else None
         ),
     )
 
@@ -288,9 +288,7 @@ def _complaint_media_out(media: ComplaintMedia) -> ComplaintMediaOut:
     )
 
 
-async def _load_order_with_photographer(
-    db: AsyncSession, order_id: uuid.UUID
-) -> WorkOrder | None:
+async def _load_order_with_photographer(db: AsyncSession, order_id: uuid.UUID) -> WorkOrder | None:
     """Load an order with complaint (+media) and photos (with uploader) eagerly."""
     return await db.scalar(
         select(WorkOrder)
@@ -324,7 +322,9 @@ async def get_work_order_evidence(
 
     complaint: Complaint | None = order.complaint
     worker_name = (
-        order.worker.user.full_name if order.worker is not None and order.worker.user is not None else None
+        order.worker.user.full_name
+        if order.worker is not None and order.worker.user is not None
+        else None
     )
     photos = sorted(order.photos, key=lambda p: p.created_at)
     before = [p for p in photos if p.category == "BEFORE"]
@@ -615,9 +615,7 @@ async def review_verification(
     )
 
 
-async def _confirm_resolution(
-    db: AsyncSession, order: WorkOrder, actor: User
-) -> None:
+async def _confirm_resolution(db: AsyncSession, order: WorkOrder, actor: User) -> None:
     """Confirm a resolution: order → COMPLETED, complaint → RESOLVED + notify.
 
     The field worker can only ever take an order to ``EVIDENCE_SUBMITTED``;
@@ -781,9 +779,7 @@ async def _notify_rework_requested(
                 event=EVENT_REWORK_REQUESTED,
                 complaint_id=complaint.id,
                 work_order_id=order.id,
-                body=(
-                    f"An officer requested rework on '{complaint.title}': {reason}"
-                ),
+                body=(f"An officer requested rework on '{complaint.title}': {reason}"),
                 link=link,
             )
     owner = await db.get(User, complaint.user_id)

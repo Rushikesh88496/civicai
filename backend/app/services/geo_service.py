@@ -104,7 +104,8 @@ class GeoService:
         ):
             raise InvalidCoordinatesError(
                 "Invalid base location: coordinates must be inside the Pune municipal "
-                f"area (lat {_PUNE_LAT_MIN}..{_PUNE_LAT_MAX}, lon {_PUNE_LON_MIN}..{_PUNE_LON_MAX})."
+                f"area (lat {_PUNE_LAT_MIN}..{_PUNE_LAT_MAX}, "
+                f"lon {_PUNE_LON_MIN}..{_PUNE_LON_MAX})."
             )
 
     # ------------------------------------------------------------------ #

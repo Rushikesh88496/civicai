@@ -43,8 +43,16 @@ _CATEGORY_RULES: list[tuple[float, str, tuple[str, ...]]] = [
         0.95,
         "ROAD",
         (
-            "pothole", "road damage", "broken road", "gaddha", "gadha",
-            "rasta", "गड्ढा", "सड़क", "रस्ता", "खड्डा",
+            "pothole",
+            "road damage",
+            "broken road",
+            "gaddha",
+            "gadha",
+            "rasta",
+            "गड्ढा",
+            "सड़क",
+            "रस्ता",
+            "खड्डा",
         ),
     ),
     (0.90, "FLOODING", ("flood", "flooding", "baarish", "pani bbhar", "साचले", "बाढ़", "पूर")),
@@ -113,9 +121,7 @@ async def analyze(
     department = _rules_department(category)
 
     # 2) Optional Groq-powered classification.
-    if ai is not None and getattr(ai, "is_configured", True) and _cheap_ai_candidates(
-        normalized
-    ):
+    if ai is not None and getattr(ai, "is_configured", True) and _cheap_ai_candidates(normalized):
         try:
             result = await ai.structured_completion(
                 _classification_messages(normalized),

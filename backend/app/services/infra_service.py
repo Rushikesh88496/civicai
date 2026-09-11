@@ -123,7 +123,9 @@ def _model_info(row: InfrastructureModel) -> InfrastructureModelInfo:
 async def _asset_count(db: AsyncSession) -> int:
     return int(
         await db.scalar(
-            select(func.count(InfrastructureAsset.id)).where(InfrastructureAsset.is_active.is_(True))
+            select(func.count(InfrastructureAsset.id)).where(
+                InfrastructureAsset.is_active.is_(True)
+            )
         )
         or 0
     )
@@ -261,13 +263,17 @@ def _asset_out(asset: InfrastructureAsset) -> InfrastructureAssetOut:
 
 async def list_assets(db: AsyncSession) -> list[InfrastructureAssetOut]:
     rows = (
-        await db.execute(
-            select(InfrastructureAsset)
-            .options(selectinload(InfrastructureAsset.ward))
-            .where(InfrastructureAsset.is_active.is_(True))
-            .order_by(InfrastructureAsset.created_at.asc())
+        (
+            await db.execute(
+                select(InfrastructureAsset)
+                .options(selectinload(InfrastructureAsset.ward))
+                .where(InfrastructureAsset.is_active.is_(True))
+                .order_by(InfrastructureAsset.created_at.asc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [_asset_out(a) for a in rows]
 
 
@@ -278,7 +284,7 @@ async def register_asset(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unknown infrastructure category: {payload.category}",
-)
+        )
     asset = InfrastructureAsset(
         name=payload.name,
         category=InfrastructureCategory(payload.category),
@@ -359,7 +365,7 @@ async def _live_history(
                 ComplaintLocation.longitude.is_not(None),
             )
         )
-).all()
+    ).all()
     repair_points = [(float(r[0]), float(r[1])) for r in repair_rows]
 
     counts: dict[uuid.UUID, dict] = {}
@@ -368,9 +374,7 @@ async def _live_history(
             "complaints_90d": _count_near(
                 asset.latitude, asset.longitude, complaint_points, radius_km
             ),
-            "repairs_12m": _count_near(
-                asset.latitude, asset.longitude, repair_points, radius_km
-            ),
+            "repairs_12m": _count_near(asset.latitude, asset.longitude, repair_points, radius_km),
         }
 
     residents: dict[uuid.UUID, float] = {}
@@ -584,12 +588,12 @@ async def create_preventive_work_order(
     settings: Settings | None = None,
 ) -> PreventiveWorkOrderOut | None:
     settings = settings or get_settings()
-    stored = (
-        await db.scalar(
-            select(InfrastructurePrediction)
-            .options(selectinload(InfrastructurePrediction.asset).selectinload(InfrastructureAsset.ward))
-            .where(InfrastructurePrediction.id == prediction_id)
+    stored = await db.scalar(
+        select(InfrastructurePrediction)
+        .options(
+            selectinload(InfrastructurePrediction.asset).selectinload(InfrastructureAsset.ward)
         )
+        .where(InfrastructurePrediction.id == prediction_id)
     )
     if stored is None:
         return None

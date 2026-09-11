@@ -181,8 +181,13 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ) -> UsersPage:
     items, total = await admin_service.list_users(
-        db, page=page, page_size=page_size, search=search, role=role,
-        is_active=is_active, ward_code=ward_code,
+        db,
+        page=page,
+        page_size=page_size,
+        search=search,
+        role=role,
+        is_active=is_active,
+        ward_code=ward_code,
     )
     return UsersPage(items=items, total=total, page=page, page_size=page_size)
 
@@ -313,8 +318,13 @@ async def create_role(
 ) -> RoleOut:
     role = await admin_service.create_role(db, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_CREATE, entity_type="role",
-        entity_id=str(role.id), after=_model_audit_payload(role), ip_address=_client_ip(request),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_CREATE,
+        entity_type="role",
+        entity_id=str(role.id),
+        after=_model_audit_payload(role),
+        ip_address=_client_ip(request),
     )
     await db.commit()
     return RoleOut.model_validate(role)
@@ -332,8 +342,13 @@ async def update_role(
     before = _model_audit_payload(role) if role else None
     updated = await admin_service.update_role(db, role_id, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_UPDATE, entity_type="role",
-        entity_id=str(role_id), before=before, after=_model_audit_payload(updated),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_UPDATE,
+        entity_type="role",
+        entity_id=str(role_id),
+        before=before,
+        after=_model_audit_payload(updated),
         ip_address=_client_ip(request),
     )
     await db.commit()
@@ -372,8 +387,13 @@ async def create_ward(
 ) -> WardOut:
     ward = await admin_service.create_ward(db, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_CREATE, entity_type="ward",
-        entity_id=str(ward.id), after=_model_audit_payload(ward), ip_address=_client_ip(request),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_CREATE,
+        entity_type="ward",
+        entity_id=str(ward.id),
+        after=_model_audit_payload(ward),
+        ip_address=_client_ip(request),
     )
     await db.commit()
     return WardOut.model_validate(ward)
@@ -391,8 +411,13 @@ async def update_ward(
     before = _model_audit_payload(ward) if ward else None
     updated = await admin_service.update_ward(db, ward_id, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_UPDATE, entity_type="ward",
-        entity_id=str(ward_id), before=before, after=_model_audit_payload(updated),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_UPDATE,
+        entity_type="ward",
+        entity_id=str(ward_id),
+        before=before,
+        after=_model_audit_payload(updated),
         ip_address=_client_ip(request),
     )
     await db.commit()
@@ -428,8 +453,13 @@ async def create_department(
 ) -> DepartmentOut:
     dept = await admin_service.create_department(db, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_CREATE, entity_type="department",
-        entity_id=str(dept.id), after=_model_audit_payload(dept), ip_address=_client_ip(request),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_CREATE,
+        entity_type="department",
+        entity_id=str(dept.id),
+        after=_model_audit_payload(dept),
+        ip_address=_client_ip(request),
     )
     await db.commit()
     return DepartmentOut.model_validate(dept)
@@ -447,8 +477,13 @@ async def update_department(
     before = _model_audit_payload(dept) if dept else None
     updated = await admin_service.update_department(db, dept_id, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_UPDATE, entity_type="department",
-        entity_id=str(dept_id), before=before, after=_model_audit_payload(updated),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_UPDATE,
+        entity_type="department",
+        entity_id=str(dept_id),
+        before=before,
+        after=_model_audit_payload(updated),
         ip_address=_client_ip(request),
     )
     await db.commit()
@@ -469,8 +504,12 @@ async def list_field_workers(
     db: AsyncSession = Depends(get_db),
 ) -> FieldWorkersPage:
     items, total = await admin_service.list_field_workers(
-        db, page=page, page_size=page_size, search=search,
-        department_code=department_code, status_filter=status_filter,
+        db,
+        page=page,
+        page_size=page_size,
+        search=search,
+        department_code=department_code,
+        status_filter=status_filter,
     )
     return FieldWorkersPage(items=items, total=total, page=page, page_size=page_size)
 
@@ -487,8 +526,12 @@ async def update_field_worker(
     before = _model_audit_payload(worker) if worker else None
     updated = await admin_service.update_field_worker(db, worker_id, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_UPDATE, entity_type="field_worker",
-        entity_id=str(worker_id), before=before,
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_UPDATE,
+        entity_type="field_worker",
+        entity_id=str(worker_id),
+        before=before,
         after=_model_audit_payload(await db.get(FieldWorker, worker_id)),
         ip_address=_client_ip(request),
     )
@@ -510,8 +553,12 @@ async def list_representatives(
     db: AsyncSession = Depends(get_db),
 ) -> RepresentativesPage:
     items, total = await admin_service.list_representatives(
-        db, page=page, page_size=page_size, search=search,
-        ward_code=ward_code, status_filter=status_filter,
+        db,
+        page=page,
+        page_size=page_size,
+        search=search,
+        ward_code=ward_code,
+        status_filter=status_filter,
     )
     return RepresentativesPage(items=items, total=total, page=page, page_size=page_size)
 
@@ -528,8 +575,12 @@ async def update_representative(
     before = _model_audit_payload(rep) if rep else None
     updated = await admin_service.update_representative(db, rep_id, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_UPDATE, entity_type="representative",
-        entity_id=str(rep_id), before=before,
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_UPDATE,
+        entity_type="representative",
+        entity_id=str(rep_id),
+        before=before,
         after=_model_audit_payload(await db.get(WardRepresentative, rep_id)),
         ip_address=_client_ip(request),
     )
@@ -562,8 +613,13 @@ async def create_complaint_category(
 ) -> ComplaintCategoryOut:
     row = await admin_service.create_complaint_category(db, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_CREATE, entity_type="complaint_category",
-        entity_id=str(row.id), after=_model_audit_payload(row), ip_address=_client_ip(request),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_CREATE,
+        entity_type="complaint_category",
+        entity_id=str(row.id),
+        after=_model_audit_payload(row),
+        ip_address=_client_ip(request),
     )
     await db.commit()
     return ComplaintCategoryOut.model_validate(row)
@@ -581,8 +637,13 @@ async def update_complaint_category(
     before = _model_audit_payload(row) if row else None
     updated = await admin_service.update_complaint_category(db, category_id, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_UPDATE, entity_type="complaint_category",
-        entity_id=str(category_id), before=before, after=_model_audit_payload(updated),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_UPDATE,
+        entity_type="complaint_category",
+        entity_id=str(category_id),
+        before=before,
+        after=_model_audit_payload(updated),
         ip_address=_client_ip(request),
     )
     await db.commit()
@@ -614,8 +675,13 @@ async def create_priority_weight(
 ) -> PriorityWeightOut:
     row = await admin_service.create_priority_weight(db, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_CREATE, entity_type="priority_weight",
-        entity_id=str(row.id), after=_model_audit_payload(row), ip_address=_client_ip(request),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_CREATE,
+        entity_type="priority_weight",
+        entity_id=str(row.id),
+        after=_model_audit_payload(row),
+        ip_address=_client_ip(request),
     )
     await db.commit()
     return PriorityWeightOut.model_validate(row)
@@ -633,8 +699,13 @@ async def update_priority_weight(
     before = _model_audit_payload(row) if row else None
     updated = await admin_service.update_priority_weight(db, weight_id, payload)
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_UPDATE, entity_type="priority_weight",
-        entity_id=str(weight_id), before=before, after=_model_audit_payload(updated),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_UPDATE,
+        entity_type="priority_weight",
+        entity_id=str(weight_id),
+        before=before,
+        after=_model_audit_payload(updated),
         ip_address=_client_ip(request),
     )
     await db.commit()
@@ -684,8 +755,13 @@ async def create_sla_policy(
     except Exception as exc:  # noqa: BLE001
         raise _policy_error(exc) from exc
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_CREATE, entity_type="sla_policy",
-        entity_id=str(rule.id), after=_model_audit_payload(rule), ip_address=_client_ip(request),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_CREATE,
+        entity_type="sla_policy",
+        entity_id=str(rule.id),
+        after=_model_audit_payload(rule),
+        ip_address=_client_ip(request),
     )
     await db.commit()
     return SlaPolicyOut.model_validate(rule)
@@ -716,8 +792,13 @@ async def update_sla_policy(
     except Exception as exc:  # noqa: BLE001
         raise _policy_error(exc) from exc
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_UPDATE, entity_type="sla_policy",
-        entity_id=str(policy_id), after=_model_audit_payload(rule), ip_address=_client_ip(request),
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_UPDATE,
+        entity_type="sla_policy",
+        entity_id=str(policy_id),
+        after=_model_audit_payload(rule),
+        ip_address=_client_ip(request),
     )
     await db.commit()
     return SlaPolicyOut.model_validate(rule)
@@ -737,8 +818,12 @@ async def delete_sla_policy(
     except Exception as exc:  # noqa: BLE001
         raise _policy_error(exc) from exc
     await audit_service.record_audit(
-        db, actor_id=user.id, action=audit_service.ACTION_DELETE, entity_type="sla_policy",
-        entity_id=str(policy_id), before=before,
+        db,
+        actor_id=user.id,
+        action=audit_service.ACTION_DELETE,
+        entity_type="sla_policy",
+        entity_id=str(policy_id),
+        before=before,
         ip_address=_client_ip(request),
     )
     await db.commit()
@@ -840,8 +925,14 @@ async def list_audit_logs(
     db: AsyncSession = Depends(get_db),
 ) -> AuditLogsPage:
     rows, total = await audit_service.list_audit_logs(
-        db, page=page, page_size=page_size, action=action, entity_type=entity_type,
-        entity_id=entity_id, actor_id=actor_id, search=search,
+        db,
+        page=page,
+        page_size=page_size,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor_id=actor_id,
+        search=search,
     )
     items = []
     for row in rows:

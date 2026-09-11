@@ -85,9 +85,7 @@ async def _register_citizen_via_api(client, email: str, ward_id: uuid.UUID) -> s
         },
     )
     assert reg.status_code in (200, 201), reg.text
-    login = await client.post(
-        "/api/v1/auth/login", json={"email": email, "password": _PASSWORD}
-    )
+    login = await client.post("/api/v1/auth/login", json={"email": email, "password": _PASSWORD})
     assert login.status_code == 200, login.text
     return login.json()["tokens"]["access_token"]
 
@@ -118,9 +116,7 @@ async def _make_ward_with_rep(code: str, full_name: str, email: str) -> tuple[uu
         ward = Ward(name=f"{code} Ward", code=code, description="test wr")
         db.add(ward)
         await db.flush()
-        role = await db.scalar(
-            select(Role).where(Role.name == RoleName.WARD_REPRESENTATIVE.value)
-        )
+        role = await db.scalar(select(Role).where(Role.name == RoleName.WARD_REPRESENTATIVE.value))
         rep = User(
             email=email,
             password_hash=hash_password(_PASSWORD),
@@ -147,12 +143,8 @@ async def _make_ward_with_rep(code: str, full_name: str, email: str) -> tuple[uu
 
 async def _cleanup_ward_and_rep(ward_id: uuid.UUID) -> None:
     async with async_session_factory() as db:
-        await db.execute(
-            delete(WardRepresentative).where(WardRepresentative.ward_id == ward_id)
-        )
-        await db.execute(
-            delete(User).where(User.ward_id == ward_id)
-        )
+        await db.execute(delete(WardRepresentative).where(WardRepresentative.ward_id == ward_id))
+        await db.execute(delete(User).where(User.ward_id == ward_id))
         await db.execute(delete(Ward).where(Ward.id == ward_id))
         await db.commit()
 
@@ -163,6 +155,7 @@ def _assert_clean_rep_payload(rep: dict) -> None:
 
 
 # ---------- Test setup ------------------------------------------------------ #
+
 
 async def _ensure_reference_representatives() -> None:
     """Idempotently materialise the four seed representatives for the reference
@@ -180,9 +173,7 @@ async def _ensure_reference_representatives() -> None:
             if ward is None:
                 continue
             existing = await db.scalar(
-                select(WardRepresentative).where(
-                    WardRepresentative.ward_id == ward.id
-                )
+                select(WardRepresentative).where(WardRepresentative.ward_id == ward.id)
             )
             if existing is not None:
                 continue
@@ -221,6 +212,7 @@ async def _reference_reps_present():
 
 
 # ---------- Authentication & authorization ---------------------------------- #
+
 
 @pytest.mark.asyncio
 async def test_endpoint_requires_auth(client):
@@ -261,6 +253,7 @@ async def test_citizen_authentication_flow(client):
 
 # ---------- The four reference ward mappings -------------------------------- #
 
+
 @pytest.mark.asyncio
 async def test_all_four_ward_mappings(client):
     for ward_code, (rep_name, rep_email) in _MAPPING.items():
@@ -270,9 +263,7 @@ async def test_all_four_ward_mappings(client):
         email = _unique_email(f"map-{ward_code.lower()}")
         token = await _register_citizen(email, ward_id)
 
-        response = await client.get(
-            _API, headers={"Authorization": f"Bearer {token}"}
-        )
+        response = await client.get(_API, headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 200, ward_code
         data = response.json()
 
@@ -299,14 +290,13 @@ async def test_all_four_ward_mappings(client):
 
 # ---------- Cross-ward isolation --------------------------------------------- #
 
+
 @pytest.mark.asyncio
 async def test_citizen_only_sees_own_ward_representative(client):
     """A citizen in ward A must never be able to see ward B's representative."""
     ward_a_id = await _reference_ward_id("WARD-1")
     ward_b_code = f"TC-WR-{uuid.uuid4().hex[:6]}"
-    ward_b_id, _ = await _make_ward_with_rep(
-        ward_b_code, "Bella Rep", _unique_email("rep-b")
-    )
+    ward_b_id, _ = await _make_ward_with_rep(ward_b_code, "Bella Rep", _unique_email("rep-b"))
 
     citizen_a = _unique_email("iso-a")
     citizen_b = _unique_email("iso-b")
@@ -334,6 +324,7 @@ async def test_citizen_only_sees_own_ward_representative(client):
 
 
 # ---------- No representative assigned ---------------------------------------- #
+
 
 @pytest.mark.asyncio
 async def test_no_representative_returns_empty_state(client):
@@ -366,6 +357,7 @@ async def test_no_representative_returns_empty_state(client):
 
 
 # ---------- Privacy: no admin / internal / secret data ------------------------ #
+
 
 @pytest.mark.asyncio
 async def test_response_exposes_no_sensitive_information(client):
@@ -405,6 +397,7 @@ async def test_response_exposes_no_sensitive_information(client):
 
 
 # ---------- Reference-safety: a citizen with no ward gets a clean null --------- #
+
 
 @pytest.mark.asyncio
 async def test_citizen_without_ward_gets_null_and_404s_nothing(client):

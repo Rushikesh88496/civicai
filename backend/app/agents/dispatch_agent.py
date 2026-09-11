@@ -151,11 +151,11 @@ async def _postgis_distances(
     origin = text("ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography")
     stmt = text(
         "SELECT id::text AS wid, "
-        "ST_Distance({origin}, "
+        f"ST_Distance({origin}, "
         "ST_SetSRID(ST_MakePoint(home_longitude, home_latitude), 4326)::geography) "
         "/ 1000.0 AS km "
         "FROM field_workers "
-        "WHERE id::text = ANY(:ids)".format(origin=origin)
+        "WHERE id::text = ANY(:ids)"
     )
     try:
         rows = await db.execute(
@@ -189,49 +189,77 @@ def _required_from_department(department: str) -> tuple[list[str], list[str]]:
     mapping: dict[str, tuple[list[str], list[str]]] = {
         "WATER": (
             [
-                "plumbing", "pipe-repair",
-                "water-line-repair", "pipeline", "valve",
-                "water-leak-repair", "shutoff-valve",
+                "plumbing",
+                "pipe-repair",
+                "water-line-repair",
+                "pipeline",
+                "valve",
+                "water-leak-repair",
+                "shutoff-valve",
             ],
             ["pump", "excavator", "pipe-cutter", "pipe-clamp"],
         ),
         "ROADS": (
             [
-                "pavement", "paving",
-                "road-maintenance", "asphalt", "patching",
-                "pothole-repair", "cold-mix", "paver-block",
-                "footpath-repair", "road-inspection", "pavement-assessment",
+                "pavement",
+                "paving",
+                "road-maintenance",
+                "asphalt",
+                "patching",
+                "pothole-repair",
+                "cold-mix",
+                "paver-block",
+                "footpath-repair",
+                "road-inspection",
+                "pavement-assessment",
             ],
             ["excavator", "compactor", "road-roller", "asphalt-paver", "paver-block-setter"],
         ),
         "ELECTRICAL": (
             [
-                "electrical-line", "wiring",
-                "electrical", "electrical-maintenance", "feeder", "panel",
-                "streetlight-repair", "lamp",
+                "electrical-line",
+                "wiring",
+                "electrical",
+                "electrical-maintenance",
+                "feeder",
+                "panel",
+                "streetlight-repair",
+                "lamp",
             ],
             ["bucket-truck", "insulated-tools", "boom-truck", "voltage-tester", "insulated-gloves"],
         ),
         "WASTE": (
             [
-                "waste-audit", "collections",
-                "garbage-collection", "waste-management", "segregation", "landfill",
-                "street-cleaning", "sweeping",
+                "waste-audit",
+                "collections",
+                "garbage-collection",
+                "waste-management",
+                "segregation",
+                "landfill",
+                "street-cleaning",
+                "sweeping",
             ],
             ["garbage-truck", "broom", "compactor-truck", "street-sweeper-vehicle"],
         ),
         "DRAINAGE": (
             [
-                "drainage", "jetted-outfall",
-                "sewer-maintenance", "manhole", "jetting-rig",
-                "drain-cleaning", "drainage-jetting",
+                "drainage",
+                "jetted-outfall",
+                "sewer-maintenance",
+                "manhole",
+                "jetting-rig",
+                "drain-cleaning",
+                "drainage-jetting",
             ],
             ["jetting-rig", "manhole-tool", "manhole-lift"],
         ),
         "PARKS": (
             [
-                "landscaping", "tree-care",
-                "civic-assets", "maintenance", "public-infrastructure",
+                "landscaping",
+                "tree-care",
+                "civic-assets",
+                "maintenance",
+                "public-infrastructure",
             ],
             ["chainsaw", "pruner", "hand-tools", "app-phone"],
         ),

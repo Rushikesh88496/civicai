@@ -74,12 +74,13 @@ def _unique_email(prefix: str) -> str:
 async def _citizen(email: str) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="AN Citizen",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="AN Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
         return user.id
@@ -351,11 +352,17 @@ async def test_overview_empty(client: TestClient):
 async def test_overview_kpis_and_charts(client: TestClient):
     citizen_id = await _citizen(_unique_email("an-kpi"))
     c_resolved = await _insert_complaint(
-        user_id=citizen_id, title="kpi-resolved", ward_id=await (_ward("wkpi1")), category="ROAD",
+        user_id=citizen_id,
+        title="kpi-resolved",
+        ward_id=await _ward("wkpi1"),
+        category="ROAD",
         status=ComplaintStatus.CITIZEN_VERIFIED,
     )
     c_resolved2 = await _insert_complaint(
-        user_id=citizen_id, title="kpi-resolved2", ward_id=await (_ward("wkpi2")), category="WATER",
+        user_id=citizen_id,
+        title="kpi-resolved2",
+        ward_id=await _ward("wkpi2"),
+        category="WATER",
         status=ComplaintStatus.RESOLVED,
     )
     c_open = await _insert_complaint(
@@ -464,16 +471,28 @@ async def test_filters_narrow_results(client: TestClient):
     now = datetime.now(UTC)
     old = now - timedelta(days=30)
     c_road_x = await _insert_complaint(
-        user_id=citizen_id, title="f-road-x", ward_id=ward_x, category="ROAD",
-        status=ComplaintStatus.OPEN, created_at=now,
+        user_id=citizen_id,
+        title="f-road-x",
+        ward_id=ward_x,
+        category="ROAD",
+        status=ComplaintStatus.OPEN,
+        created_at=now,
     )
     c_water_x = await _insert_complaint(
-        user_id=citizen_id, title="f-water-x", ward_id=ward_x, category="WATER",
-        status=ComplaintStatus.OPEN, created_at=old,
+        user_id=citizen_id,
+        title="f-water-x",
+        ward_id=ward_x,
+        category="WATER",
+        status=ComplaintStatus.OPEN,
+        created_at=old,
     )
     c_road_y = await _insert_complaint(
-        user_id=citizen_id, title="f-road-y", ward_id=ward_y, category="ROAD",
-        status=ComplaintStatus.OPEN, created_at=now,
+        user_id=citizen_id,
+        title="f-road-y",
+        ward_id=ward_y,
+        category="ROAD",
+        status=ComplaintStatus.OPEN,
+        created_at=now,
     )
 
     await _priority(c_road_x, DynamicPriority.P1_CRITICAL)
@@ -547,7 +566,10 @@ async def test_export_csv(client: TestClient):
     citizen_id = await _citizen(_unique_email("an-csv"))
     ward_a = await _ward("wcsvA")
     cid = await _insert_complaint(
-        user_id=citizen_id, title="csv-complaint", ward_id=ward_a, category="ROAD",
+        user_id=citizen_id,
+        title="csv-complaint",
+        ward_id=ward_a,
+        category="ROAD",
         status=ComplaintStatus.RESOLVED,
     )
     await _priority(cid, DynamicPriority.P2_HIGH)
@@ -573,7 +595,10 @@ async def test_export_csv(client: TestClient):
 # --------------------------------------------------------------------------- #
 async def _resolved_owned_complaint(client, *, owner_id: uuid.UUID) -> uuid.UUID:
     return await _insert_complaint(
-        user_id=owner_id, title="rate-me", category="PARKS", status=ComplaintStatus.RESOLVED,
+        user_id=owner_id,
+        title="rate-me",
+        category="PARKS",
+        status=ComplaintStatus.RESOLVED,
         with_location=False,
     )
 
@@ -630,7 +655,10 @@ async def test_rating_rbac_and_validation(client: TestClient):
 async def test_rating_requires_resolved_complaint(client: TestClient):
     citizen_id = await _citizen(_unique_email("an-rate-open"))
     complaint_id = await _insert_complaint(
-        user_id=citizen_id, title="rate-open", category="WATER", status=ComplaintStatus.SUBMITTED,
+        user_id=citizen_id,
+        title="rate-open",
+        category="WATER",
+        status=ComplaintStatus.SUBMITTED,
         with_location=False,
     )
     token = create_access_token(str(citizen_id), "CITIZEN")

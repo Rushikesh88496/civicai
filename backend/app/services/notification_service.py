@@ -310,9 +310,7 @@ async def active_users_by_role(db: AsyncSession, *role_names: str) -> list[User]
 # --------------------------------------------------------------------------- #
 # Reads (Part 17 + pagination Part 21)
 # --------------------------------------------------------------------------- #
-async def _resolve_target_language(
-    db: AsyncSession, user: User, explicit: str | None
-) -> str:
+async def _resolve_target_language(db: AsyncSession, user: User, explicit: str | None) -> str:
     """The read-path translation target (Part 26).
 
     Priority: explicit ``language`` query param -> the user's persisted profile
@@ -320,9 +318,7 @@ async def _resolve_target_language(
     """
     if explicit:
         return language_service.supported(explicit)
-    pref = await db.scalar(
-        select(UserProfile.language).where(UserProfile.user_id == user.id)
-    )
+    pref = await db.scalar(select(UserProfile.language).where(UserProfile.user_id == user.id))
     if pref:
         return language_service.supported(pref)
     return LanguageCode.EN.value

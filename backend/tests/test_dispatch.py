@@ -54,12 +54,13 @@ def _unique_email(prefix: str) -> str:
 async def _citizen_token(email: str, full_name: str = "Dispatch Citizen") -> str:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name=full_name,
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name=full_name,
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -252,7 +253,11 @@ async def test_engine_exact_department_code_matches():
         home_lon=_LON,
     )
     c = score_candidate(
-        w, required_skills=[], required_equipment=[], order_lat=_LAT, order_lon=_LON,
+        w,
+        required_skills=[],
+        required_equipment=[],
+        order_lat=_LAT,
+        order_lon=_LON,
         order_department="WASTE",
     )
     assert c.department == 1.0
@@ -319,12 +324,20 @@ async def test_engine_priority_urgency_factor():
         home_lon=_LON,
     )
     urgent = score_candidate(
-        w, required_skills=["waste-audit"], required_equipment=[], order_lat=_LAT,
-        order_lon=_LON, priority="P1_CRITICAL",
+        w,
+        required_skills=["waste-audit"],
+        required_equipment=[],
+        order_lat=_LAT,
+        order_lon=_LON,
+        priority="P1_CRITICAL",
     )
     calm = score_candidate(
-        w, required_skills=["waste-audit"], required_equipment=[], order_lat=_LAT,
-        order_lon=_LON, priority="P4_LOW",
+        w,
+        required_skills=["waste-audit"],
+        required_equipment=[],
+        order_lat=_LAT,
+        order_lon=_LON,
+        priority="P4_LOW",
     )
     assert urgent.priority == 1.0
     assert calm.priority == 0.5

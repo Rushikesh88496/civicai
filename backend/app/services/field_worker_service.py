@@ -38,11 +38,11 @@ from app.models import (
     Complaint,
     FieldWorker,
     User,
+    WorkerAssignment,
     WorkOrder,
     WorkOrderActivity,
     WorkOrderPhoto,
     WorkOrderStatusHistory,
-    WorkerAssignment,
 )
 from app.models.enums import (
     AssignmentStatus,
@@ -570,9 +570,7 @@ async def check_in(
         WorkOrderStatus.IN_PROGRESS,
         WorkOrderStatus.RETURNED_FOR_REWORK,
     ):
-        raise WorkerOrderStateError(
-            f"Cannot check in to a work order in state {order.status}."
-        )
+        raise WorkerOrderStateError(f"Cannot check in to a work order in state {order.status}.")
     previous = await _record_activity(
         db,
         order,
@@ -872,9 +870,7 @@ def _has_fresh_check_in(order: WorkOrder, since: datetime) -> bool:
     before restarting the job (the old evidence cannot simply be re-submitted).
     """
     return any(
-        a.activity_type in _CHECK_IN_TYPES
-        and a.recorded_at is not None
-        and a.recorded_at >= since
+        a.activity_type in _CHECK_IN_TYPES and a.recorded_at is not None and a.recorded_at >= since
         for a in order.activities
     )
 

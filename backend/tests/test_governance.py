@@ -84,15 +84,9 @@ async def governance_scope(client):
 
     # Teardown: governance rows, audit rows, complaint, then users.
     async with async_session_factory() as db:
-        await db.execute(
-            delete(HumanOverride).where(HumanOverride.complaint_id == complaint_id)
-        )
-        await db.execute(
-            delete(EvidenceCheck).where(EvidenceCheck.complaint_id == complaint_id)
-        )
-        await db.execute(
-            delete(AIDecisionLog).where(AIDecisionLog.complaint_id == complaint_id)
-        )
+        await db.execute(delete(HumanOverride).where(HumanOverride.complaint_id == complaint_id))
+        await db.execute(delete(EvidenceCheck).where(EvidenceCheck.complaint_id == complaint_id))
+        await db.execute(delete(AIDecisionLog).where(AIDecisionLog.complaint_id == complaint_id))
         await db.execute(delete(AuditLog).where(AuditLog.entity_id == str(complaint_id)))
         await db.execute(delete(Complaint).where(Complaint.id == complaint_id))
         for email in emails:
@@ -302,7 +296,10 @@ async def test_summary_reports_mismatches(client, governance_scope):
         from app.services.override_service import record_override
 
         decision = await log_ai_decision(
-            db, complaint_id=uuid.UUID(cid), agent_name="triage", model_name="m",
+            db,
+            complaint_id=uuid.UUID(cid),
+            agent_name="triage",
+            model_name="m",
         )
         await validate_category_claim(
             db,

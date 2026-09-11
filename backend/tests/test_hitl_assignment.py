@@ -177,16 +177,11 @@ async def _worker_token(email: str) -> str:
 
 async def _assignment_rows(work_order_id: str) -> list[list]:
     async with async_session_factory() as db:
-        rows = (
-            await db.execute(
-                select(WorkerAssignment).where(
-                    WorkerAssignment.work_order_id == work_order_id
-                )
-            )
+        rows = await db.execute(
+            select(WorkerAssignment).where(WorkerAssignment.work_order_id == work_order_id)
         )
         return [
-            [r.worker_id, r.status, r.origin, r.reason, r.assigned_by]
-            for r in rows.scalars().all()
+            [r.worker_id, r.status, r.origin, r.reason, r.assigned_by] for r in rows.scalars().all()
         ]
 
 
@@ -206,9 +201,7 @@ async def _override_rows(complaint_id: str) -> list[HumanOverride]:
 async def _audit_after(action: str, work_order_id: str) -> dict:
     async with async_session_factory() as db:
         row = await db.scalar(
-            select(AuditLog).where(
-                AuditLog.action == action, AuditLog.entity_id == work_order_id
-            )
+            select(AuditLog).where(AuditLog.action == action, AuditLog.entity_id == work_order_id)
         )
         return row.after if row is not None else {}
 
@@ -339,9 +332,7 @@ async def test_assign_different_worker_records_override(client, monkeypatch):
     email = _unique_email("hitl-override")
     token = await _citizen_token(email)
     otoken = await _staff_token(_unique_email("hitl-override-o"), RoleName.OFFICER)
-    rec_wid = await _seed_worker(
-        email=_unique_email("hitl-override-w1"), name="Recommended Worker"
-    )
+    rec_wid = await _seed_worker(email=_unique_email("hitl-override-w1"), name="Recommended Worker")
     cid = await _create_complaint(client, token)
     try:
         work_id = await _dispatch(client, otoken, cid)
@@ -507,9 +498,7 @@ async def test_reassign_captures_previous_assignee_and_audit_fields(client, monk
     cid = await _create_complaint(client, token)
     try:
         work_id = await _dispatch(client, otoken, cid)
-        await client.post(
-            f"{_WO}/{work_id}/approve", json={"note": "ok"}, headers=_auth(otoken)
-        )
+        await client.post(f"{_WO}/{work_id}/approve", json={"note": "ok"}, headers=_auth(otoken))
         r = await client.post(
             f"{_WO}/{work_id}/reassign",
             json={"worker_id": str(third_wid), "reason": "not a good fit"},
@@ -594,9 +583,7 @@ async def test_timeline_includes_work_order_events(client, monkeypatch):
     cid = await _create_complaint(client, token)
     try:
         work_id = await _dispatch(client, otoken, cid)
-        await client.post(
-            f"{_WO}/{work_id}/approve", json={"note": "go"}, headers=_auth(otoken)
-        )
+        await client.post(f"{_WO}/{work_id}/approve", json={"note": "go"}, headers=_auth(otoken))
         tl = await client.get(f"{_BASE}/{cid}/timeline", headers=_auth(token))
         assert tl.status_code == 200, tl.text
         body = tl.json()
@@ -641,21 +628,15 @@ async def test_role_and_ward_rbac(client, monkeypatch):
         work_id = await _dispatch(client, otoken, cid)
 
         # Citizen: cannot approve (staff-only action).
-        r = await client.post(
-            f"{_WO}/{work_id}/approve", json={}, headers=_auth(citizen_token)
-        )
+        r = await client.post(f"{_WO}/{work_id}/approve", json={}, headers=_auth(citizen_token))
         assert r.status_code == 403
 
         # Field worker: cannot approve (staff-only action).
-        r = await client.post(
-            f"{_WO}/{work_id}/approve", json={}, headers=_auth(worker_token)
-        )
+        r = await client.post(f"{_WO}/{work_id}/approve", json={}, headers=_auth(worker_token))
         assert r.status_code == 403
 
         # Ward rep from another ward: cannot approve.
-        r = await client.post(
-            f"{_WO}/{work_id}/approve", json={}, headers=_auth(other_ward_token)
-        )
+        r = await client.post(f"{_WO}/{work_id}/approve", json={}, headers=_auth(other_ward_token))
         assert r.status_code in (403, 404)
 
         # Officer: can approve.

@@ -74,12 +74,13 @@ def _auth(token: str) -> dict:
 async def _citizen(email: str) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="Infra Citizen",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="Infra Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
         return user.id
@@ -124,9 +125,7 @@ async def _insert_complaint(
         db.add(complaint)
         await db.flush()
         db.add(
-            ComplaintLocation(
-                complaint_id=complaint.id, latitude=lat, longitude=lon, source="gps"
-            )
+            ComplaintLocation(complaint_id=complaint.id, latitude=lat, longitude=lon, source="gps")
         )
         await db.commit()
         return complaint.id
@@ -236,9 +235,7 @@ def test_supporting_factors_flag_missing_data():
 async def test_rbac_forbids_non_city_roles(client: TestClient):
     citizen_id = await _citizen(_unique_email("infra-cit"))
     citizen_token = create_access_token(str(citizen_id), "CITIZEN")
-    rep_token = await _role_user(
-        _unique_email("infra-rep"), RoleName.WARD_REPRESENTATIVE.value
-    )
+    rep_token = await _role_user(_unique_email("infra-rep"), RoleName.WARD_REPRESENTATIVE.value)
     worker_token = await _role_user(_unique_email("infra-worker"), RoleName.FIELD_WORKER.value)
 
     for token in (citizen_token, rep_token, worker_token):
@@ -426,9 +423,7 @@ async def test_predictions_lazy_train_and_reuse_version(client: TestClient):
     assert r2.json()["model"]["version"] == data["model"]["version"]
 
     async with async_session_factory() as db:
-        n = await db.scalar(
-            select(func.count(InfrastructurePrediction.id))
-        )
+        n = await db.scalar(select(func.count(InfrastructurePrediction.id)))
         assert n == 0  # no assets, no stored predictions
 
 

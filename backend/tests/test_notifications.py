@@ -143,7 +143,9 @@ async def _citizen_token(email: str) -> str:
             auth_service.RegisterIn(
                 email=email,
                 password=_PASSWORD,
-                full_name="Notification Citizen", ward_id=await any_active_ward_id(db)),
+                full_name="Notification Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -702,9 +704,7 @@ async def test_worker_start_and_complete_notify(client, monkeypatch):
         assert cd.json()["status"] == "IN_PROGRESS"  # worker never resolves
 
         # The verification stage confirming the repair resolves the complaint.
-        verify_run = await client.post(
-            f"{_WO}/{work_id}/verify", headers=_auth(otoken)
-        )
+        verify_run = await client.post(f"{_WO}/{work_id}/verify", headers=_auth(otoken))
         assert verify_run.status_code == 200, verify_run.text
         rev = await client.post(
             f"{_WO}/{work_id}/verification/review",
@@ -875,7 +875,9 @@ async def _ws_user(factory, email: str) -> str:
             auth_service.RegisterIn(
                 email=email,
                 password=_PASSWORD,
-                full_name="WS Citizen", ward_id=await any_active_ward_id(db)),
+                full_name="WS Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")

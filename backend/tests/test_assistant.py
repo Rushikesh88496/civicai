@@ -66,12 +66,13 @@ def _auth(token: str) -> dict:
 async def _citizen(email: str) -> uuid.UUID:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="Assistant Citizen",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="Assistant Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
         return user.id
@@ -135,19 +136,48 @@ class KeywordEmbedder:
 
     _DIMS = 384
     _KEYWORDS = {
-        "sla": 0, "deadline": 0, "hours": 0, "response": 0, "breach": 0, "escalat": 0,
-        "department": 1, "responsib": 1, "handle": 1,
-        "water": 2, "road": 3, "electrical": 4, "street": 4, "light": 4,
-        "waste": 5, "garbage": 5, "sanit": 5,
-        "drainage": 6, "flood": 6, "park": 7,
-        "emergency": 8, "disaster": 8, "safety": 8,
-        "p1": 10, "priority": 11, "score": 11, "bucket": 11,
-        "complaint": 12, "track": 12, "status": 12,
+        "sla": 0,
+        "deadline": 0,
+        "hours": 0,
+        "response": 0,
+        "breach": 0,
+        "escalat": 0,
+        "department": 1,
+        "responsib": 1,
+        "handle": 1,
+        "water": 2,
+        "road": 3,
+        "electrical": 4,
+        "street": 4,
+        "light": 4,
+        "waste": 5,
+        "garbage": 5,
+        "sanit": 5,
+        "drainage": 6,
+        "flood": 6,
+        "park": 7,
+        "emergency": 8,
+        "disaster": 8,
+        "safety": 8,
+        "p1": 10,
+        "priority": 11,
+        "score": 11,
+        "bucket": 11,
+        "complaint": 12,
+        "track": 12,
+        "status": 12,
         "ward": 13,
-        "common": 14, "issue": 14,
-        "work": 15, "order": 15, "repair": 15,
-        "verif": 16, "photo": 16, "close": 16,
-        "procedure": 17, "policy": 17, "citizen": 18,
+        "common": 14,
+        "issue": 14,
+        "work": 15,
+        "order": 15,
+        "repair": 15,
+        "verif": 16,
+        "photo": 16,
+        "close": 16,
+        "procedure": 17,
+        "policy": 17,
+        "citizen": 18,
     }
 
     async def embed_text(self, text: str) -> list[float]:
@@ -267,7 +297,8 @@ async def test_rag_retrieval_grounds_policy_answer(client, _kb):
     _override_ai(EchoAI())
 
     res = await client.post(
-        f"{_BASE}/ask", json={"question": "What is the SLA deadline for P1 complaints?"},
+        f"{_BASE}/ask",
+        json={"question": "What is the SLA deadline for P1 complaints?"},
         headers=_auth(token),
     )
     assert res.status_code == 200
@@ -450,11 +481,12 @@ async def _unknown_citizen() -> User:
     email = _unique_email("ast-unknown")
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="Unknown",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="Unknown",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         return await db.scalar(select(User).where(User.email == email))

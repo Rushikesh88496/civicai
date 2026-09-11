@@ -59,12 +59,13 @@ def _unique_email(prefix: str) -> str:
 async def _citizen_user(email: str) -> User:
     async with async_session_factory() as db:
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="Conv Citizen",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="Conv Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         return await db.scalar(select(User).where(User.email == email))
 

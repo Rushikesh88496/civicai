@@ -46,9 +46,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_predictive_models_is_active", "predictive_models", ["is_active"], unique=False
     )
-    op.create_index(
-        "ix_predictive_models_version", "predictive_models", ["version"], unique=False
-    )
+    op.create_index("ix_predictive_models_version", "predictive_models", ["version"], unique=False)
 
 
 def downgrade() -> None:

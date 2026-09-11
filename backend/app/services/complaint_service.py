@@ -229,8 +229,10 @@ async def create_complaint(
     # Language pipeline (Part 26): detect from the description unless the caller
     # supplied an explicit language code; the stored value is always one of the
     # supported codes (defaults to English).
-    language = language_service.supported(payload.language) if payload.language else (
-        language_service.detect_language(payload.description)
+    language = (
+        language_service.supported(payload.language)
+        if payload.language
+        else (language_service.detect_language(payload.description))
     )
     complaint = Complaint(
         user_id=user.id,

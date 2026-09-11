@@ -44,9 +44,7 @@ def age_years(installed_at: date | datetime | None, reference: datetime) -> floa
         return 0.0
     if isinstance(installed_at, datetime):
         installed_date = (
-            installed_at.date()
-            if installed_at.tzinfo is None
-            else installed_at.astimezone().date()
+            installed_at.date() if installed_at.tzinfo is None else installed_at.astimezone().date()
         )
     else:
         installed_date = installed_at
@@ -111,8 +109,7 @@ _RECOMMENDATIONS: dict[InfrastructureRiskLevel, str] = {
         "schedule; no immediate inspection is required."
     ),
     InfrastructureRiskLevel.MEDIUM: (
-        "Recommended inspection within the next 90 days to confirm the asset's "
-        "current condition."
+        "Recommended inspection within the next 90 days to confirm the asset's current condition."
     ),
     InfrastructureRiskLevel.HIGH: (
         "Prioritized inspection recommended within the next 30 days; verify "
@@ -166,25 +163,23 @@ def supporting_factors_for(
     if age_available and age >= 20:
         factors.append(f"Asset age estimated at ~{round(age)} years.")
     if not age_available:
-        factors.append("Installation date unavailable - asset age treated as "
-                       "unknown for this run.")
+        factors.append("Installation date unavailable - asset age treated as unknown for this run.")
     if complaints_90d > 0:
-        factors.append(f"{complaints_90d} complaint(s) reported near the asset "
-                       f"in the last 90 days.")
+        factors.append(
+            f"{complaints_90d} complaint(s) reported near the asset in the last 90 days."
+        )
     if repairs_12m > 0:
-        factors.append(f"{repairs_12m} repair(s) recorded for the asset in the "
-                       f"last 12 months.")
+        factors.append(f"{repairs_12m} repair(s) recorded for the asset in the last 12 months.")
     if rainfall_mm is not None and rainfall_mm > 0:
-        factors.append("Elevated rainfall now; surface conditions may warrant a "
-                       "closer look.")
+        factors.append("Elevated rainfall now; surface conditions may warrant a closer look.")
     if ward_label:
         factors.append(f"Located in {ward_label}.")
     if not location_available:
-        factors.append("Location signal unavailable — nearby history was treated "
-                       "as none for this run.")
+        factors.append(
+            "Location signal unavailable — nearby history was treated as none for this run."
+        )
     if repairs_12m >= 2 and repairs_12m > complaints_90d:
-        factors.append("Frequent recent repairs suggest this asset needs closer "
-                       "monitoring.")
+        factors.append("Frequent recent repairs suggest this asset needs closer monitoring.")
     if not factors:
         factors.append("No strong historical or environmental signals detected.")
     return factors

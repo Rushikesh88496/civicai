@@ -30,9 +30,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "ai_decision_logs",
-        sa.Column(
-            "id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False
-        ),
+        sa.Column("id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column(
             "complaint_id",
             sa.dialects.postgresql.UUID(as_uuid=True),
@@ -47,9 +45,7 @@ def upgrade() -> None:
         sa.Column("tool_calls", sa.dialects.postgresql.JSONB(), nullable=True),
         sa.Column("result", sa.dialects.postgresql.JSONB(), nullable=True),
         sa.Column("duration_ms", sa.Integer(), nullable=True),
-        sa.Column(
-            "is_override", sa.Boolean(), server_default=sa.text("false"), nullable=False
-        ),
+        sa.Column("is_override", sa.Boolean(), server_default=sa.text("false"), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -62,9 +58,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["complaint_id"], ["complaints.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["complaint_id"], ["complaints.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
@@ -82,9 +76,7 @@ def upgrade() -> None:
 
     op.create_table(
         "evidence_checks",
-        sa.Column(
-            "id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False
-        ),
+        sa.Column("id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column(
             "complaint_id",
             sa.dialects.postgresql.UUID(as_uuid=True),
@@ -115,12 +107,8 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["complaint_id"], ["complaints.id"], ondelete="SET NULL"
-        ),
-        sa.ForeignKeyConstraint(
-            ["decision_id"], ["ai_decision_logs.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["complaint_id"], ["complaints.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["decision_id"], ["ai_decision_logs.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
@@ -138,9 +126,7 @@ def upgrade() -> None:
 
     op.create_table(
         "human_overrides",
-        sa.Column(
-            "id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False
-        ),
+        sa.Column("id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column(
             "complaint_id",
             sa.dialects.postgresql.UUID(as_uuid=True),
@@ -157,9 +143,7 @@ def upgrade() -> None:
         sa.Column("original_data", sa.dialects.postgresql.JSONB(), nullable=True),
         sa.Column("new_data", sa.dialects.postgresql.JSONB(), nullable=True),
         sa.Column("reason", sa.Text(), nullable=False),
-        sa.Column(
-            "user_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=True
-        ),
+        sa.Column("user_id", sa.dialects.postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -172,15 +156,9 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["complaint_id"], ["complaints.id"], ondelete="SET NULL"
-        ),
-        sa.ForeignKeyConstraint(
-            ["decision_id"], ["ai_decision_logs.id"], ondelete="SET NULL"
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["complaint_id"], ["complaints.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["decision_id"], ["ai_decision_logs.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(

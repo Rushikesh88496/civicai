@@ -125,9 +125,7 @@ async def test_reset_returns_to_zero_operational_baseline():
             assert count == 0, f"{label} must be 0 after reset, got {count}"
 
         # Complaint-derived counters: none at all -> none active/resolved.
-        complaint_total = await db.scalar(
-            select(func.count()).select_from(Complaint)
-        )
+        complaint_total = await db.scalar(select(func.count()).select_from(Complaint))
         assert int(complaint_total or 0) == 0
 
         # Users: exactly the bootstrap admin.
@@ -141,9 +139,7 @@ async def test_reset_returns_to_zero_operational_baseline():
         # Reference wards + boundaries survive (geo lookup must keep working).
         wards = (await db.scalars(select(Ward).order_by(Ward.code))).all()
         assert {w.code for w in wards} == {"WARD-1", "WARD-2", "WARD-3", "WARD-4"}
-        boundaries = int(
-            await db.scalar(select(func.count()).select_from(WardBoundary)) or 0
-        )
+        boundaries = int(await db.scalar(select(func.count()).select_from(WardBoundary)) or 0)
         assert boundaries >= 4
 
         # Every required role survives — and nothing else does.

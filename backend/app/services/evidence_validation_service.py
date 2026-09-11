@@ -141,9 +141,9 @@ async def validate_category_claim(
         source="rules",
         is_match=is_match,
         discrepancy_pct=0.0 if is_match else 100.0,
-        notes=None if is_match else (
-            f"AI classified as {claimed_category} but rules classify as {actual_category}."
-        ),
+        notes=None
+        if is_match
+        else (f"AI classified as {claimed_category} but rules classify as {actual_category}."),
     )
 
 
@@ -169,9 +169,9 @@ async def validate_department_claim(
         source="rules",
         is_match=is_match,
         discrepancy_pct=0.0 if is_match else 100.0,
-        notes=None if is_match else (
-            f"AI routed to {claimed_department} but rules route to {actual_department}."
-        ),
+        notes=None
+        if is_match
+        else (f"AI routed to {claimed_department} but rules route to {actual_department}."),
     )
 
 

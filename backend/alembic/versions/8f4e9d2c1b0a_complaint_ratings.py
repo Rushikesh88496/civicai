@@ -33,13 +33,25 @@ def upgrade() -> None:
         sa.Column("user_id", sa.UUID(), nullable=False),
         sa.Column("rating", sa.Integer(), nullable=False),
         sa.Column("comment", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(["complaint_id"], ["complaints.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="RESTRICT"),
         sa.UniqueConstraint("complaint_id", name="uq_complaint_ratings_complaint_id"),
     )
-    op.create_index("ix_complaint_ratings_complaint_id", "complaint_ratings", ["complaint_id"], unique=False)
+    op.create_index(
+        "ix_complaint_ratings_complaint_id", "complaint_ratings", ["complaint_id"], unique=False
+    )
     op.create_index("ix_complaint_ratings_user_id", "complaint_ratings", ["user_id"], unique=False)
 
 

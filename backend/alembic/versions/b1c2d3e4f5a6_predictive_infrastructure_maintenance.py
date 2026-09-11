@@ -28,7 +28,21 @@ def upgrade() -> None:
         "infrastructure_assets",
         sa.Column("id", sa.UUID(), primary_key=True),
         sa.Column("name", sa.String(length=255), nullable=False),
-        sa.Column("category", sa.Enum("ROAD", "BRIDGE", "WATER_MAIN", "SEWER", "DRAINAGE", "STREET_LIGHTING", "PARK", "PUBLIC_BUILDING", name="infrastructure_category"), nullable=False),
+        sa.Column(
+            "category",
+            sa.Enum(
+                "ROAD",
+                "BRIDGE",
+                "WATER_MAIN",
+                "SEWER",
+                "DRAINAGE",
+                "STREET_LIGHTING",
+                "PARK",
+                "PUBLIC_BUILDING",
+                name="infrastructure_category",
+            ),
+            nullable=False,
+        ),
         sa.Column("ward_id", sa.UUID(), nullable=True),
         sa.Column("latitude", sa.Float(), nullable=True),
         sa.Column("longitude", sa.Float(), nullable=True),
@@ -75,9 +89,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["trained_by_user_id"], ["users.id"], ondelete="RESTRICT"),
         sa.UniqueConstraint("version", name="uq_infrastructure_models_version"),
     )
-    op.create_index(
-        "ix_infrastructure_models_is_active", "infrastructure_models", ["is_active"]
-    )
+    op.create_index("ix_infrastructure_models_is_active", "infrastructure_models", ["is_active"])
     op.create_index("ix_infrastructure_models_version", "infrastructure_models", ["version"])
 
     op.create_table(
@@ -86,12 +98,20 @@ def upgrade() -> None:
         sa.Column("asset_id", sa.UUID(), nullable=False),
         sa.Column("model_version", sa.Integer(), nullable=False),
         sa.Column("failure_probability", sa.Float(), nullable=False),
-        sa.Column("risk_level", sa.Enum("LOW", "MEDIUM", "HIGH", "CRITICAL", name="infrastructure_risk_level"), nullable=False),
+        sa.Column(
+            "risk_level",
+            sa.Enum("LOW", "MEDIUM", "HIGH", "CRITICAL", name="infrastructure_risk_level"),
+            nullable=False,
+        ),
         sa.Column("recommended_inspection", sa.Text(), nullable=False),
         sa.Column("supporting_factors", sa.dialects.postgresql.JSONB(), nullable=False),
         sa.Column("history", sa.dialects.postgresql.JSONB(), nullable=False),
         sa.Column("ai_prediction", sa.Boolean(), nullable=False),
-        sa.Column("review_status", sa.Enum("PENDING", "APPROVED", "REJECTED", name="prediction_review_status"), nullable=False),
+        sa.Column(
+            "review_status",
+            sa.Enum("PENDING", "APPROVED", "REJECTED", name="prediction_review_status"),
+            nullable=False,
+        ),
         sa.Column("reviewed_by", sa.UUID(), nullable=True),
         sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("review_note", sa.Text(), nullable=True),
@@ -129,7 +149,18 @@ def upgrade() -> None:
         sa.Column("asset_id", sa.UUID(), nullable=False),
         sa.Column("department", sa.String(length=64), nullable=False),
         sa.Column("recommended_action", sa.Text(), nullable=False),
-        sa.Column("status", sa.Enum("PENDING_APPROVAL", "APPROVED", "REJECTED", "COMPLETED", "CANCELLED", name="preventive_work_order_status"), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "PENDING_APPROVAL",
+                "APPROVED",
+                "REJECTED",
+                "COMPLETED",
+                "CANCELLED",
+                name="preventive_work_order_status",
+            ),
+            nullable=False,
+        ),
         sa.Column("due_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_by", sa.UUID(), nullable=True),
         sa.Column("approved_by", sa.UUID(), nullable=True),
@@ -147,23 +178,21 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(["prediction_id"], ["infrastructure_predictions.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["prediction_id"], ["infrastructure_predictions.id"], ondelete="CASCADE"
+        ),
         sa.ForeignKeyConstraint(["asset_id"], ["infrastructure_assets.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["created_by"], ["users.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["approved_by"], ["users.id"], ondelete="RESTRICT"),
     )
-    op.create_index(
-        "ix_preventive_work_orders_asset_id", "preventive_work_orders", ["asset_id"]
-    )
+    op.create_index("ix_preventive_work_orders_asset_id", "preventive_work_orders", ["asset_id"])
     op.create_index(
         "ix_preventive_work_orders_department", "preventive_work_orders", ["department"]
     )
     op.create_index(
         "ix_preventive_work_orders_prediction_id", "preventive_work_orders", ["prediction_id"]
     )
-    op.create_index(
-        "ix_preventive_work_orders_status", "preventive_work_orders", ["status"]
-    )
+    op.create_index("ix_preventive_work_orders_status", "preventive_work_orders", ["status"])
 
 
 def downgrade() -> None:
@@ -173,8 +202,12 @@ def downgrade() -> None:
     op.drop_index("ix_preventive_work_orders_asset_id", table_name="preventive_work_orders")
     op.drop_table("preventive_work_orders")
 
-    op.drop_index("ix_infrastructure_predictions_risk_level", table_name="infrastructure_predictions")
-    op.drop_index("ix_infrastructure_predictions_review_status", table_name="infrastructure_predictions")
+    op.drop_index(
+        "ix_infrastructure_predictions_risk_level", table_name="infrastructure_predictions"
+    )
+    op.drop_index(
+        "ix_infrastructure_predictions_review_status", table_name="infrastructure_predictions"
+    )
     op.drop_index("ix_infrastructure_predictions_asset_id", table_name="infrastructure_predictions")
     op.drop_table("infrastructure_predictions")
 

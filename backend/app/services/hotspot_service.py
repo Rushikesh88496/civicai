@@ -73,9 +73,7 @@ _DISCLAIMER = (
 
 
 def _grid_from_settings(settings: Settings) -> HotspotGrid:
-    min_lat, min_lon, max_lat, max_lon = [
-        float(p) for p in settings.HOTSPOT_BBOX.split(",")
-    ]
+    min_lat, min_lon, max_lat, max_lon = [float(p) for p in settings.HOTSPOT_BBOX.split(",")]
     return HotspotGrid(min_lat, min_lon, max_lat, max_lon, settings.HOTSPOT_CELL_DEG)
 
 
@@ -150,9 +148,7 @@ async def _historical_events(
     """Bucket real complaint records (training lookback) into grid cells."""
     since = datetime.now(UTC) - timedelta(days=settings.HOTSPOT_TRAIN_LOOKBACK_DAYS)
     events: list[ComplaintEvent] = []
-    for created_at, category, lat, lon in await _located_complaints(
-        db, since, with_category=True
-    ):
+    for created_at, category, lat, lon in await _located_complaints(db, since, with_category=True):
         cell = grid.cell_id(lat, lon)
         if cell is None:
             continue
@@ -386,9 +382,7 @@ async def _live_events(db: AsyncSession, grid: HotspotGrid) -> tuple[list[Compla
     since = datetime.now(UTC) - timedelta(days=_LIVE_LOOKBACK_DAYS)
     events: list[ComplaintEvent] = []
     outside = 0
-    for created_at, category, lat, lon in await _located_complaints(
-        db, since, with_category=True
-    ):
+    for created_at, category, lat, lon in await _located_complaints(db, since, with_category=True):
         cell = grid.cell_id(lat, lon)
         if cell is None:
             outside += 1

@@ -139,14 +139,22 @@ async def test_summary(client, super_admin):
     assert resp.status_code == 200
     body = resp.json()
     for key in (
-        "users", "active_users", "roles", "wards", "departments",
-        "field_workers", "representatives", "complaint_categories",
-        "system_settings", "audit_logs",
+        "users",
+        "active_users",
+        "roles",
+        "wards",
+        "departments",
+        "field_workers",
+        "representatives",
+        "complaint_categories",
+        "system_settings",
+        "audit_logs",
     ):
         assert isinstance(body.get(key), int), key
 
 
 # ---------- Users --------------------------------------------------------- #
+
 
 async def test_user_create_list_search_filter(client, super_admin):
     # Create a citizen.
@@ -201,9 +209,7 @@ async def test_user_create_list_search_filter(client, super_admin):
     _created_user_ids.append(uuid.UUID(resp3.json()["id"]))
 
     # LIST: search for citizen by name.
-    lst = await client.get(
-        f"{_BASE}/users?search=Cit%20Created", headers=_auth(super_admin)
-    )
+    lst = await client.get(f"{_BASE}/users?search=Cit%20Created", headers=_auth(super_admin))
     assert lst.status_code == 200
     assert lst.json()["total"] >= 1
     assert any(u["email"] == created_email for u in lst.json()["items"])
@@ -233,15 +239,11 @@ async def test_user_disable_enable(client, super_admin):
     _, email = await _make_user("CITIZEN")
     uid = str((await _fetch_user(email)).id)
 
-    resp = await client.patch(
-        f"{_BASE}/users/{uid}/disable", headers=_auth(super_admin)
-    )
+    resp = await client.patch(f"{_BASE}/users/{uid}/disable", headers=_auth(super_admin))
     assert resp.status_code == 200
     assert resp.json()["is_active"] is False
 
-    resp2 = await client.patch(
-        f"{_BASE}/users/{uid}/enable", headers=_auth(super_admin)
-    )
+    resp2 = await client.patch(f"{_BASE}/users/{uid}/enable", headers=_auth(super_admin))
     assert resp2.status_code == 200
     assert resp2.json()["is_active"] is True
 
@@ -250,17 +252,13 @@ async def test_admin_cannot_self_disable(client, super_admin):
     # Find the super admin's own user id.
     me = await client.get(f"{_BASE}/users?role=SUPER_ADMIN", headers=_auth(super_admin))
     my_id = me.json()["items"][0]["id"]
-    resp = await client.patch(
-        f"{_BASE}/users/{my_id}/disable", headers=_auth(super_admin)
-    )
+    resp = await client.patch(f"{_BASE}/users/{my_id}/disable", headers=_auth(super_admin))
     assert resp.status_code == 409
 
 
 async def test_admin_cannot_disable_other_super_admin(client, super_admin):
     other_id, _ = await _make_user("SUPER_ADMIN")
-    resp = await client.patch(
-        f"{_BASE}/users/{other_id}/disable", headers=_auth(super_admin)
-    )
+    resp = await client.patch(f"{_BASE}/users/{other_id}/disable", headers=_auth(super_admin))
     assert resp.status_code == 409
 
 
@@ -279,6 +277,7 @@ async def test_create_user_rejects_weak_password(client, super_admin):
 
 
 # ---------- Roles --------------------------------------------------------- #
+
 
 async def test_role_crud_and_disable_guards(client, super_admin):
     rname = f"TC-ROLE-{uuid.uuid4().hex[:6].upper()}"
@@ -316,6 +315,7 @@ async def test_role_crud_and_disable_guards(client, super_admin):
 
 
 # ---------- Wards & Departments ------------------------------------------- #
+
 
 async def test_ward_crud_and_unique_code_guard(client, super_admin):
     wcode = f"TCW{uuid.uuid4().hex[:4].upper()}"
@@ -372,6 +372,7 @@ async def test_department_crud(client, super_admin):
 
 # ---------- Field Workers ------------------------------------------------- #
 
+
 async def test_field_worker_update(client, super_admin):
     worker_id, _ = await _make_user("FIELD_WORKER")
     # _make_user does not create a FieldWorker profile; build one manually
@@ -379,6 +380,7 @@ async def test_field_worker_update(client, super_admin):
     async with async_session_factory() as db:
         from app.models import Department
         from app.models import FieldWorker as _FieldWorker
+
         dept = await db.scalar(select(Department).order_by(Department.created_at).limit(1))
         assert dept is not None
         _fw = _FieldWorker(user_id=worker_id, status="ACTIVE", department_id=dept.id)
@@ -398,11 +400,13 @@ async def test_field_worker_update(client, super_admin):
 
 # ---------- Representatives ------------------------------------------------ #
 
+
 async def test_representative_update(client, super_admin):
     rep_id, _ = await _make_user("WARD_REPRESENTATIVE", ward_code="WARD-1")
     # Ensure WardRepresentative profile exists.
     async with async_session_factory() as db:
         from app.models import WardRepresentative as _WardRep
+
         _wr = _WardRep(user_id=rep_id, ward_id=None, title="Councillor")
         ward = await db.scalar(select(Ward).where(Ward.code == "WARD-1"))
         _wr.ward_id = ward.id
@@ -421,6 +425,7 @@ async def test_representative_update(client, super_admin):
 
 
 # ---------- Complaint Categories ------------------------------------------ #
+
 
 async def test_complaint_category_crud(client, super_admin):
     code = f"TC{uuid.uuid4().hex[:4].upper()}"
@@ -453,6 +458,7 @@ async def test_complaint_category_list_contains_seeded(client, super_admin):
 
 
 # ---------- Priority Weights ---------------------------------------------- #
+
 
 async def test_priority_weight_update_reverts(client, super_admin):
     # All six allow-listed keys are seeded, so a create is impossible;
@@ -490,6 +496,7 @@ async def test_priority_weight_rejects_invalid_key(client, super_admin):
 
 
 # ---------- SLA Rules ----------------------------------------------------- #
+
 
 async def test_sla_crud(client, super_admin):
     resp = await client.post(
@@ -539,6 +546,7 @@ async def test_sla_crud(client, super_admin):
 
 # ---------- Configuration & Secrets --------------------------------------- #
 
+
 async def test_config_never_leaks_secrets(client, super_admin):
     # Set a secret override.
     set_resp = await client.patch(
@@ -555,9 +563,7 @@ async def test_config_never_leaks_secrets(client, super_admin):
 
     # Verify DB stores Fernet token, not plaintext.
     async with async_session_factory() as db:
-        row = await db.scalar(
-            select(SystemSetting).where(SystemSetting.key == "GROQ_API_KEY")
-        )
+        row = await db.scalar(select(SystemSetting).where(SystemSetting.key == "GROQ_API_KEY"))
         assert row.value != _TEST_SECRET
 
     # Clean up: clear the override.
@@ -589,6 +595,7 @@ async def test_groq_test_endpoint(client, super_admin):
 
 # ---------- Audit Trail --------------------------------------------------- #
 
+
 async def test_audit_logs(client, super_admin):
     # Mutating action: create a role.
     rname = f"TC-AUD-{uuid.uuid4().hex[:6].upper()}"
@@ -613,6 +620,7 @@ async def test_audit_logs(client, super_admin):
 
 
 # ---------- Helpers ------------------------------------------------------- #
+
 
 async def _fetch_user(email: str) -> User:
     async with async_session_factory() as db:

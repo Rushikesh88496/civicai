@@ -189,12 +189,10 @@ def score_candidate(
 
     # Urgent orders value "get there now": shift a little weight from workload
     # onto distance so the nearest available skilled worker is preferred.
-    distance_w = s.DISPATCH_WEIGHT_DISTANCE + (
-        s.DISPATCH_PRIORITY_URGENCY_BOOST if urgent else 0.0
+    distance_w = s.DISPATCH_WEIGHT_DISTANCE + (s.DISPATCH_PRIORITY_URGENCY_BOOST if urgent else 0.0)
+    workload_w = max(
+        0.01, s.DISPATCH_WEIGHT_WORKLOAD - (s.DISPATCH_PRIORITY_URGENCY_BOOST if urgent else 0.0)
     )
-    workload_w = max(0.01, s.DISPATCH_WEIGHT_WORKLOAD - (
-        s.DISPATCH_PRIORITY_URGENCY_BOOST if urgent else 0.0
-    ))
 
     total_w = (
         s.DISPATCH_WEIGHT_AVAILABILITY

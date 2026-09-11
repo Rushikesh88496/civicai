@@ -25,8 +25,8 @@ from app.core.media_signing import verify_media_token
 from app.core.security import decode_token
 from app.db.session import get_db
 from app.models import Complaint, ComplaintMedia, MessageAttachment, User, WorkOrder, WorkOrderPhoto
-from app.storage.local import LocalStorage
 from app.services.complaint_tracking_service import user_can_view
+from app.storage.local import LocalStorage
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -61,15 +61,11 @@ async def _resolve_bearer(db: AsyncSession, raw_token: str) -> User | None:
 
 async def _complaint_for_media_key(db: AsyncSession, key: str) -> Complaint | None:
     """Resolve the complaint that owns a media storage key, if any."""
-    media = await db.scalar(
-        select(ComplaintMedia).where(ComplaintMedia.storage_key == key)
-    )
+    media = await db.scalar(select(ComplaintMedia).where(ComplaintMedia.storage_key == key))
     if media is not None and media.complaint_id is not None:
         return await db.get(Complaint, media.complaint_id)
 
-    photo = await db.scalar(
-        select(WorkOrderPhoto).where(WorkOrderPhoto.storage_key == key)
-    )
+    photo = await db.scalar(select(WorkOrderPhoto).where(WorkOrderPhoto.storage_key == key))
     if photo is not None:
         order = await db.get(WorkOrder, photo.work_order_id)
         if order is not None:

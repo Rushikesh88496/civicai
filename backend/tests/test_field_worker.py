@@ -71,12 +71,13 @@ async def _citizen_token(email: str) -> str:
         from app.services import auth_service
 
         await auth_service.register_user(
-            db, RegisterIn(
-                    email=email,
-                    password=_PASSWORD,
-                    full_name="FieldWorker Citizen",
-                    ward_id=await any_active_ward_id(db),
-                )
+            db,
+            RegisterIn(
+                email=email,
+                password=_PASSWORD,
+                full_name="FieldWorker Citizen",
+                ward_id=await any_active_ward_id(db),
+            ),
         )
         user = await db.scalar(select(User).where(User.email == email))
     return create_access_token(str(user.id), "CITIZEN")
@@ -707,7 +708,12 @@ async def test_replay_same_client_ref_is_idempotent(client):
     assert first_accept.status_code == 200
     first_checkin = await client.post(
         f"{_WORKER_API}/orders/{order_id}/check-in",
-        json={"activity_type": "ARRIVED", "client_ref": "cin-sync-1", "latitude": _LAT, "longitude": _LON},
+        json={
+            "activity_type": "ARRIVED",
+            "client_ref": "cin-sync-1",
+            "latitude": _LAT,
+            "longitude": _LON,
+        },
         headers=_auth(wtoken),
     )
     assert first_checkin.status_code == 200
@@ -989,7 +995,12 @@ async def test_evidence_submitted_order_moves_to_completed_queue(client):
     )
     await client.post(
         f"{_WORKER_API}/orders/{order_id}/check-in",
-        json={"activity_type": "ARRIVED", "latitude": _LAT, "longitude": _LON, "client_ref": "dq-cin"},
+        json={
+            "activity_type": "ARRIVED",
+            "latitude": _LAT,
+            "longitude": _LON,
+            "client_ref": "dq-cin",
+        },
         headers=token,
     )
     await client.post(
@@ -1107,11 +1118,9 @@ async def test_worker_rework_cycle(client):
             f"{_WORKER_API}/orders/{order_id}/{path}", json=payload, headers=token
         )
         assert r.status_code == 200, f"{path}: {r.text}"
-    assert (
-        (await client.get(f"{_WORKER_API}/orders/{order_id}", headers=token))
-        .json()["work_order"]["status"]
-        == "EVIDENCE_SUBMITTED"
-    )
+    assert (await client.get(f"{_WORKER_API}/orders/{order_id}", headers=token)).json()[
+        "work_order"
+    ]["status"] == "EVIDENCE_SUBMITTED"
 
     # 2) Officer runs verification (human review required) + requests rework.
     from app.models import WorkOrderVerification

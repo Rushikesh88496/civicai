@@ -151,9 +151,7 @@ async def reset_dev_data(db) -> int:
 
 
 async def _delete_non_admin_users(db) -> int:
-    result = await db.execute(
-        delete(User).where(User.email != _REFERENCE_ADMIN_EMAIL)
-    )
+    result = await db.execute(delete(User).where(User.email != _REFERENCE_ADMIN_EMAIL))
     count = result.rowcount
     if count:
         print(f"[reset] removed {count} user accounts (kept {_REFERENCE_ADMIN_EMAIL})")
@@ -187,9 +185,7 @@ async def _prune_roles_and_departments(db) -> tuple[int, int]:
     restores the exact structural roster (six roles, the three starting
     departments) — test leftovers and ad-hoc experiments never survive.
     """
-    role_result = await db.execute(
-        delete(Role).where(Role.name.not_in(_REFERENCE_ROLE_NAMES))
-    )
+    role_result = await db.execute(delete(Role).where(Role.name.not_in(_REFERENCE_ROLE_NAMES)))
     dept_result = await db.execute(
         delete(Department).where(Department.code.not_in(_REFERENCE_DEPARTMENT_CODES))
     )
@@ -213,9 +209,7 @@ async def reset_dev_data_all(db) -> tuple[int, int, int]:
     total_ops = await reset_dev_data(db)
     await db.execute(
         delete(UserProfile).where(
-            UserProfile.user_id.in_(
-                select(User.id).where(User.email != _REFERENCE_ADMIN_EMAIL)
-            )
+            UserProfile.user_id.in_(select(User.id).where(User.email != _REFERENCE_ADMIN_EMAIL))
         )
     )
     deleted_users = await _delete_non_admin_users(db)
@@ -224,9 +218,7 @@ async def reset_dev_data_all(db) -> tuple[int, int, int]:
     # geo ward lookup keeps working after a reset.
     await db.execute(
         delete(WardBoundary).where(
-            WardBoundary.ward_id.in_(
-                select(Ward.id).where(Ward.code.not_in(_REFERENCE_WARD_CODES))
-            )
+            WardBoundary.ward_id.in_(select(Ward.id).where(Ward.code.not_in(_REFERENCE_WARD_CODES)))
         )
     )
     deleted_wards = await _delete_non_reference_wards(db)

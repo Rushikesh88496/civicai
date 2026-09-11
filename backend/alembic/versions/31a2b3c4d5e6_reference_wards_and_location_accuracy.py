@@ -110,9 +110,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     for code, ward_id, _name, _description, _wkt in _REFERENCE_WARDS:
         op.execute(
-            sa.text(
-                "DELETE FROM ward_boundaries WHERE ward_id = :wid"
-            ),
+            sa.text("DELETE FROM ward_boundaries WHERE ward_id = :wid"),
             {"wid": ward_id},
         )
         op.execute(

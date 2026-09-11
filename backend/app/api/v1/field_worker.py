@@ -57,7 +57,7 @@ def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, svc.WorkerOrderStateError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     if isinstance(exc, svc.EvidenceRequiredError):
-        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
     if isinstance(exc, svc.MediaValidationError):
         return HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))

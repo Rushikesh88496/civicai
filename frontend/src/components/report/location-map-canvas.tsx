@@ -22,11 +22,18 @@ export default function LocationMapCanvas({
   const mapRef = useRef<L.Map | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
   const onPlaceRef = useRef(onPlace);
+  const interactiveRef = useRef(interactive);
 
   useEffect(() => {
     onPlaceRef.current = onPlace;
   }, [onPlace]);
 
+  useEffect(() => {
+    interactiveRef.current = interactive;
+  }, [interactive]);
+
+  // Create the map exactly once. Coordinate updates move the marker below —
+  // rebuilding the map per coordinate change raced Leaflet's teardown.
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -41,33 +48,14 @@ export default function LocationMapCanvas({
       attribution: "&copy; OpenStreetMap contributors",
     }).addTo(map);
 
-    const icon = L.icon({
-      iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-      shadowUrl:
-        "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-      iconSize: [25, 41],
-      iconAnchor: [12, 41],
-      popupAnchor: [1, -34],
-      shadowSize: [41, 41],
-    });
-
-    const maybePlaceMarker = () => {
-      if (latitude != null && longitude != null && !markerRef.current) {
-        markerRef.current = L.marker([latitude, longitude], { icon })
-          .addTo(map)
-          .bindPopup("Complaint location");
-      }
-    };
-    maybePlaceMarker();
-
     map.on("click", (e: L.LeafletMouseEvent) => {
-      if (!interactive) return;
+      if (!interactiveRef.current) return;
       const lat = Number(e.latlng.lat.toFixed(6));
       const lng = Number(e.latlng.lng.toFixed(6));
       if (markerRef.current) {
         markerRef.current.setLatLng([lat, lng]);
-      } else {
-        markerRef.current = L.marker([lat, lng], { icon }).addTo(map);
+      } else if (mapRef.current) {
+        markerRef.current = L.marker([lat, lng], { icon: markerIcon() }).addTo(mapRef.current);
       }
       onPlaceRef.current?.(lat, lng);
     });
@@ -77,11 +65,20 @@ export default function LocationMapCanvas({
       mapRef.current = null;
       markerRef.current = null;
     };
-  }, [latitude, longitude, interactive]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- map is created once on mount
+  }, []);
 
+  // Place the marker on the current coordinates and move it as they change.
   useEffect(() => {
-    if (!markerRef.current || latitude == null || longitude == null) return;
-    markerRef.current.setLatLng([latitude, longitude]);
+    if (!mapRef.current || latitude == null || longitude == null) return;
+    const map = mapRef.current;
+    if (!markerRef.current) {
+      markerRef.current = L.marker([latitude, longitude], { icon: markerIcon() })
+        .addTo(map)
+        .bindPopup("Complaint location");
+    } else {
+      markerRef.current.setLatLng([latitude, longitude]);
+    }
   }, [latitude, longitude]);
 
   return (
@@ -95,6 +92,17 @@ export default function LocationMapCanvas({
       )}
     </div>
   );
+}
+
+function markerIcon(): L.Icon {
+  return L.icon({
+    iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+    shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    shadowSize: [41, 41],
+  });
 }
 
 function MapPinIcon() {

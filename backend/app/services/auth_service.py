@@ -89,7 +89,7 @@ async def register_user(db: AsyncSession, payload: RegisterIn) -> AuthResponse:
     if ward is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "The chosen ward does not exist.")
     if not ward.is_active:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "The chosen ward is not active.")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "The chosen ward is not active.")
 
     user = User(
         email=email,

@@ -46,7 +46,7 @@ def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, svc.VerifyAccessError):
         return HTTPException(status.HTTP_403_FORBIDDEN, str(exc))
     if isinstance(exc, svc.VerifyEvidenceError):
-        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc))
     if isinstance(exc, svc.VerifyStateError):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc))

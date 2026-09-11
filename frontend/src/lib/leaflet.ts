@@ -28,17 +28,33 @@ export function fitBoundsSafely(
   }
   if (bounds.length === 0) return;
 
+  // `map.remove()` deletes `_mapPane`, so any later fitBounds throws reading
+  // its position. Cancel all deferred retries the moment the map is removed.
+  let alive = true;
+  const markDead = () => {
+    alive = false;
+  };
+  map.on("unload", markDead);
+
   const tryFit = (): boolean => {
+    if (!alive) return true;
     const size = map.getSize();
     if (size.x === 0 || size.y === 0) return false;
     map.fitBounds(L.latLngBounds(bounds).pad(pad));
     return true;
   };
 
-  if (tryFit()) return;
+  if (tryFit()) {
+    map.off("unload", markDead);
+    return;
+  }
 
   const retry = () => {
-    if (tryFit()) map.off("resize", retry);
+    if (!alive) return;
+    if (tryFit()) {
+      map.off("resize", retry);
+      map.off("unload", markDead);
+    }
   };
   map.on("resize", retry);
   window.setTimeout(retry, 0);

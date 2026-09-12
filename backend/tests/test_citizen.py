@@ -162,7 +162,7 @@ async def test_dashboard_with_data(citizen_with_data, client):
     assert data["complaints"]["resolved"] == 1
     assert len(data["recent_complaints"]) == 3
     assert data["ward"]["code"] == "WARD-1"
-    assert data["ward"]["name"] == "Ward 1"
+    assert data["ward"]["name"] == "Ward 1 — Kondhwa"
 
 
 @pytest.mark.asyncio

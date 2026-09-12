@@ -7,6 +7,10 @@ os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 # Redis is often down in the dev/test environment; with it unset the token
 # blacklist short-circuits instead of paying a connect timeout per request.
 os.environ.setdefault("REDIS_URL", "")
+# Real nearby-infrastructure lookups would otherwise cross the public OSM
+# Overpass mirror on every geo test. Tests opt in explicitly (GIS_OVERPASS_URL
+# pointed at a mocked transport and GIS_OVERPASS_ENABLED forced true).
+os.environ.setdefault("GIS_OVERPASS_ENABLED", "false")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

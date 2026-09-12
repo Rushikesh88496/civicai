@@ -352,7 +352,7 @@ export type CriticalLocationCategory =
   | "OTHER";
 
 export interface GeoPlace {
-  id: string;
+  id: string | null;
   name: string;
   category: CriticalLocationCategory;
   address: string | null;
@@ -367,6 +367,9 @@ export interface WardDetected {
   name: string;
   code: string | null;
   description: string | null;
+  city: string;
+  state: string;
+  country: string;
   is_demo: boolean;
 }
 
@@ -397,8 +400,12 @@ export interface WardBoundary {
   name: string;
   code: string | null;
   description: string | null;
+  city: string;
+  state: string;
+  country: string;
   is_demo: boolean;
   geometry: number[][] | null;
+  centroid: number[] | null;
 }
 
 export interface WardList {

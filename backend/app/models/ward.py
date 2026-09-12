@@ -11,6 +11,16 @@ class Ward(Base, UUIDMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(150), unique=True, index=True, nullable=False)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Administrative geography the ward belongs to (Pune-only operational wards).
+    city: Mapped[str] = mapped_column(
+        String(100), default="Pune", nullable=False, server_default="Pune"
+    )
+    state: Mapped[str] = mapped_column(
+        String(100), default="Maharashtra", nullable=False, server_default="Maharashtra"
+    )
+    country: Mapped[str] = mapped_column(
+        String(100), default="India", nullable=False, server_default="India"
+    )
     # A disabled ward keeps its history but is no longer selectable for new
     # complaints / users.
     is_active: Mapped[bool] = mapped_column(

@@ -68,8 +68,8 @@ _WO = f"{_BASE}/work-orders"
 _WORKER = f"{_BASE}/worker"
 _WARD_REP = f"{_BASE}/ward-rep"
 _SETTINGS = get_settings()
-_LAT = 17.4327
-_LON = 78.3885
+_LAT = 18.4634
+_LON = 73.8912
 
 
 # --------------------------------------------------------------------------- #

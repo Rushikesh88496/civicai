@@ -5,16 +5,24 @@ Covers, against the live (dev) database and real PostGIS:
 * reverse geocoding — Nominatim success + graceful degradation on
   rate-limit (429), transport error, and timeouts (no real network: the
   database-backed lookup tests rely on injected ``httpx.MockTransport``).
-* ward detection — point-in-polygon returns the containing demo ward for the
-  Hyderabad seed area and ``None`` for coordinates outside every boundary.
+* ward detection — point-in-polygon returns the containing operational ward for
+  a Pune point (inside the reference WARD-1 Kondhwa polygon) and ``None`` for
+  coordinates outside every boundary.
 * nearby places & critical infrastructure — ``ST_DWithin`` geography-distance
   lookup returns roads/hospitals/schools/bus stops ordered by distance and the
-  radius is clamped to ``GIS_MAX_RADIUS_M``.
+  radius is clamped to ``GIS_MAX_RADIUS_M``. When the DB has no rows for a
+  category the service falls back to LIVE OSM data (Overpass), and stays empty
+  on any remote failure / when disabled ("Nearby infrastructure data
+  unavailable").
 * distance math — pure great-circle unit tests.
 * API surface + RBAC — authenticated users (any role) may call lookup/wards/
   distance; unauthenticated requests get 401; out-of-range coordinates → 400.
-* demo labeling — ward + facility rows are surfaced with ``is_demo=True``.
+* ward labeling — the four reference boundaries are surfaced with
+  ``is_demo=False`` + their administrative geography (city/state/country); a
+  facility row created with ``is_demo=True`` is labelled demo.
 """
+
+import uuid
 
 import httpx
 import pytest
@@ -23,8 +31,10 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.security import create_access_token
 from app.db.session import async_session_factory
-from app.models import User
+from app.models import CriticalLocation, User
+from app.models.enums import CriticalLocationCategory
 from app.schemas.auth import RegisterIn
+from app.schemas.geo import GeoPlace
 from app.services import auth_service
 from app.services.geo_service import GeoService, get_geo_service
 from tests.helpers import any_active_ward_id
@@ -33,14 +43,12 @@ _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/geo"
 _SETTINGS = get_settings()
 
-# Hyderabad seed area (inside the reference WARD-1 polygon).
-_SEED_LAT = 17.4327
-_SEED_LON = 78.3885
+# A real Pune point inside the reference WARD-1 (Kondhwa) operational polygon.
+_SEED_LAT = 18.4634
+_SEED_LON = 73.8912
 
 
 def _unique_email(prefix: str) -> str:
-    import uuid
-
     return f"{prefix}-{uuid.uuid4().hex[:10]}@example.com"
 
 
@@ -67,6 +75,37 @@ async def _delete_user(email: str) -> None:
             await db.commit()
 
 
+async def _add_critical_location(
+    name: str, category: CriticalLocationCategory, lat: float, lon: float, is_demo: bool
+) -> uuid.UUID:
+    from sqlalchemy import func
+
+    async with async_session_factory() as db:
+        row = CriticalLocation(
+            name=name,
+            category=category,
+            latitude=lat,
+            longitude=lon,
+            address="Test facility",
+            is_demo=is_demo,
+            geom=func.ST_SetSRID(func.ST_MakePoint(lon, lat), 4326),
+        )
+        db.add(row)
+        await db.flush()
+        row_id = row.id
+        await db.commit()
+        return row_id
+
+
+async def _delete_critical_locations(*ids: uuid.UUID) -> None:
+    async with async_session_factory() as db:
+        for loc_id in ids:
+            row = await db.get(CriticalLocation, loc_id)
+            if row is not None:
+                await db.delete(row)
+        await db.commit()
+
+
 # --------------------------------------------------------------------------- #
 # Distance math (pure, no DB)
 # --------------------------------------------------------------------------- #
@@ -79,13 +118,13 @@ def test_calculate_distance_equator_degree_degrees():
 
 def test_calculate_distance_same_point_is_zero():
     svc = get_geo_service()
-    assert svc.calculate_distance(17.4327, 78.3885, 17.4327, 78.3885) == 0.0
+    assert svc.calculate_distance(_SEED_LAT, _SEED_LON, _SEED_LAT, _SEED_LON) == 0.0
 
 
 def test_calculate_distance_symmetric():
     svc = get_geo_service()
-    a = svc.calculate_distance(17.43, 78.38, 17.50, 78.50)
-    b = svc.calculate_distance(17.50, 78.50, 17.43, 78.38)
+    a = svc.calculate_distance(_SEED_LAT, _SEED_LON, 18.5665, 73.9122)
+    b = svc.calculate_distance(18.5665, 73.9122, _SEED_LAT, _SEED_LON)
     assert a == pytest.approx(b)
 
 
@@ -99,21 +138,26 @@ def test_calculate_distance_known_city_pair():
 # --------------------------------------------------------------------------- #
 # Ward detection (live PostGIS)
 # --------------------------------------------------------------------------- #
-async def test_find_ward_detects_demo_ward_at_seed_area():
+async def test_find_ward_detects_operational_ward_at_seed_area():
     svc = get_geo_service()
     async with async_session_factory() as db:
         ward = await svc.find_ward(db, _SEED_LAT, _SEED_LON)
     assert ward is not None
     assert ward.code == "WARD-1"
-    assert ward.name == "Ward 1"
-    assert ward.is_demo is True
+    assert ward.name == "Ward 1 — Kondhwa"
+    assert ward.city == "Pune"
+    assert ward.state == "Maharashtra"
+    assert ward.country == "India"
+    assert ward.is_demo is False
 
 
 async def test_find_ward_none_outside_supported_region():
     svc = get_geo_service()
     async with async_session_factory() as db:
-        ward = await svc.find_ward(db, 60.0, 30.0)  # well outside every polygon
-    assert ward is None
+        # Well outside every Pune operational polygon.
+        assert await svc.find_ward(db, 60.0, 30.0) is None
+        assert await svc.find_ward(db, 17.4327, 78.3885) is None  # Hyderabad
+        assert await svc.find_ward(db, 18.5307, 73.8439) is None  # Shivajinagar gap
 
 
 async def test_find_ward_invalid_coordinates_raises():
@@ -124,44 +168,169 @@ async def test_find_ward_invalid_coordinates_raises():
 
 
 # --------------------------------------------------------------------------- #
-# Nearby places & critical infrastructure (live PostGIS)
+# Nearby places & critical infrastructure (live PostGIS + OSM fallback)
 # --------------------------------------------------------------------------- #
-async def test_find_nearby_places_returns_seeded_facilities():
+async def test_find_nearby_places_returns_created_facilities():
     svc = get_geo_service()
-    async with async_session_factory() as db:
-        hospital = await svc.find_nearby_places(
-            db,
-            _SEED_LAT,
-            _SEED_LON,
-            _SETTINGS.GIS_CRITICAL_RADIUS_M,
-            category=None,
-        )
-    names = {p.name for p in hospital}
-    assert "City Central Hospital" in names
-    assert "Riverside Primary School" in names
-    assert "Market Street Bus Stop" in names
-    assert all(p.is_demo is True for p in hospital)
+    ids = [
+        await _add_critical_location(
+            "Pune Civic Hospital", CriticalLocationCategory.HOSPITAL, _SEED_LAT, _SEED_LON, True
+        ),
+        await _add_critical_location(
+            "Kondhwa Vidyalaya", CriticalLocationCategory.SCHOOL, _SEED_LAT + 0.002, _SEED_LON,
+            True,
+        ),
+        await _add_critical_location(
+            "Kondhwa Bus Stop", CriticalLocationCategory.BUS_STOP, _SEED_LAT, _SEED_LON + 0.003,
+            False,
+        ),
+    ]
+    try:
+        async with async_session_factory() as db:
+            places = await svc.find_nearby_places(
+                db, _SEED_LAT, _SEED_LON, _SETTINGS.GIS_CRITICAL_RADIUS_M
+            )
+        names = {p.name for p in places}
+        assert {"Pune Civic Hospital", "Kondhwa Vidyalaya", "Kondhwa Bus Stop"} <= names
+        hospital = next(p for p in places if p.name == "Pune Civic Hospital")
+        assert hospital.is_demo is True
+        bus_stop = next(p for p in places if p.name == "Kondhwa Bus Stop")
+        assert bus_stop.is_demo is False
+    finally:
+        await _delete_critical_locations(*ids)
 
 
 async def test_find_nearby_places_filters_by_category():
-    from app.models.enums import CriticalLocationCategory
-
     svc = get_geo_service()
-    async with async_session_factory() as db:
-        hospitals = await svc.find_nearby_places(
-            db, _SEED_LAT, _SEED_LON, 5000.0, category=CriticalLocationCategory.HOSPITAL
-        )
-    assert {p.name for p in hospitals} == {"City Central Hospital"}
+    hospital_id = await _add_critical_location(
+        "Only Pune Hospital", CriticalLocationCategory.HOSPITAL, _SEED_LAT, _SEED_LON, True
+    )
+    school_id = await _add_critical_location(
+        "Not A Hospital", CriticalLocationCategory.SCHOOL, _SEED_LAT, _SEED_LON, True
+    )
+    try:
+        async with async_session_factory() as db:
+            hospitals = await svc.find_nearby_places(
+                db, _SEED_LAT, _SEED_LON, 5000.0, category=CriticalLocationCategory.HOSPITAL
+            )
+        assert {p.name for p in hospitals} == {"Only Pune Hospital"}
+    finally:
+        await _delete_critical_locations(hospital_id, school_id)
 
 
 async def test_find_nearby_places_radius_is_clamped():
     svc = get_geo_service()
     huge = 50_000_000.0  # far above GIS_MAX_RADIUS_M
+    near_id = await _add_critical_location(
+        "Nearby Clinic", CriticalLocationCategory.HOSPITAL, _SEED_LAT, _SEED_LON, False
+    )
+    far_id = await _add_critical_location(
+        "Far Clinic", CriticalLocationCategory.HOSPITAL, _SEED_LAT + 0.9, _SEED_LON, False
+    )
+    try:
+        async with async_session_factory() as db:
+            places = await svc.find_nearby_places(db, _SEED_LAT, _SEED_LON, huge)
+        assert {p.name for p in places} == {"Nearby Clinic"}
+        # Every returned place must be within the *clamped* max radius.
+        for p in places:
+            assert (p.distance_m or 0.0) <= _SETTINGS.GIS_MAX_RADIUS_M + 1.0
+    finally:
+        await _delete_critical_locations(near_id, far_id)
+
+
+async def test_no_facilities_with_overpass_disabled_returns_empty():
+    # conftest disables live Overpass by default → an empty DB means the lookup
+    # returns nothing (the UI shows "Nearby infrastructure data unavailable").
+    svc = get_geo_service()
     async with async_session_factory() as db:
-        places = await svc.find_nearby_places(db, _SEED_LAT, _SEED_LON, huge)
-    # Every returned place must be within the *clamped* max radius.
-    for p in places:
-        assert (p.distance_m or 0.0) <= _SETTINGS.GIS_MAX_RADIUS_M + 1.0
+        places = await svc.find_nearby_places(
+            db, _SEED_LAT, _SEED_LON, 2000.0, category=CriticalLocationCategory.SCHOOL
+        )
+    assert places == []
+
+
+async def test_overpass_fallback_used_when_db_empty(monkeypatch):
+    svc = get_geo_service()
+    calls: list[CriticalLocationCategory | None] = []
+
+    async def fake_overpass(lat, lon, radius, category, limit=20, client=None):
+        calls.append(category)
+        return [
+            GeoPlace(
+                id=None,
+                name="Live Pune School",
+                category=category,
+                latitude=lat,
+                longitude=lon,
+                distance_m=100.0,
+                is_demo=False,
+            )
+        ]
+
+    monkeypatch.setattr(svc, "_overpass_find", fake_overpass)
+    async with async_session_factory() as db:
+        places = await svc.find_nearby_places(
+            db, _SEED_LAT, _SEED_LON, 2000.0, category=CriticalLocationCategory.SCHOOL
+        )
+    assert places and places[0].name == "Live Pune School"
+    assert places[0].is_demo is False
+    assert calls == [CriticalLocationCategory.SCHOOL]
+
+
+def _overpass_payload() -> dict:
+    return {
+        "elements": [
+            {
+                "type": "node",
+                "id": 1,
+                "lat": _SEED_LAT,
+                "lon": _SEED_LON,
+                "tags": {"name": "Om Hospital", "addr:street": "Kondhwa Rd"},
+            },
+            {
+                "type": "way",
+                "id": 2,
+                "center": {"lat": _SEED_LAT + 0.002, "lon": _SEED_LON + 0.002},
+                "tags": {"name": "Pune Railway Station"},
+            },
+        ]
+    }
+
+
+async def test_overpass_request_parses_live_elements(monkeypatch):
+    svc = get_geo_service()
+    monkeypatch.setattr(svc._settings, "GIS_OVERPASS_ENABLED", True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert "around" in request.content.decode()  # distance + point encoded
+        return httpx.Response(200, json=_overpass_payload())
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport, base_url=_SETTINGS.GIS_OVERPASS_URL)
+    places = await svc._overpass_find(
+        _SEED_LAT, _SEED_LON, 2000.0, CriticalLocationCategory.HOSPITAL, client=client
+    )
+    assert len(places) == 2
+    assert {p.name for p in places} == {"Om Hospital", "Pune Railway Station"}
+    assert all(p.is_demo is False for p in places)
+    assert all(p.category == CriticalLocationCategory.HOSPITAL for p in places)
+    assert all(p.distance_m is not None for p in places)
+
+
+async def test_overpass_failure_returns_empty_list(monkeypatch):
+    svc = get_geo_service()
+    monkeypatch.setattr(svc._settings, "GIS_OVERPASS_ENABLED", True)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("overpass unreachable")
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport, base_url=_SETTINGS.GIS_OVERPASS_URL)
+    places = await svc._overpass_find(
+        _SEED_LAT, _SEED_LON, 2000.0, CriticalLocationCategory.SCHOOL, client=client
+    )
+    assert places == []
 
 
 # --------------------------------------------------------------------------- #
@@ -178,14 +347,14 @@ async def test_reverse_geocode_success():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"display_name": "Durgam Cheruvu Road, Madhapur, Hyderabad"},
+            json={"display_name": "7, Kondhwa Main Road, Kondhwa, Pune, Maharashtra"},
         )
 
     svc, client = _svc_with_client(handler)
     out = await svc.reverse_geocode(_SEED_LAT, _SEED_LON, client)
     assert out.degraded is False
     assert out.source == "nominatim"
-    assert "Durgam Cheruvu Road" in (out.address or "")
+    assert "Kondhwa Main Road" in (out.address or "")
 
 
 async def test_reverse_geocode_rate_limit_degrades():
@@ -239,7 +408,7 @@ async def test_distance_requires_auth(client):
     assert r.status_code == 401
 
 
-async def test_lookup_valid_auth_returns_demo_payload(client):
+async def test_lookup_valid_auth_returns_ward_payload(client):
     email = _unique_email("geo-lookup")
     token = await _citizen_token(email)
     try:
@@ -251,20 +420,22 @@ async def test_lookup_valid_auth_returns_demo_payload(client):
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["ward"]["code"] == "WARD-1"
-        assert data["ward"]["is_demo"] is True
+        assert data["ward"]["is_demo"] is False
+        assert data["ward"]["city"] == "Pune"
         assert data["demo_label"] == "DEMO DATA"
-        assert data["address"]["source"] in ("nominatim",)
-        # Critical infra should be populated from seeded demo rows.
-        assert {"hospitals", "schools", "bus_stops", "nearby_roads"} <= set(data) and any(
-            data["hospitals"]
-        )
-        assert all(p["is_demo"] is True for p in data["hospitals"])
+        assert data["address"]["source"] == "nominatim"
+        # Empty verified facility table + Overpass disabled in tests → the live
+        # infra surface degrades to "unavailable" (empty lists), never demo data.
+        for key in ("hospitals", "schools", "bus_stops", "nearby_roads", "critical_infrastructure"):
+            assert key in data
+        assert data["hospitals"] == []
+        assert data["schools"] == []
+        assert data["bus_stops"] == []
     finally:
         await _delete_user(email)
 
 
 async def test_lookup_accepts_any_authenticated_role(client):
-    # Any authenticated role (here: OFFICER) may call the geo endpoints.
     from app.core.security import hash_password
     from app.models import Role
     from app.models.enums import RoleName
@@ -311,8 +482,6 @@ async def test_distance_endpoint_pure_math(client):
 
 
 async def test_lookup_out_of_range_coordinates_returns_422(client):
-    # The request schema bounds (lat/lon) reject out-of-range input at the
-    # validation layer, before the service is invoked → 422.
     email = _unique_email("geo-bad")
     token = await _citizen_token(email)
     try:
@@ -327,7 +496,6 @@ async def test_lookup_out_of_range_coordinates_returns_422(client):
 
 
 def test_validate_coordinates_rejects_invalid():
-    # The service-level guard also protects direct (non-API) callers.
     svc = get_geo_service()
     for lat, lon in [(120.0, 0.0), (0.0, 200.0), (-91.0, 0.0), (0.0, -181.0)]:
         with pytest.raises(Exception):
@@ -336,7 +504,7 @@ def test_validate_coordinates_rejects_invalid():
     svc.validate_coordinates(0.0, 0.0)
 
 
-async def test_wards_returns_demo_boundary_rings(client):
+async def test_wards_returns_pune_boundary_rings(client):
     email = _unique_email("geo-wards")
     token = await _citizen_token(email)
     try:
@@ -344,9 +512,15 @@ async def test_wards_returns_demo_boundary_rings(client):
         assert r.status_code == 200, r.text
         data = r.json()
         wards = data["wards"]
-        assert any(w["code"] == "WARD-1" for w in wards)
-        for w in wards:
-            assert w["is_demo"] is True
-            assert "geometry" in w and len(w["geometry"]) >= 5  # closed polygon
+        assert len(wards) >= 4
+        by_code = {w["code"]: w for w in wards}
+        for code in ("WARD-1", "WARD-2", "WARD-3", "WARD-4"):
+            ward = by_code[code]
+            assert ward["is_demo"] is False
+            assert ward["city"] == "Pune"
+            assert ward["state"] == "Maharashtra"
+            assert ward["country"] == "India"
+            assert "geometry" in ward and len(ward["geometry"]) >= 5  # closed ring
+            assert "centroid" in ward and len(ward["centroid"]) == 2
     finally:
         await _delete_user(email)

@@ -6,6 +6,7 @@ import { BrainCircuit } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 import { riskTierColor } from "@/lib/hotspot-api";
 import type { HotspotPredictions } from "@/lib/hotspot-api";
+import { PUNE_CENTER } from "@/lib/pune";
 
 function halfStep(values: number[]): number {
   const uniq = [...new Set(values)].sort((a, b) => a - b);
@@ -44,8 +45,8 @@ export default function PredictiveHotspotMapCanvas({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = L.map(containerRef.current, {
-      center: [17.45, 78.42],
-      zoom: 13,
+      center: PUNE_CENTER,
+      zoom: 12,
       scrollWheelZoom: false,
     });
     mapRef.current = map;

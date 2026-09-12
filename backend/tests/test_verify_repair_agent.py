@@ -64,8 +64,8 @@ _PASSWORD = "TestPass#2026"
 _COMPLAINTS = "/api/v1/complaints"
 _VERIFY = "/api/v1/work-orders"
 _SETTINGS = get_settings()
-_LAT = 17.4327
-_LON = 78.3885
+_LAT = 18.4634
+_LON = 73.8912
 
 
 # --------------------------------------------------------------------------- #

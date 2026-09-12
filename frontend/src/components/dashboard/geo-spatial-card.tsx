@@ -165,16 +165,18 @@ export function GeoSpatialCard({ latitude, longitude }: Props) {
           {lookup.ward ? (
             <span className="flex items-center gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
               <Building2 className="h-4 w-4" />
+              <span className="text-emerald-500">CivicAgent Ward:</span>
               {lookup.ward.name}
               {lookup.ward.code ? ` (${lookup.ward.code})` : ""}
             </span>
           ) : (
             <span className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm text-gray-500">
               <AlertCircle className="h-4 w-4" />
-              Outside supported region — no ward boundary covers this point.
+              Outside CivicAgent operational wards — no ward polygon covers
+              this point.
             </span>
           )}
-          {lookup.demo_label && (
+          {lookup.ward && lookup.ward.is_demo && lookup.demo_label && (
             <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-600">
               {lookup.demo_label}
             </span>
@@ -204,12 +206,12 @@ export function GeoSpatialCard({ latitude, longitude }: Props) {
           </p>
           {facilities.length === 0 ? (
             <p className="text-sm text-gray-400">
-              No nearby critical infrastructure recorded.
+              Nearby infrastructure data unavailable.
             </p>
           ) : (
             <ul className="divide-y divide-gray-100">
               {facilities.slice(0, 10).map((f) => (
-                <FacilityRow key={f.id} place={f} />
+                <FacilityRow key={`${f.id ?? ""}-${f.name}-${f.latitude}-${f.longitude}`} place={f} />
               ))}
             </ul>
           )}
@@ -221,7 +223,7 @@ export function GeoSpatialCard({ latitude, longitude }: Props) {
               </p>
               <ul className="divide-y divide-gray-100">
                 {lookup.schools.slice(0, 5).map((f) => (
-                  <FacilityRow key={f.id} place={f} />
+                  <FacilityRow key={`${f.id ?? ""}-${f.name}-${f.latitude}-${f.longitude}`} place={f} />
                 ))}
               </ul>
             </div>
@@ -234,7 +236,7 @@ export function GeoSpatialCard({ latitude, longitude }: Props) {
               </p>
               <ul className="divide-y divide-gray-100">
                 {lookup.bus_stops.slice(0, 5).map((f) => (
-                  <FacilityRow key={f.id} place={f} />
+                  <FacilityRow key={`${f.id ?? ""}-${f.name}-${f.latitude}-${f.longitude}`} place={f} />
                 ))}
               </ul>
             </div>
@@ -243,8 +245,7 @@ export function GeoSpatialCard({ latitude, longitude }: Props) {
 
         <p className="flex items-center gap-1.5 text-xs text-gray-400">
           <TreePine className="h-3.5 w-3.5" />
-          Boundaries &amp; facilities are illustrative demo data — not
-          authoritative municipal data.
+          Pune, Maharashtra — Pune Municipal Corporation area.
         </p>
       </CardContent>
     </Card>

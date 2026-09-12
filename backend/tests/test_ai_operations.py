@@ -118,8 +118,8 @@ async def _complaint(client, token: str) -> str:
             "category": "ROAD",
             "media_ids": [],
             "location": {
-                "latitude": 17.4327,
-                "longitude": 78.3885,
+                "latitude": 18.4634,
+                "longitude": 73.8912,
                 "address": "Main Road",
                 "source": "gps",
                 "geopoint_denied": False,

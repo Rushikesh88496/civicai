@@ -5,6 +5,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { CommandCenterMap } from "@/lib/officer-api";
 import { fitBoundsSafely, isUsableLatLng } from "@/lib/leaflet";
+import { PUNE_CENTER, PUNE_ZOOM } from "@/lib/pune";
 
 const PRIORITY_COLOR: Record<string, string> = {
   P1_CRITICAL: "#dc2626",
@@ -47,8 +48,8 @@ export default function CommandCenterMapCanvas({ data }: { data: CommandCenterMa
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
-      center: [20.5937, 78.9629],
-      zoom: 5,
+      center: PUNE_CENTER,
+      zoom: PUNE_ZOOM,
       scrollWheelZoom: false,
     });
     mapRef.current = map;

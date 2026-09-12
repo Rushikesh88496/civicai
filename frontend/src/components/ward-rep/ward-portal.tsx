@@ -193,7 +193,7 @@ export function WardPortal() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-            Ward {ward ? `${ward.code} · ${ward.name}` : "Representative Portal"}
+            {ward ? `${ward.name} (${ward.code})` : "Representative Portal"}
           </h1>
           <p className="text-sm text-slate-500">
             {rep ? `Representative: ${rep.name ?? "—"}` : "Your ward"} — live complaints,

@@ -50,11 +50,14 @@ from tests.helpers import any_active_ward_id
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/hotspots"
 _SETTINGS = get_settings()
-_LAT = 17.4327
-_LON = 78.3885
-_GRID = HotspotGrid(17.40, 78.35, 17.50, 78.49, _SETTINGS.HOTSPOT_CELL_DEG)
+_LAT = 18.4634
+_LON = 73.8912
+# Municipality-wide mesh over the Pune operational area.
+_GRID = HotspotGrid(18.42, 73.78, 18.60, 73.96, _SETTINGS.HOTSPOT_CELL_DEG)
 
-_HOTSPOT_CELLS = ("r3c3", "r3c4", "r4c3")
+# Recurring-complaint cells — chosen with centroids INSIDE the WARD-1 (Kondhwa)
+# operational polygon so a WARD-1 representative receives a non-empty forecast.
+_HOTSPOT_CELLS = ("r3c9", "r4c10", "r5c11")
 _SCATTER_CELLS = (
     "r0c0",
     "r0c14",
@@ -259,12 +262,12 @@ async def _clear_models() -> None:
 # Grid geometry
 # --------------------------------------------------------------------------- #
 def test_grid_cell_math():
-    assert len(_GRID) == 15 * 11
+    assert len(_GRID) == 18 * 18
     cid = _GRID.cell_id(_LAT, _LON)
-    assert cid == "r3c3"
+    assert cid == "r4c11"
     lat, lon = _GRID.cell_centroid(cid)
-    assert abs(lat - 17.435) < 0.001
-    assert abs(lon - 78.385) < 0.001
+    assert abs(lat - 18.465) < 0.001
+    assert abs(lon - 73.895) < 0.001
     corner = _GRID.cell_id(_GRID.min_lat, _GRID.min_lon)
     assert set(_GRID.neighbors(corner)) == {"r1c0", "r0c1"}
     assert _GRID.cell_id(50.0, 100.0) is None
@@ -272,7 +275,7 @@ def test_grid_cell_math():
 
 
 def test_grid_replay_idempotent():
-    again = HotspotGrid(17.40, 78.35, 17.50, 78.49, _SETTINGS.HOTSPOT_CELL_DEG)
+    again = HotspotGrid(18.42, 73.78, 18.60, 73.96, _SETTINGS.HOTSPOT_CELL_DEG)
     assert again.all_cells() == _GRID.all_cells()
 
 
@@ -318,7 +321,7 @@ def test_features_span_every_grid_cell():
     from app.ml.external import LiveContextProvider
 
     provider = LiveContextProvider(_SETTINGS, population_per_cell={}).provider()
-    events = [_event(0, cell="r3c3", category="WATER"), _event(2, cell="r10c14", category="WATER")]
+    events = [_event(0, cell="r3c9", category="WATER"), _event(2, cell="r10c14", category="WATER")]
     snapshots = [datetime(2026, 1, 1, 0, 0, tzinfo=UTC)]
     frame = build_feature_frame(events, snapshots, _GRID, provider, horizon_days=7)
     cols = {c["cell_id"] for c in frame.to_dict("records")}
@@ -595,12 +598,11 @@ async def test_train_persists_artifact_and_version_bumps(client: TestClient):
     assert r.status_code == 200
     pred = r.json()
     assert pred["prediction_status"] == "READY"
-    hotspot = next(c for c in pred["cells"] if c["cell_id"] == "r3c3")
-    expected_lat, expected_lon = coords["r3c3"]
-    assert abs(hotspot["latitude"] - expected_lat) < 0.0005
-    assert abs(hotspot["longitude"] - expected_lon) < 0.0005
-    # And the crowd centroid is NOT the fabricated grid centroid.
-    grid_lat, grid_lon = _GRID.cell_centroid("r3c3")
+    hotspot = next(c for c in pred["cells"] if c["cell_id"] == "r3c9")
+    expected_lat, expected_lon = coords["r3c9"]
+    assert abs(hotspot["latitude"] - expected_lat) < 5e-5
+    assert abs(hotspot["longitude"] - expected_lon) < 5e-5
+    grid_lat, grid_lon = _GRID.cell_centroid("r3c9")
     assert abs(hotspot["latitude"] - grid_lat) > 0.001
 
 
@@ -637,8 +639,8 @@ async def test_predictions_reflect_live_complaint(client: TestClient):
     assert r.status_code == 200
     data = r.json()
     assert data["complaint_events_used"] >= 1
-    hotspot = next(c for c in data["cells"] if c["cell_id"] == "r3c3")
+    hotspot = next(c for c in data["cells"] if c["cell_id"] == "r3c9")
     assert hotspot["trailing7"] >= 1
-    assert hotspot["latitude"] == coords["r3c3"][0]
+    assert hotspot["latitude"] == coords["r3c9"][0]
     assert hotspot["ward_code"] == "WARD-1"
     assert data["population_cells"] >= 1

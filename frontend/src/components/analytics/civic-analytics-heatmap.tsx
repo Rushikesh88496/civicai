@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { HeatmapCluster } from "@/lib/analytics-api";
+import { PUNE_CENTER, PUNE_ZOOM } from "@/lib/pune";
 
 function heatColor(ratio: number): string {
   // Light amber (cold) -> deep red (hot). ratio in [0, 1].
@@ -22,8 +23,8 @@ export function AnalyticsHeatmap({ clusters }: { clusters: HeatmapCluster[] }) {
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
-      center: [20.5937, 78.9629],
-      zoom: 5,
+      center: PUNE_CENTER,
+      zoom: PUNE_ZOOM,
       scrollWheelZoom: false,
     });
     mapRef.current = map;

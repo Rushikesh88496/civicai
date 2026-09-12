@@ -48,8 +48,8 @@ from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
 _SLA = "/api/v1/sla"
-_LAT = 17.4327
-_LON = 78.3885
+_LAT = 18.4634
+_LON = 73.8912
 
 # Fixed "now" shared by the simulated-time agent tests.
 _T0 = datetime(2026, 9, 6, 12, 0, 0, tzinfo=UTC)

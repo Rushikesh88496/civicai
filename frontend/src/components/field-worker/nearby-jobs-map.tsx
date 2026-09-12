@@ -5,6 +5,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { WorkerJob } from "@/lib/field-worker-api";
 import { fitBoundsSafely, isUsableLatLng } from "@/lib/leaflet";
+import { PUNE_CENTER, PUNE_ZOOM } from "@/lib/pune";
 
 function nearbyIcon() {
   return L.divIcon({
@@ -40,8 +41,8 @@ export default function NearbyJobsMap({
       center:
         origin != null && isUsableLatLng(origin.latitude, origin.longitude)
           ? [origin.latitude, origin.longitude]
-          : [20.5937, 78.9629],
-      zoom: 11,
+          : PUNE_CENTER,
+      zoom: PUNE_ZOOM,
       scrollWheelZoom: false,
     });
     mapRef.current = map;

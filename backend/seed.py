@@ -5,21 +5,23 @@ predictions, zero analytics. This script only seeds REFERENCE data:
 
 - Roles: CITIZEN, OFFICER, WARD_REPRESENTATIVE, FIELD_WORKER, ADMIN, SUPER_ADMIN
 - Departments for the worker/representative links
-- DEMO-critical reference locations (illustrative facility placeholders, NOT
-  operational incidents)
 - The Citizen AI Assistant knowledge base
 - A single bootstrap ``admin@example.com`` SUPER_ADMIN account (documented
   login for the super-admin panel)
 - 25 development FIELD_WORKER accounts (ward distribution 6/6/6/7 across
-  WARD-1 .. WARD-4) with realistic municipal jobs, skills and registered base
-  locations across Pune, Maharashtra, India — created idempotently by email and
-  re-pointed to their Pune base on re-runs
+  WARD-1..WARD-4 — Kondhwa, Kothrud, Hadapsar, Viman Nagar) with realistic
+  municipal jobs, skills and registered base locations inside their ward's
+  operational polygon in Pune, Maharashtra, India — created idempotently by
+  email and re-pointed to their Pune base on re-runs
 - 4 development WARD_REPRESENTATIVE accounts (one per ward) — created
   idempotently by email
 
-The four reference wards (WARD 1 .. WARD 4) and their boundaries arrive via the
-``31a2b3c4d5e6`` alembic migration — NOT from this script — so a fresh deploy
-always has functional sign-up wards.
+The four reference wards (WARD 1..WARD 4) and their real Pune operational
+boundaries arrive via the alembic migrations (``31a2b3c4d5e6`` +
+``b6c7d8e9f0a1``) — NOT from this script — so a fresh deploy always has
+functional sign-up wards. Nearby infrastructure is intentionally NEVER seeded:
+the platform sources real facilities from OpenStreetMap (Overpass) at lookup
+time, with an explicit "unavailable" fallback.
 
 Usage (from backend/):
     .venv\\Scripts\\python seed.py              # seed reference data (idempotent)
@@ -40,7 +42,6 @@ from sqlalchemy import func, select
 from app.core.security import hash_password
 from app.db.session import async_session_factory, engine
 from app.models import (
-    CriticalLocation,
     Department,
     FieldWorker,
     Role,
@@ -50,7 +51,6 @@ from app.models import (
     WardRepresentative,
 )
 from app.models.enums import (
-    CriticalLocationCategory,
     RepresentativeStatus,
     RoleName,
     WorkerStatus,
@@ -66,6 +66,17 @@ _WORKER_PASSWORD = "FieldWorker#2026"
 
 # Shared dev password for seeded ward representatives.
 _REP_PASSWORD = "1234#Rushi"
+
+# Shared dev password for seeded municipal officers.
+_OFFICER_PASSWORD = "Officer#2026"
+
+# 2 municipal officers — the officer-portal users who review complaints,
+# approve dispatch recommendations and verify resolution evidence. Officers are
+# global staff (not ward-scoped), so no ward link is required for them.
+_OFFICERS: list[dict] = [
+    {"name": "Sneha Kulkarni", "email": "officer.1@example.com"},
+    {"name": "Vikram Deshmukh", "email": "officer.2@example.com"},
+]
 
 # 4 ward representatives — one per ward (WARD-1 .. WARD-4).
 _WARD_REPRESENTATIVES: list[dict] = [
@@ -104,52 +115,28 @@ _ROLES: list[tuple[RoleName, str]] = [
     (RoleName.SUPER_ADMIN, "Super administrator with panel management rights."),
 ]
 
-# (name, category, lat, lon, address) — illustrative REFERENCE facility
-# placeholders around Hyderabad, India. They are DATAPOINTS on the civic map,
-# NOT operational incidents; ``is_demo=True`` keeps them clearly labelled.
-_DEMO_CRITICAL_LOCATIONS: list[tuple[str, CriticalLocationCategory, float, float, str | None]] = [
-    ("City Central Hospital", CriticalLocationCategory.HOSPITAL, 17.4350, 78.3890, "Riverside"),
-    ("Riverside Primary School", CriticalLocationCategory.SCHOOL, 17.4310, 78.3870, "Riverside"),
-    ("Market Street Bus Stop", CriticalLocationCategory.BUS_STOP, 17.4330, 78.3895, "Market"),
-    (
-        "Old Town Police Station",
-        CriticalLocationCategory.POLICE_STATION,
-        17.4210,
-        78.4250,
-        "Old Town",
-    ),
-    ("Downtown Fire Station", CriticalLocationCategory.FIRE_STATION, 17.4600, 78.4200, "Downtown"),
-    ("Riverfront Road", CriticalLocationCategory.ROAD, 17.4327, 78.3885, "Near riverfront"),
-    ("Central Bus Terminal", CriticalLocationCategory.TRANSPORT, 17.4400, 78.4350, "Downtown"),
-]
-
+# (name, code, description) — operational departments for worker/rep links.
 _DEPARTMENTS = [
     ("Public Works", "PW", "Roads, water, and public infrastructure."),
     ("Sanitation", "SN", "Waste collection and street cleaning."),
     ("Parks & Recreation", "PR", "Public parks and green spaces."),
 ]
 
-# 25 development field workers — 6 in WARD-1, 6 in WARD-2, 6 in WARD-3,
-# 7 in WARD-4. Each row is deterministic: job (specialty), department, ward,
-# real municipal base location in Pune, Maharashtra (India), skill tags and
-# equipment. Ward membership is the account's registered ward (User.ward_id,
-# via the reference ward codes); home coords are the worker's REGISTERED BASE —
-# real distinct localities spread in four geographic quadrants of Pune so each
-# ward's team is distributed across the city, never a single centre point and
-# never a random/duplicated coordinate:
-#   WARD-1 (south-west) lat 18.42-18.55 lon 73.72-73.86
-#   WARD-2 (south-east) lat 18.42-18.55 lon 73.86-73.97
-#   WARD-3 (north-west) lat 18.55-18.66 lon 73.72-73.86
-#   WARD-4 (north-east) lat 18.55-18.66 lon 73.86-73.97
-# All points lie within the Pune municipal area (18.42-18.66 / 73.72-73.97) and
-# are 25 distinct coordinates. ``base_location`` is the human-readable station
-# label; it never represents the worker's live GPS position.
+# 25 development field workers — 6 in WARD-1 (Kondhwa), 6 in WARD-2 (Kothrud),
+# 6 in WARD-3 (Hadapsar), 7 in WARD-4 (Viman Nagar). Each row is deterministic:
+# job (specialty), department, ward and a real municipal base location that lies
+# INSIDE that ward's operational polygon (PostGIS ST_Contains verified by
+# scripts/validate_pune_geo.py). Ward membership is the account's registered
+# ward (User.ward_id, via the reference ward codes); home coords are the
+# worker's REGISTERED BASE — distinct localities in each ward's geography, never
+# a single centre point and never a random/duplicated coordinate.
 _FIELD_WORKERS: list[dict] = [
-    # --- WARD-1 (Ward 1, 6 workers) ------------------------------------
+    # --- WARD-1 (Ward 1 — Kondhwa, 6 workers) ---------------------------
+    # Kondhwa Khurd, Kondhwa, NIBM, Yewalewadi, Kondhwa Budruk, Bibvewadi.
     {
         "name": "Ramesh Yadav",
         "email": "worker.1@example.com",
-        "ward_code": "WARD-1",
+        "ward_code": "WARD-2",
         "department_code": "PW",
         "specialty": "Road Maintenance",
         "lat": 18.5106,
@@ -164,21 +151,21 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-1",
         "department_code": "PW",
         "specialty": "Pothole Repair",
-        "lat": 18.4755,
-        "lon": 73.8310,
-        "base_location": "Sinhagad Road, Pune, Maharashtra",
+        "lat": 18.4719,
+        "lon": 73.8886,
+        "base_location": "Kondhwa Khurd, Pune, Maharashtra",
         "skill_tags": ["pothole-repair", "asphalt", "cold-mix"],
         "equipment": ["asphalt-paver", "compactor"],
     },
     {
         "name": "Mohammed Irfan",
         "email": "worker.3@example.com",
-        "ward_code": "WARD-1",
+        "ward_code": "WARD-2",
         "department_code": "SN",
         "specialty": "Garbage Collection",
-        "lat": 18.4796,
-        "lon": 73.7968,
-        "base_location": "Warje, Pune, Maharashtra",
+        "lat": 18.4867,
+        "lon": 73.8050,
+        "base_location": "Karve Nagar, Pune, Maharashtra",
         "skill_tags": ["garbage-collection", "collections"],
         "equipment": ["garbage-truck"],
     },
@@ -188,9 +175,9 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-1",
         "department_code": "SN",
         "specialty": "Waste Management",
-        "lat": 18.4541,
-        "lon": 73.8610,
-        "base_location": "Katraj, Pune, Maharashtra",
+        "lat": 18.4634,
+        "lon": 73.8912,
+        "base_location": "Kondhwa, Pune, Maharashtra",
         "skill_tags": ["waste-management", "segregation", "landfill"],
         "equipment": ["compactor-truck"],
     },
@@ -200,9 +187,9 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-1",
         "department_code": "PW",
         "specialty": "Streetlight Repair",
-        "lat": 18.5075,
-        "lon": 73.8493,
-        "base_location": "Navi Peth, Pune, Maharashtra",
+        "lat": 18.4598,
+        "lon": 73.9065,
+        "base_location": "NIBM, Pune, Maharashtra",
         "skill_tags": ["streetlight-repair", "electrical", "lamp"],
         "equipment": ["boom-truck", "voltage-tester"],
     },
@@ -212,22 +199,23 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-1",
         "department_code": "PR",
         "specialty": "Public Infrastructure Maintenance",
-        "lat": 18.4496,
-        "lon": 73.8429,
-        "base_location": "Ambegaon Khurd, Pune, Maharashtra",
+        "lat": 18.4363,
+        "lon": 73.8965,
+        "base_location": "Yewalewadi, Pune, Maharashtra",
         "skill_tags": ["civic-assets", "maintenance", "public-infrastructure"],
         "equipment": ["hand-tools", "app-phone"],
     },
-    # --- WARD-2 (Ward 2, 6 workers) ------------------------------------
+    # --- WARD-2 (Ward 2 — Kothrud, 6 workers) ---------------------------
+    # Kothrud, Karve Nagar, Erandwane, Paud Road, Vanaz, Dahanukar Colony.
     {
         "name": "Venkata Rao",
         "email": "worker.7@example.com",
         "ward_code": "WARD-2",
         "department_code": "PW",
         "specialty": "Road Inspection",
-        "lat": 18.5125,
-        "lon": 73.8836,
-        "base_location": "Camp, Pune, Maharashtra",
+        "lat": 18.5071,
+        "lon": 73.8310,
+        "base_location": "Erandwane, Pune, Maharashtra",
         "skill_tags": ["road-inspection", "pavement-assessment"],
         "equipment": ["distance-measuring-wheel"],
     },
@@ -237,9 +225,9 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-2",
         "department_code": "PW",
         "specialty": "Water Pipeline Repair",
-        "lat": 18.4634,
-        "lon": 73.8912,
-        "base_location": "Kondhwa, Pune, Maharashtra",
+        "lat": 18.5083,
+        "lon": 73.7960,
+        "base_location": "Paud Road, Pune, Maharashtra",
         "skill_tags": ["water-line-repair", "pipeline", "valve"],
         "equipment": ["excavator", "pipe-cutter"],
     },
@@ -249,9 +237,9 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-2",
         "department_code": "SN",
         "specialty": "Street Cleaning",
-        "lat": 18.5362,
-        "lon": 73.8940,
-        "base_location": "Koregaon Park, Pune, Maharashtra",
+        "lat": 18.5090,
+        "lon": 73.8230,
+        "base_location": "Vanaz, Pune, Maharashtra",
         "skill_tags": ["street-cleaning", "sweeping"],
         "equipment": ["street-sweeper-vehicle"],
     },
@@ -261,28 +249,28 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-2",
         "department_code": "SN",
         "specialty": "Sewer Maintenance",
-        "lat": 18.5089,
-        "lon": 73.9259,
-        "base_location": "Hadapsar, Pune, Maharashtra",
+        "lat": 18.5120,
+        "lon": 73.8170,
+        "base_location": "Dahanukar Colony, Pune, Maharashtra",
         "skill_tags": ["sewer-maintenance", "manhole", "jetting-rig"],
         "equipment": ["jetting-rig", "manhole-lift"],
     },
     {
         "name": "Rajesh Verma",
         "email": "worker.11@example.com",
-        "ward_code": "WARD-2",
+        "ward_code": "WARD-1",
         "department_code": "PW",
         "specialty": "Electrical Maintenance",
-        "lat": 18.5330,
-        "lon": 73.9050,
-        "base_location": "Ghorpadi, Pune, Maharashtra",
+        "lat": 18.4535,
+        "lon": 73.9115,
+        "base_location": "Kondhwa Budruk, Pune, Maharashtra",
         "skill_tags": ["electrical-maintenance", "feeder", "panel"],
         "equipment": ["voltage-tester", "insulated-gloves"],
     },
     {
         "name": "Sunil Das",
         "email": "worker.12@example.com",
-        "ward_code": "WARD-2",
+        "ward_code": "WARD-1",
         "department_code": "PW",
         "specialty": "Footpath Repair",
         "lat": 18.4620,
@@ -291,16 +279,18 @@ _FIELD_WORKERS: list[dict] = [
         "skill_tags": ["footpath-repair", "paving", "paver-block"],
         "equipment": ["paver-block-setter"],
     },
-    # --- WARD-3 (Ward 3, 6 workers) ------------------------------------
+    # --- WARD-3 (Ward 3 — Hadapsar, 6 workers) --------------------------
+    # Magarpatta City, Mundhwa, Hadapsar, North Hadapsar, Magarpatta South,
+    # Hadapsar Gaon.
     {
         "name": "Manoj Gupta",
         "email": "worker.13@example.com",
         "ward_code": "WARD-3",
         "department_code": "PW",
         "specialty": "Road Maintenance",
-        "lat": 18.5608,
-        "lon": 73.7988,
-        "base_location": "Aundh, Pune, Maharashtra",
+        "lat": 18.5159,
+        "lon": 73.9263,
+        "base_location": "Magarpatta City, Pune, Maharashtra",
         "skill_tags": ["road-maintenance", "asphalt", "patching"],
         "equipment": ["road-roller", "compactor"],
     },
@@ -310,9 +300,9 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-3",
         "department_code": "PW",
         "specialty": "Water Leakage Repair",
-        "lat": 18.5596,
-        "lon": 73.7865,
-        "base_location": "Baner, Pune, Maharashtra",
+        "lat": 18.5347,
+        "lon": 73.9355,
+        "base_location": "Mundhwa, Pune, Maharashtra",
         "skill_tags": ["water-leak-repair", "pipeline", "shutoff-valve"],
         "equipment": ["pipe-clamp", "excavator"],
     },
@@ -322,9 +312,9 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-3",
         "department_code": "SN",
         "specialty": "Drain Cleaning",
-        "lat": 18.5854,
-        "lon": 73.7724,
-        "base_location": "Wakad, Pune, Maharashtra",
+        "lat": 18.4995,
+        "lon": 73.9256,
+        "base_location": "Hadapsar, Pune, Maharashtra",
         "skill_tags": ["drain-cleaning", "drainage-jetting"],
         "equipment": ["jetting-rig"],
     },
@@ -334,9 +324,9 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-3",
         "department_code": "SN",
         "specialty": "Garbage Collection",
-        "lat": 18.5913,
-        "lon": 73.7389,
-        "base_location": "Hinjewadi, Pune, Maharashtra",
+        "lat": 18.5270,
+        "lon": 73.9300,
+        "base_location": "North Hadapsar, Pune, Maharashtra",
         "skill_tags": ["garbage-collection", "collections"],
         "equipment": ["garbage-truck"],
     },
@@ -346,9 +336,9 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-3",
         "department_code": "PW",
         "specialty": "Pothole Repair",
-        "lat": 18.6298,
-        "lon": 73.8147,
-        "base_location": "Pimpri, Pune, Maharashtra",
+        "lat": 18.5050,
+        "lon": 73.9330,
+        "base_location": "Magarpatta South, Pune, Maharashtra",
         "skill_tags": ["pothole-repair", "asphalt", "cold-mix"],
         "equipment": ["asphalt-paver", "compactor"],
     },
@@ -358,13 +348,14 @@ _FIELD_WORKERS: list[dict] = [
         "ward_code": "WARD-3",
         "department_code": "PR",
         "specialty": "Public Infrastructure Maintenance",
-        "lat": 18.6278,
-        "lon": 73.8100,
-        "base_location": "Chinchwad, Pune, Maharashtra",
+        "lat": 18.5080,
+        "lon": 73.9180,
+        "base_location": "Hadapsar Gaon, Pune, Maharashtra",
         "skill_tags": ["civic-assets", "maintenance", "public-infrastructure"],
         "equipment": ["hand-tools", "app-phone"],
     },
-    # --- WARD-4 (Ward 4, 7 workers) ------------------------------------
+    # --- WARD-4 (Ward 4 — Viman Nagar, 7 workers) ------------------------
+    # Viman Nagar, Yerwada, Lohegaon, Kharadi, Vishrantwadi, Dighi, Dhanori.
     {
         "name": "Gopal Krishna",
         "email": "worker.19@example.com",
@@ -478,35 +469,6 @@ async def _seed_departments(db) -> dict[str, Department]:
     return departments
 
 
-async def _seed_critical_locations(db) -> None:
-    """Seed the DEMO reference critical locations (idempotent, Part 10).
-
-    These are illustrative facility placeholders (``is_demo=True``), never
-    operational incidents — the UI labels them clearly as demo data.
-    """
-    for name, category, lat, lon, address in _DEMO_CRITICAL_LOCATIONS:
-        existing = await db.scalar(
-            select(CriticalLocation).where(
-                CriticalLocation.name == name, CriticalLocation.category == category
-            )
-        )
-        if existing is not None:
-            continue
-        db.add(
-            CriticalLocation(
-                name=name,
-                category=category,
-                latitude=lat,
-                longitude=lon,
-                address=address,
-                is_demo=True,
-                geom=func.ST_SetSRID(func.ST_MakePoint(lon, lat), 4326),
-            )
-        )
-        print(f"[seed] created demo critical location: {name}")
-    await db.flush()
-
-
 async def _seed_bootstrap_admin(db) -> None:
     """Create the single bootstrap SUPER_ADMIN (idempotent)."""
     existing = await db.scalar(select(User).where(User.email == _BOOTSTRAP_ADMIN_EMAIL))
@@ -541,9 +503,9 @@ async def _seed_field_workers(
     ``UserProfile`` and a linked ``FieldWorker`` profile. All workers are ACTIVE
     with zero workload — no complaints or work orders are created by the seed,
     so the platform still starts operationally empty. Each worker is registered
-    at a distinct real base location in Pune (Maharashtra); re-running the seed
-    re-points an already-seeded worker to that Pune base without touching the
-    account password.
+    at a distinct real base location inside its ward's operational polygon in
+    Pune (Maharashtra); re-running the seed re-points an already-seeded worker
+    to that Pune base without touching the account password.
     """
     fw_role = await db.scalar(select(Role).where(Role.name == RoleName.FIELD_WORKER.value))
     if fw_role is None:
@@ -629,6 +591,41 @@ async def _seed_field_workers(
         print("[seed] field workers already present — nothing to do")
 
 
+async def _seed_officers(db) -> None:
+    """Create municipal OFFICER accounts (idempotent, keyed by email).
+
+    Officers staff the officer portal: they review complaints, approve dispatch
+    recommendations and verify resolution evidence. They are global staff (no
+    ward link) — ward scoping only applies to WARD_REPRESENTATIVE users.
+    """
+    officer_role = await db.scalar(select(Role).where(Role.name == RoleName.OFFICER.value))
+    if officer_role is None:
+        raise RuntimeError("OFFICER role missing — run roles seeding first.")
+    created = 0
+    for spec in _OFFICERS:
+        if await db.scalar(select(User).where(User.email == spec["email"])) is not None:
+            continue
+        user = User(
+            email=spec["email"],
+            password_hash=hash_password(_OFFICER_PASSWORD),
+            full_name=spec["name"],
+            role_id=officer_role.id,
+            ward_id=None,
+            is_active=True,
+            is_email_verified=True,
+        )
+        db.add(user)
+        await db.flush()
+        db.add(UserProfile(user_id=user.id))
+        await db.flush()
+        created += 1
+        print(f"[seed] created officer: {spec['email']} ({spec['name']})")
+    if created:
+        print(f"[seed] officers created: {created}")
+    else:
+        print("[seed] officers already present — nothing to do")
+
+
 async def _seed_ward_representatives(db, wards_by_code: dict[str, Ward]) -> None:
     """Create the 4 ward representatives (idempotent, keyed by email).
 
@@ -700,7 +697,6 @@ async def main() -> None:
 
         await _seed_roles(db)
         await _seed_departments(db)
-        await _seed_critical_locations(db)
         await _seed_bootstrap_admin(db)
         await _seed_assistant_knowledge(db)
 
@@ -719,6 +715,7 @@ async def main() -> None:
                 db,
                 wards_by_code={w.code: w for w in ref_wards},
             )
+            await _seed_officers(db)
         else:
             print("[seed] WARNING: no wards found — run `alembic upgrade head` first.")
 
@@ -732,6 +729,8 @@ async def main() -> None:
         f"Field-worker password: {_WORKER_PASSWORD}\n"
         f"4 WARD_REPRESENTATIVE logins: kobu.dheeraj/rushikesh/rajveer@example.com\n"
         f"Ward-rep password: {_REP_PASSWORD}\n"
+        f"2 OFFICER logins: officer.1@example.com, officer.2@example.com\n"
+        f"Officer password: {_OFFICER_PASSWORD}\n"
         "No demo complaints/hotspots/predictions exist — the platform starts empty."
     )
 

@@ -46,8 +46,8 @@ from tests.helpers import any_active_ward_id
 _PASSWORD = "TestPass#2026"
 _CONV_BASE = "/api/v1/conversations"
 _NOTIF_BASE = "/api/v1/notifications"
-_LAT = 17.4327
-_LON = 78.3885
+_LAT = 18.4634
+_LON = 73.8912
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 

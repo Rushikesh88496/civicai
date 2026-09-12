@@ -23,11 +23,11 @@ from tests.helpers import any_active_ward_id
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
 
-# Real coordinates *inside* the reference WARD-1 polygon (17.40..17.45 lat,
-# 78.35..78.42 lon) so geographic ward detection resolves a ward. Kept away
-# from the polygon edges because ST_Contains excludes points on the boundary.
-_GPS_LAT = 17.42
-_GPS_LON = 78.36
+# Real coordinates *inside* the reference WARD-1 (Kondhwa) operational polygon
+# so geographic ward detection resolves a ward. Kept away from the polygon edges
+# because ST_Contains excludes points on the boundary.
+_GPS_LAT = 18.4634
+_GPS_LON = 73.8912
 
 
 def _unique_email(prefix: str) -> str:
@@ -112,10 +112,10 @@ async def test_gps_complaint_persists_real_coordinates_and_accuracy(client):
         )
     assert geom_text is not None
     assert "POINT(" in geom_text
-    assert "78.36" in geom_text
-    assert "17.42" in geom_text
+    assert "73.8912" in geom_text
+    assert "18.4634" in geom_text
 
-    # Geographic ward detection from the actual point (WARD-1 reference box).
+    # Geographic ward detection from the actual point (WARD-1 Kondhwa polygon).
     assert complaint.ward is not None
     assert complaint.ward.code == "WARD-1"
 
@@ -136,8 +136,8 @@ async def test_gps_denied_manual_fallback_requires_real_coordinates(client):
             "description": "Streetlight flickering outside the school gate.",
             "category": "STREET_LIGHTING",
             "location": {
-                "latitude": 17.45,
-                "longitude": 78.39,
+                "latitude": 18.4719,
+                "longitude": 73.8886,
                 "address": "Placed on the map",
                 "source": "manual",
                 "geopoint_denied": True,
@@ -151,8 +151,8 @@ async def test_gps_denied_manual_fallback_requires_real_coordinates(client):
     assert complaint.complaint_location is not None
     assert complaint.complaint_location.source == "manual"
     assert complaint.complaint_location.geopoint_denied is True
-    assert complaint.complaint_location.latitude == pytest.approx(17.45)
-    assert complaint.complaint_location.longitude == pytest.approx(78.39)
+    assert complaint.complaint_location.latitude == pytest.approx(18.4719)
+    assert complaint.complaint_location.longitude == pytest.approx(73.8886)
     # No device accuracy on manual entries.
     assert complaint.complaint_location.accuracy_m is None
 
@@ -214,8 +214,8 @@ async def test_manual_entry_with_accuracy_rejected(client):
             "description": "A description that would otherwise be valid.",
             "category": "OTHER",
             "location": {
-                "latitude": 17.4,
-                "longitude": 78.4,
+                "latitude": 18.4620,
+                "longitude": 73.8677,
                 "source": "manual",
                 "geopoint_denied": True,
                 "accuracy_m": 12.0,
@@ -241,8 +241,8 @@ async def test_detail_readback_returns_accuracy_and_origin(client):
             "description": "Drain overflow near the bus stop.",
             "category": "DRAINAGE",
             "location": {
-                "latitude": 17.41,
-                "longitude": 78.36,
+                "latitude": 18.4363,
+                "longitude": 73.8965,
                 "address": "Bus stop",
                 "source": "gps",
                 "geopoint_denied": False,
@@ -259,8 +259,8 @@ async def test_detail_readback_returns_accuracy_and_origin(client):
     assert loc is not None
     assert loc["source"] == "gps"
     assert loc["geopoint_denied"] is False
-    assert loc["latitude"] == pytest.approx(17.41)
-    assert loc["longitude"] == pytest.approx(78.36)
+    assert loc["latitude"] == pytest.approx(18.4363)
+    assert loc["longitude"] == pytest.approx(73.8965)
     assert loc["accuracy_m"] == pytest.approx(9.0)
 
     await _delete_user(email)

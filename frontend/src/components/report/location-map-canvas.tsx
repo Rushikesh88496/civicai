@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 
 import "leaflet/dist/leaflet.css";
+import { PUNE_CENTER, PUNE_ZOOM } from "@/lib/pune";
 
 interface LocationMapCanvasProps {
   latitude: number | null;
@@ -38,8 +39,8 @@ export default function LocationMapCanvas({
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
-      center: latitude != null && longitude != null ? [latitude, longitude] : [20, 77],
-      zoom: latitude != null && longitude != null ? 15 : 5,
+      center: latitude != null && longitude != null ? [latitude, longitude] : PUNE_CENTER,
+      zoom: latitude != null && longitude != null ? 15 : PUNE_ZOOM,
       scrollWheelZoom: false,
     });
     mapRef.current = map;

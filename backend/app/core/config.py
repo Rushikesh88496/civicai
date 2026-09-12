@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     # Label appended to any geometry/location that is illustrative demo data
     # rather than an authoritative boundary or facility.
     GIS_DEMO_LABEL: str = "DEMO DATA"
+    # OSM Overpass endpoint used to source REAL nearby infrastructure when the
+    # verified ``critical_locations`` table has no facilities for a query. When
+    # disabled (or on any network failure) the lookup returns an empty list and
+    # the UI shows "Nearby infrastructure data unavailable".
+    GIS_OVERPASS_URL: str = "https://overpass-api.de/api/interpreter"
+    GIS_OVERPASS_TIMEOUT_SECONDS: float = 6.0
+    GIS_OVERPASS_ENABLED: bool = True
 
     # ===== Context Enrichment Agent (Part 11) =====
     # Weather comes from Open-Meteo's public forecast API. It is free and
@@ -333,7 +340,8 @@ class Settings(BaseSettings):
     # Grid cell size in decimal degrees (~1.1 km at this latitude).
     HOTSPOT_CELL_DEG: float = 0.01
     # Demo city bounding box (matches the seeded reference ward boundaries).
-    HOTSPOT_BBOX: str = "17.40,78.35,17.50,78.49"  # min_lat,min_lon,max_lat,max_lon
+    # Pune operational zones span roughly lat 18.42..18.60, lon 73.78..73.96.
+    HOTSPOT_BBOX: str = "18.42,73.78,18.60,73.96"  # min_lat,min_lon,max_lat,max_lon
     # Target: >=1 complaint in the next N days (binary) + expected volume (reg).
     HOTSPOT_HORIZON_DAYS: int = 7
     # The model is trained ONLY on real complaint records stored in the database

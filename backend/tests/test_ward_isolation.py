@@ -131,8 +131,8 @@ async def _insert_order(complaint_id: uuid.UUID, *, status=WorkOrderStatus.ASSIG
             department="ROADS",
             priority="P2_HIGH",
             status=status,
-            location_lat=17.4327,
-            location_lon=78.3885,
+            location_lat=18.4634,
+            location_lon=73.8912,
         )
         db.add(order)
         await db.commit()

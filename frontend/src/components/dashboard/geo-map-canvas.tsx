@@ -9,6 +9,7 @@ import type {
   WardBoundary,
 } from "@/lib/citizen-api";
 import { fitBoundsSafely, isUsableLatLng } from "@/lib/leaflet";
+import { drawWardBoundaries } from "@/lib/ward-boundaries";
 
 interface GeoMapCanvasProps {
   latitude: number;
@@ -63,19 +64,22 @@ export default function GeoMapCanvas({
       .addTo(map)
       .bindPopup("Complaint location");
 
-    // Ward boundary polygon (if available for the detected ward code).
+    // All four Pune operational ward boundaries + centroid labels.
+    drawWardBoundaries(map, wards);
+
+    // Highlight the detected ward boundary (if the point falls inside one).
     if (lookup.ward) {
       const boundary = wards.find((w) => w.code === lookup.ward!.code);
       if (boundary && boundary.geometry && boundary.geometry.length >= 3) {
         const latlngs = boundary.geometry.map(([lng, lat]) => [lat, lng] as [number, number]);
         L.polygon(latlngs, {
           color: "#f59e0b",
-          weight: 2,
+          weight: 3,
           fillColor: "#f59e0b",
-          fillOpacity: 0.15,
+          fillOpacity: 0.18,
         })
           .addTo(map)
-          .bindPopup(`${boundary.name} (${lookup.demo_label})`);
+          .bindPopup(`${boundary.name}`);
       }
     }
 

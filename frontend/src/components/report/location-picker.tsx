@@ -213,7 +213,7 @@ export function LocationPicker({ onChange }: LocationPickerProps) {
           <Input
             id="loc-lat"
             inputMode="decimal"
-            placeholder="e.g. 17.4327"
+            placeholder="e.g. 18.5196"
             value={lat}
             onChange={(e) => {
               setLat(e.target.value);
@@ -226,7 +226,7 @@ export function LocationPicker({ onChange }: LocationPickerProps) {
           <Input
             id="loc-lon"
             inputMode="decimal"
-            placeholder="e.g. 78.3885"
+            placeholder="e.g. 73.8554"
             value={lon}
             onChange={(e) => {
               setLon(e.target.value);

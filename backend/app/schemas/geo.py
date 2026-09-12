@@ -28,7 +28,8 @@ class GeoLookupIn(BaseModel):
 class GeoPlace(BaseModel):
     """A single nearby facility / critical infrastructure record."""
 
-    id: uuid.UUID
+    # DB-sourced places have an id; live OSM (Overpass) places have none.
+    id: uuid.UUID | None = None
     name: str
     category: CriticalLocationCategory
     address: str | None = None
@@ -45,20 +46,29 @@ class WardBoundaryOut(BaseModel):
     name: str
     code: str
     description: str | None = None
-    is_demo: bool = True
+    # Administrative geography of the operational ward.
+    city: str = "Pune"
+    state: str = "Maharashtra"
+    country: str = "India"
+    is_demo: bool = False
     # A GeoJSON-style ring of [lng, lat] vertices (EPSG:4326). Omitted when the
     # caller only needs the ward list, included for map rendering.
     geometry: list[list[float]] | None = None
+    # Ward label anchor [lng, lat] (from ST_Centroid), for map labels.
+    centroid: list[float] | None = None
 
 
 class WardDetected(BaseModel):
-    """The ward that contains a given coordinate, if the demo boundaries cover it."""
+    """The ward that contains a given coordinate, if the boundaries cover it."""
 
     ward_id: uuid.UUID
     name: str
     code: str
     description: str | None = None
-    is_demo: bool = True
+    city: str = "Pune"
+    state: str = "Maharashtra"
+    country: str = "India"
+    is_demo: bool = False
 
 
 class ReverseGeocodeOut(BaseModel):

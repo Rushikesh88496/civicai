@@ -39,8 +39,8 @@ from tests.helpers import any_active_ward_id, any_officer_token
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
 _SETTINGS = get_settings()
-_SEED_LAT = 17.4327
-_SEED_LON = 78.3885
+_SEED_LAT = 18.4634
+_SEED_LON = 73.8912
 
 _SINGLE = Weights(severity=1.0, weather=0.0, location=0.0, crowd=0.0, history=0.0, time=0.0)
 

@@ -38,6 +38,12 @@ class WardBoundary(Base, UUIDMixin, TimestampMixin):
         Geometry(geometry_type="POLYGON", srid=_WGS84, spatial_index=False),
         nullable=False,
     )
+    # Approximate label/anchor point (POINT, EPSG:4326) of the ward polygon —
+    # computed with ST_Centroid so the UI can place a ward label reliably.
+    centroid: Mapped[object] = mapped_column(
+        Geometry(geometry_type="POINT", srid=_WGS84, spatial_index=False),
+        nullable=True,
+    )
 
     ward = relationship("Ward", back_populates="boundary")
 

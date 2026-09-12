@@ -141,7 +141,7 @@ export function JobCard({
           {(job.ward_name || job.ward_code) && (
             <span className="inline-flex items-center gap-1">
               <MapPin className="h-3 w-3 text-slate-400" />
-              Ward {job.ward_name || job.ward_code}
+              {job.ward_name || job.ward_code}
             </span>
           )}
           {job.distance_m != null && (

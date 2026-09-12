@@ -1,7 +1,8 @@
 """Tests for the four reference wards and ward-required citizen registration.
 
-CivicAgent ships with exactly four reference wards (WARD-1..WARD-4, "Ward 1"..
-"Ward 4") installed by the ``31a2b3c4d5e6`` migration. Registration requires the
+CivicAgent ships with exactly four reference wards (WARD-1..WARD-4, the Pune
+operational wards "Ward 1 — Kondhwa".."Ward 4 — Viman Nagar") installed by the
+``b6c7d8e9f0a1`` migration. Registration requires the
 citizen to pick one of them; the selection is validated server-side and surfaced
 back on the profile (``GET /api/v1/auth/me``).
 
@@ -22,10 +23,10 @@ _PASSWORD = "TestPass#2026"
 
 # code -> (expected display name, expected description suffix is free-form)
 _REFERENCE_WARDS: list[tuple[str, str]] = [
-    ("WARD-1", "Ward 1"),
-    ("WARD-2", "Ward 2"),
-    ("WARD-3", "Ward 3"),
-    ("WARD-4", "Ward 4"),
+    ("WARD-1", "Ward 1 — Kondhwa"),
+    ("WARD-2", "Ward 2 — Kothrud"),
+    ("WARD-3", "Ward 3 — Hadapsar"),
+    ("WARD-4", "Ward 4 — Viman Nagar"),
 ]
 
 
@@ -185,7 +186,7 @@ async def test_profile_and_login_show_registered_ward(client):
         assert me_resp.status_code == 200
         me_user = me_resp.json()["user"]
         assert me_user["ward"]["code"] == "WARD-2"
-        assert me_user["ward"]["name"] == "Ward 2"
+        assert me_user["ward"]["name"] == "Ward 2 — Kothrud"
 
         login_resp = await client.post(
             "/api/v1/auth/login",

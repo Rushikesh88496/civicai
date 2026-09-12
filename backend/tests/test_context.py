@@ -43,9 +43,9 @@ _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/complaints"
 _SETTINGS = get_settings()
 
-# Hyderabad seed area (inside the DEMO Riverside W-002 polygon).
-_SEED_LAT = 17.4327
-_SEED_LON = 78.3885
+# Deterministic seed point inside WARD-1 (Kondhwa) — used only for stub shapes.
+_SEED_LAT = 18.4634
+_SEED_LON = 73.8912
 
 _SAMPLE_WEATHER = {
     "current": {

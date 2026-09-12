@@ -59,8 +59,8 @@ from tests.helpers import any_active_ward_id
 _PASSWORD = "TestPass#2026"
 _BASE = "/api/v1/infrastructure"
 _SETTINGS = get_settings()
-_ASSET_LAT = 17.4330
-_ASSET_LON = 78.3880
+_ASSET_LAT = 18.4634
+_ASSET_LON = 73.8912
 
 
 def _unique_email(prefix: str) -> str:

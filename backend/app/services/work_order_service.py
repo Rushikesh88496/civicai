@@ -186,7 +186,16 @@ async def list_work_orders(
                 select(WorkOrder)
                 .where(WorkOrder.complaint_id == complaint_id)
                 .order_by(WorkOrder.created_at.desc())
-                .options(selectinload(WorkOrder.worker).selectinload(FieldWorker.user))
+                .options(
+                    selectinload(WorkOrder.worker).selectinload(FieldWorker.user),
+                    # _detail_out resolves recommended_worker.* / complaint.* — without
+                    # eager loading these are lazily hit on a no-begin greenlet during
+                    # response serialization (MissingGreenlet → 500), so the officer
+                    # "complaint work orders" list silently vanished for orders that
+                    # carry an AI recommendation.
+                    selectinload(WorkOrder.recommended_worker).selectinload(FieldWorker.user),
+                    selectinload(WorkOrder.complaint),
+                )
             )
         )
         .scalars()

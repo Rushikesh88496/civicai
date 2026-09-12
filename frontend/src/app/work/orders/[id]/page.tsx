@@ -29,6 +29,7 @@ import {
   UploadCloud,
   X,
   XCircle,
+  ZoomIn,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -40,6 +41,7 @@ import { formatDateTime } from "@/components/dashboard/format";
 import {
   fetchWorkerOrderDetail,
   fetchWorkerVerification,
+  uploadWorkOrderPhoto,
   type WorkerOrderDetail,
   type WorkOrderActivity,
   type WorkerJob,
@@ -55,6 +57,9 @@ import {
   newClientRef,
   isOnline,
   pendingCount,
+  dataUrlToBlob,
+  photoDataUrlBytes,
+  MAX_OFFLINE_PHOTO_BYTES,
   type QueuedActionKind,
 } from "@/lib/offline-queue";
 import { useWorkerGeoLocation, type GeoCoords } from "@/hooks/use-worker-geo";
@@ -197,6 +202,20 @@ export default function WorkerOrderDetailPage() {
     }
   }, [orderId]);
 
+  // Reconnect: drain any offline-queued actions (a submission or photo saved
+  // while offline) and re-pull the canonical backend state, so queued evidence
+  // / status appears on this page without a manual refresh or navigation.
+  React.useEffect(() => {
+    const handleOnline = () => {
+      void (async () => {
+        await processQueue();
+        await refresh();
+      })();
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [refresh]);
+
   const runAction = React.useCallback(
     async (kind: QueuedActionKind, enqueue: () => void) => {
       enqueue();
@@ -318,37 +337,99 @@ export default function WorkerOrderDetailPage() {
     const pick = category === "BEFORE" ? beforePhoto : afterPhoto;
     if (!pick) return;
     const clientRef = newClientRef();
+    const location = {
+      latitude: coords ? coords.latitude : null,
+      longitude: coords ? coords.longitude : null,
+      geo_denied: coords ? false : true,
+    };
     setWorking("photo");
     try {
-      const res = enqueueAction({
-        orderId,
-        kind: "photo",
-        category,
-        fileDataUrl: pick.dataUrl,
-        fileName: pick.name,
-        fileType: pick.type,
-        payload: {
+      // Any UI that claims a photo is attached MUST be backed by the persisted
+      // evidence record the server returns on upload (detail.photos + the
+      // computed has_*_photo flags) — never by the local File/draft preview.
+      // Both upload paths below therefore adopt the server response into state,
+      // so image previews and the submit-evidence validation gate always read
+      // the SAME canonical persisted evidence.
+      const adoptDetail = (d: WorkerOrderDetail) => {
+        console.debug(
+          `[dev] upload(${category}) persisted → has_before=${d.work_order.has_before_photo} has_after=${d.work_order.has_after_photo} photos=${d.photos.length}`
+        );
+        setDetail(d);
+        setNotesDraft(String(d.work_order?.worker_notes || ""));
+      };
+      // Real camera photos (1.5-10 MB JPEG) routinely exceed the offline
+      // snapshot budget (1.5 MB of base64 ≈ ~1.1 MB of file bytes) — previously
+      // they were rejected here and silently never reached the server, so the
+      // worker saw "Before photo required." forever and the officer never
+      // received evidence. Photos that fit the offline budget keep the
+      // offline-first queue path; bigger ones are uploaded directly over HTTP
+      // (same endpoint, same RBAC, same client_ref idempotency) the moment the
+      // device is connected — the backend accepts up to its own MAX_IMAGE_MB.
+      if (photoDataUrlBytes(pick.dataUrl) <= MAX_OFFLINE_PHOTO_BYTES) {
+        const res = enqueueAction({
+          orderId,
+          kind: "photo",
+          category,
+          fileDataUrl: pick.dataUrl,
+          fileName: pick.name,
+          fileType: pick.type,
+          payload: { client_ref: clientRef, ...location },
+        });
+        if (!res.ok) {
+          addToast(res.message || "Could not attach the photo.", "error");
+          setWorking(null);
+          return;
+        }
+        const report = await processQueue();
+        if (report.remaining === 0 && report.detail) {
+          // Sync finished and the queue returned the server-confirmed evidence —
+          // adopt it immediately instead of silently discarding it.
+          adoptDetail(report.detail);
+        } else {
+          await refresh();
+        }
+        if (report.failed && report.failed.length > 0) {
+          addToast(`Photo not uploaded — ${report.failed[0]}`, "error");
+        } else if (report.remaining > 0) {
+          addToast("Photo saved offline — will sync when back online.", "info");
+        } else {
+          // Persisted on the server: drop the local draft so the visible
+          // preview comes from the uploaded evidence record, never a stale pick.
+          if (category === "BEFORE") setBeforePhoto(null);
+          else setAfterPhoto(null);
+          addToast("Photo uploaded.", "success");
+        }
+      } else if (isOnline()) {
+        const blob = dataUrlToBlob(pick.dataUrl, pick.type);
+        const file = new File(
+          [blob],
+          pick.name || `${category.toLowerCase()}.jpg`,
+          { type: pick.type }
+        );
+        const updated = await uploadWorkOrderPhoto(orderId, file, category, {
           client_ref: clientRef,
-          latitude: coords ? coords.latitude : null,
-          longitude: coords ? coords.longitude : null,
-          geo_denied: coords ? false : true,
-        },
-      });
-      if (!res.ok) {
-        addToast(res.message || "Could not attach the photo.", "error");
-        setWorking(null);
-        return;
-      }
-      const report = await processQueue();
-      await refresh();
-      if (report.failed && report.failed.length > 0) {
-        addToast(`Photo not uploaded — ${report.failed[0]}`, "error");
-      } else if (report.remaining > 0) {
-        addToast("Photo saved offline — will sync when back online.", "info");
-      } else {
+          ...location,
+        });
+        // The response is the persisted order detail — adopt it directly so the
+        // card flips to the uploaded evidence even if the follow-up refresh fails.
+        adoptDetail(updated);
+        await refresh();
+        // Persisted: drop the local draft so the preview reflects the uploaded
+        // evidence record rather than a picked File that may not be on the server.
+        if (category === "BEFORE") setBeforePhoto(null);
+        else setAfterPhoto(null);
         addToast("Photo uploaded.", "success");
+      } else {
+        // Too big to snapshot into localStorage, and the device is offline —
+        // state this plainly instead of pretending the photo is attached.
+        addToast(
+          "This photo is too large to save offline — upload it while you're connected to the internet.",
+          "error"
+        );
+        setWorking(null);
       }
     } catch (e) {
+      await refresh();
       addToast(e instanceof Error ? e.message : "Photo upload failed.", "error");
     } finally {
       setWorking(null);
@@ -491,7 +572,7 @@ export default function WorkerOrderDetailPage() {
           {(order.ward_name || order.ward_code) && (
             <span className="inline-flex items-center gap-1">
               <MapPin className="h-3.5 w-3.5 text-slate-400" />
-              Ward {order.ward_name || order.ward_code}
+              {order.ward_name || order.ward_code}
             </span>
           )}
           {order.eta_minutes != null && (
@@ -730,12 +811,18 @@ function PhotoInput({
   onChange,
   onClear,
   disabled,
+  hidePreview = false,
 }: {
   label: string;
   value: PhotoPick | null;
   onChange: (p: PhotoPick | null) => void;
   onClear?: () => void;
   disabled?: boolean;
+  /** When set, a picked file is NOT displayed as a photo thumbnail — the draft
+   *  exists only as staging and the persisted evidence (rendered by the parent
+   *  card) remains the only visible image. Prevents a local File preview from
+   *  masquerading as attached evidence next to "photo required" warnings. */
+  hidePreview?: boolean;
 }) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   return (
@@ -772,7 +859,7 @@ function PhotoInput({
             disabled && "cursor-not-allowed opacity-60"
           )}
         >
-          {value ? (
+          {value && !hidePreview ? (
             <>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -788,6 +875,11 @@ function PhotoInput({
             <>
               <Camera className="h-5 w-5 text-slate-400" />
               <span className="text-sm font-medium text-slate-700">{label}</span>
+              {value && hidePreview && (
+                <span className="text-[11px] font-medium text-success-600">
+                  Picked — tap Upload to attach
+                </span>
+              )}
             </>
           )}
         </button>
@@ -802,6 +894,210 @@ function PhotoInput({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// One canonical evidence state: a slot is "uploaded" ONLY when the backend has
+// persisted the photo (order.has_*_photo + a record in the detail photos list).
+// The only visible image on a card is a PERSISTED photo (uploaded.url) — a local
+// File pick is pure staging (no thumbnail, "Picked — tap Upload" caption) until
+// the upload response confirms persistence, so a visible image can never sit
+// alongside a "photo required" warning.
+//
+// Rendered as a self-contained photo card: category header + status pill, media
+// in a fixed 4:3 frame, and card actions (View fullscreen on an uploaded photo,
+// Pick + Upload while the slot is not yet persisted). In readOnly mode
+// (evidence already submitted) no upload controls are rendered.
+function EvidenceSlot({
+  category,
+  has,
+  photos,
+  label,
+  pick,
+  onChange,
+  onUpload,
+  onView,
+  busy,
+  working,
+  readOnly = false,
+}: {
+  category: "BEFORE" | "AFTER";
+  has: boolean;
+  photos: WorkOrderPhoto[];
+  label: string;
+  pick: PhotoPick | null;
+  onChange: (p: PhotoPick | null) => void;
+  onUpload: () => void;
+  onView: (url: string) => void;
+  busy: boolean;
+  working: QueuedActionKind | null;
+  readOnly?: boolean;
+}) {
+  const uploaded = photos.filter((p) => p.category === category).slice(-1)[0] ?? null;
+  const isUploaded = has && !!uploaded;
+  const imageUrl = has && uploaded ? uploaded.url ?? "" : "";
+  const categoryLabel = category === "BEFORE" ? "Before photo" : "After photo";
+
+  return (
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden rounded-lg border bg-surface",
+        isUploaded ? "border-success-200" : "border-border-soft"
+      )}
+    >
+      {/* Card header: category + real state pill */}
+      <div className="flex items-center justify-between gap-2 border-b border-border-soft px-3 py-2">
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <Camera className="h-3.5 w-3.5" /> {categoryLabel}
+        </p>
+        {isUploaded ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-success-100 px-2 py-0.5 text-[10px] font-semibold text-success-700">
+            <CheckCircle2 className="h-3 w-3" /> Uploaded
+          </span>
+        ) : readOnly ? (
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+            {category === "BEFORE" ? "Before" : "After"}
+          </span>
+        ) : pick ? (
+          <span className="rounded-full bg-ai-100 px-2 py-0.5 text-[10px] font-semibold text-ai-700">
+            Ready to upload
+          </span>
+        ) : (
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+            Required
+          </span>
+        )}
+      </div>
+
+      {/* Media: persisted photo (uploaded) takes the 4:3 frame; a draft slot
+          relies on PhotoInput's capture surface below. */}
+      {isUploaded && (
+        <div className="relative aspect-[4/3] overflow-hidden bg-slate-100">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imageUrl}
+            alt={`${categoryLabel} — uploaded evidence`}
+            className="h-full w-full object-cover"
+          />
+          <button
+            type="button"
+            onClick={() => onView(imageUrl)}
+            aria-label={`View ${categoryLabel} full screen`}
+            className="absolute bottom-2 right-2 flex items-center gap-1 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white opacity-90 transition-opacity hover:opacity-100"
+          >
+            <ZoomIn className="h-3.5 w-3.5" /> View
+          </button>
+        </div>
+      )}
+
+      {/* Card actions */}
+      <div className="space-y-1.5 p-3">
+        {isUploaded ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => onView(imageUrl)}
+          >
+            <ZoomIn className="mr-1.5 h-3.5 w-3.5" /> View fullscreen
+          </Button>
+        ) : readOnly ? null : (
+          <>
+            <PhotoInput
+              label={label}
+              value={pick}
+              onChange={onChange}
+              onClear={() => onChange(null)}
+              disabled={busy}
+              hidePreview
+            />
+            <Button
+              variant="default"
+              size="sm"
+              className="w-full"
+              onClick={onUpload}
+              disabled={busy || !pick}
+            >
+              {working === "photo" ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <UploadCloud className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Upload {category === "BEFORE" ? "before" : "after"} photo
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Enlarged full-screen view of an evidence photo (Esc / backdrop click closes).
+function PhotoLightbox({
+  url,
+  alt,
+  onClose,
+}: {
+  url: string | null;
+  alt: string;
+  onClose: () => void;
+}) {
+  React.useEffect(() => {
+    if (!url) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [url, onClose]);
+
+  if (!url) return null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${alt} — enlarged view`}
+      onClick={onClose}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4"
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close"
+        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/50 text-white hover:bg-black/70"
+      >
+        <X className="h-5 w-5" />
+      </button>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={url}
+        alt={alt}
+        onClick={(e) => e.stopPropagation()}
+        className="max-h-[90vh] max-w-[92vw] rounded-lg object-contain"
+      />
+    </div>
+  );
+}
+
+// Small uppercase section header used inside the evidence panels.
+function SectionHeading({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: typeof Camera;
+  title: string;
+  description?: string;
+}) {
+  return (
+    <div className="mb-2">
+      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <Icon className="h-3.5 w-3.5" /> {title}
+      </p>
+      {description && (
+        <p className="mt-0.5 text-[11px] text-slate-400">{description}</p>
+      )}
     </div>
   );
 }
@@ -899,6 +1195,7 @@ function WorkflowPanel(props: WorkflowPanelProps) {
 
   const isDone = order.status === "COMPLETED" || order.status === "CLOSED";
   const busy = working !== null;
+  const [zoomUrl, setZoomUrl] = React.useState<string | null>(null);
 
   const primaryAction = derivePrimaryAction({
     pendingStepKey,
@@ -1095,69 +1392,37 @@ function WorkflowPanel(props: WorkflowPanelProps) {
           {started && !finished && (
             <div className="space-y-3">
               <div className="rounded-lg border border-border-soft bg-slate-50/60 p-3.5">
-                <p className="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
-                  <Camera className="h-3.5 w-3.5" /> Evidence photos
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <PhotoInput
-                      label="Take before photo"
-                      value={beforePhoto}
-                      onChange={setBeforePhoto}
-                      onClear={() => setBeforePhoto(null)}
-                      disabled={busy}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="mt-1.5 w-full"
-                      onClick={onUploadBefore}
-                      disabled={busy || !beforePhoto || order.has_before_photo}
-                    >
-                      {order.has_before_photo ? (
-                        <>
-                          <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" /> Before photo uploaded
-                        </>
-                      ) : working === "photo" ? (
-                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <UploadCloud className="mr-1.5 h-3.5 w-3.5" />
-                      )}
-                      {!order.has_before_photo && working !== "photo" && "Upload before photo"}
-                    </Button>
-                  </div>
-                  <div>
-                    <PhotoInput
-                      label="Take after photo"
-                      value={afterPhoto}
-                      onChange={setAfterPhoto}
-                      onClear={() => setAfterPhoto(null)}
-                      disabled={busy}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="mt-1.5 w-full"
-                      onClick={onUploadAfter}
-                      disabled={busy || !afterPhoto || order.has_after_photo}
-                    >
-                      {order.has_after_photo ? (
-                        <>
-                          <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" /> After photo uploaded
-                        </>
-                      ) : working === "photo" ? (
-                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <UploadCloud className="mr-1.5 h-3.5 w-3.5" />
-                      )}
-                      {!order.has_after_photo && working !== "photo" && "Upload after photo"}
-                    </Button>
-                  </div>
+                <SectionHeading
+                  icon={Camera}
+                  title="Work Completion Evidence"
+                  description="Capture BEFORE / AFTER photos of the site. Each photo is saved the moment it is uploaded, and both are required before submission."
+                />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <EvidenceSlot
+                    category="BEFORE"
+                    has={order.has_before_photo}
+                    photos={photos}
+                    label="Take before photo"
+                    pick={beforePhoto}
+                    onChange={setBeforePhoto}
+                    onUpload={onUploadBefore}
+                    onView={setZoomUrl}
+                    busy={busy}
+                    working={working}
+                  />
+                  <EvidenceSlot
+                    category="AFTER"
+                    has={order.has_after_photo}
+                    photos={photos}
+                    label="Take after photo"
+                    pick={afterPhoto}
+                    onChange={setAfterPhoto}
+                    onUpload={onUploadAfter}
+                    onView={setZoomUrl}
+                    busy={busy}
+                    working={working}
+                  />
                 </div>
-                <p className="mt-2 text-[11px] text-slate-400">
-                  Photos sync automatically. Both are required before the resolution
-                  evidence can be submitted.
-                </p>
               </div>
 
               <div className="rounded-lg border border-border-soft bg-slate-50/60 p-3.5">
@@ -1188,17 +1453,52 @@ function WorkflowPanel(props: WorkflowPanelProps) {
           )}
 
           {/* Work finished — submit the resolution evidence (before + after
-              photos are required; the panel states exactly which is missing). */}
+              photos are required; a missing photo can STILL be attached here —
+              finishing work must never lock the worker out of uploading it). */}
           {finished && !evidenceSubmitted && (
             <div className="rounded-lg border border-primary-200 bg-primary-50/40 p-3.5">
               <p className="mb-1 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-primary-600">
                 <Send className="h-3.5 w-3.5" /> Submit resolution evidence
               </p>
+              <div className="mb-3 rounded-lg border border-border-soft bg-white/60 p-3">
+                <SectionHeading
+                  icon={Camera}
+                  title="Work Completion Evidence"
+                  description="BEFORE / AFTER photos taken on site — a missing photo can still be captured and uploaded here."
+                />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <EvidenceSlot
+                    category="BEFORE"
+                    has={order.has_before_photo}
+                    photos={photos}
+                    label="Take before photo"
+                    pick={beforePhoto}
+                    onChange={setBeforePhoto}
+                    onUpload={onUploadBefore}
+                    onView={setZoomUrl}
+                    busy={busy}
+                    working={working}
+                  />
+                  <EvidenceSlot
+                    category="AFTER"
+                    has={order.has_after_photo}
+                    photos={photos}
+                    label="Take after photo"
+                    pick={afterPhoto}
+                    onChange={setAfterPhoto}
+                    onUpload={onUploadAfter}
+                    onView={setZoomUrl}
+                    busy={busy}
+                    working={working}
+                  />
+                </div>
+              </div>
               {order.has_before_photo && order.has_after_photo ? (
-                <p className="mb-2 text-sm text-slate-600">
-                  Both photos are attached. Submit to hand the job to the officer
-                  for verification — the complaint is resolved only after officer
-                  approval.
+                <p className="mb-2 flex items-center gap-1.5 text-sm font-medium text-success-700">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  Both photos are attached and ready to submit. The officer verifies
+                  them against the complaint — the resolution is final only after
+                  their approval.
                 </p>
               ) : (
                 <div className="mb-2 space-y-1 text-sm">
@@ -1213,8 +1513,8 @@ function WorkflowPanel(props: WorkflowPanelProps) {
                     </p>
                   )}
                   <p className="text-xs text-slate-500">
-                    Photos are uploaded from the evidence section above — this
-                    message updates as soon as the upload is saved.
+                    The upload buttons above turn this into a success state —
+                    this message updates as soon as each photo is saved.
                   </p>
                 </div>
               )}
@@ -1234,47 +1534,76 @@ function WorkflowPanel(props: WorkflowPanelProps) {
               No submit button here — submission state comes from the backend and
               survives a refresh. */}
           {evidenceSubmitted && !isDone && (
-            <div className="rounded-lg border border-ai-200 bg-gradient-to-br from-ai-100/60 to-ai-50/40 p-3.5">
-              <p className="flex items-center gap-2 text-sm font-semibold text-ai-700">
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ai-100 text-ai-700">
-                  <CheckCircle2 className="h-4 w-4" />
-                </span>
-                WORK SUBMITTED
-              </p>
-              <p className="mt-1 text-xs text-ai-700">
-                Waiting for Officer Verification — the officer checks the repair
-                against the evidence; the complaint is resolved only after their
-                approval.
-              </p>
-              {order.evidence_submitted_at && (
-                <p className="mt-1 text-[11px] text-ai-700">
-                  Submitted {formatDateTime(order.evidence_submitted_at)}
+            <div className="space-y-3">
+              <div className="rounded-lg border border-success-200 bg-success-50/60 p-3.5">
+                <p className="flex items-center gap-2 text-sm font-semibold text-success-700">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-success-100 text-success-700">
+                    <CheckCircle2 className="h-4 w-4" />
+                  </span>
+                  Evidence submitted
                 </p>
-              )}
-              {photos.length > 0 && (
-                <div className="mt-2.5 grid grid-cols-2 gap-2">
-                  {photos.map((p) => (
-                    <a
-                      key={p.id}
-                      href={p.url || "#"}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="overflow-hidden rounded-lg border border-ai-200 bg-surface group"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={p.url || ""}
-                        alt={p.original_filename}
-                        loading="lazy"
-                        className="h-20 w-full object-cover"
-                      />
-                      <span className="block px-2 py-1 text-[10px] font-medium text-slate-600">
-                        {p.category === "BEFORE" ? "Before photo" : "After photo"}
-                      </span>
-                    </a>
-                  ))}
+                <p className="mt-1 text-xs text-success-700">
+                  Waiting for Officer Verification — once the officer approves, the
+                  complaint is marked resolved and you will be notified of the
+                  decision.
+                </p>
+                {order.evidence_submitted_at && (
+                  <p className="mt-1 text-[11px] text-success-700">
+                    Submitted {formatDateTime(order.evidence_submitted_at)}
+                  </p>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-border-soft bg-surface p-3.5">
+                <SectionHeading
+                  icon={Camera}
+                  title="Work Completion Evidence"
+                  description="BEFORE / AFTER photos submitted for this job."
+                />
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <EvidenceSlot
+                    category="BEFORE"
+                    has={order.has_before_photo}
+                    photos={photos}
+                    label="Take before photo"
+                    pick={beforePhoto}
+                    onChange={setBeforePhoto}
+                    onUpload={onUploadBefore}
+                    onView={setZoomUrl}
+                    busy={busy}
+                    working={working}
+                    readOnly
+                  />
+                  <EvidenceSlot
+                    category="AFTER"
+                    has={order.has_after_photo}
+                    photos={photos}
+                    label="Take after photo"
+                    pick={afterPhoto}
+                    onChange={setAfterPhoto}
+                    onUpload={onUploadAfter}
+                    onView={setZoomUrl}
+                    busy={busy}
+                    working={working}
+                    readOnly
+                  />
                 </div>
-              )}
+              </div>
+
+              {/* Completion notes — server-persisted (order.worker_notes), so they
+                  reappear even after a browser refresh. */}
+              {order.worker_notes ? (
+                <div className="rounded-lg border border-border-soft bg-surface p-3.5">
+                  <SectionHeading
+                    icon={FileText}
+                    title="Completion Notes"
+                    description="Notes submitted with this job."
+                  />
+                  <p className="whitespace-pre-wrap text-sm text-slate-700">
+                    {order.worker_notes}
+                  </p>
+                </div>
+              ) : null}
             </div>
           )}
         </div>
@@ -1326,6 +1655,12 @@ function WorkflowPanel(props: WorkflowPanelProps) {
           Follow the steps in order to submit this task.
         </p>
       )}
+
+      <PhotoLightbox
+        url={zoomUrl}
+        alt="Evidence photo"
+        onClose={() => setZoomUrl(null)}
+      />
     </section>
   );
 }

@@ -23,11 +23,16 @@ import {
   submitEvidence,
   uploadWorkOrderPhoto,
   type WorkerActionPayload,
+  type WorkerOrderDetail,
 } from "@/lib/field-worker-api";
 import { ApiError } from "@/lib/auth-api";
 
 const QUEUE_KEY = "ca_worker_queue_v1";
-const MAX_OFFLINE_PHOTO_BYTES = 1.5 * 1024 * 1024;
+export const MAX_OFFLINE_PHOTO_BYTES = 1.5 * 1024 * 1024;
+
+export function photoDataUrlBytes(dataUrl: string): number {
+  return Math.ceil((dataUrl.length * 3) / 4);
+}
 
 export type QueuedActionKind =
   | "accept"
@@ -63,17 +68,23 @@ function readQueue(): QueuedAction[] {
   }
 }
 
-function writeQueue(items: QueuedAction[]) {
-  if (typeof window === "undefined") return;
+// Returns `false` when the item(s) could not be persisted (localStorage quota /
+// availability). Callers must treat that as a failed enqueue — never report a
+// "saved" success for something that is not actually queued.
+function writeQueue(items: QueuedAction[]): boolean {
+  if (typeof window === "undefined") return true;
   try {
     localStorage.setItem(QUEUE_KEY, JSON.stringify(items));
+    return true;
   } catch {
     // localStorage full — drop oldest photo entry so the queue stays usable.
     try {
       const withoutPhoto = items.filter((i) => i.kind !== "photo");
       localStorage.setItem(QUEUE_KEY, JSON.stringify(withoutPhoto));
+      const kept = new Set(withoutPhoto.map((i) => i.id));
+      return items.every((i) => kept.has(i.id));
     } catch {
-      // ignore
+      return false;
     }
   }
 }
@@ -96,8 +107,7 @@ export function enqueueAction(
 ): QueueEnqueueResult {
   if (action.kind === "photo") {
     if (!action.fileDataUrl) return { ok: false, offline: !isOnline(), message: "No photo attached." };
-    const approxBytes = Math.ceil((action.fileDataUrl.length * 3) / 4);
-    if (approxBytes > MAX_OFFLINE_PHOTO_BYTES) {
+    if (photoDataUrlBytes(action.fileDataUrl) > MAX_OFFLINE_PHOTO_BYTES) {
       return {
         ok: false,
         offline: !isOnline(),
@@ -109,7 +119,14 @@ export function enqueueAction(
   const offline = !isOnline();
   const items = readQueue();
   items.push({ ...action, id: newClientRef(), queuedAt: new Date().toISOString() });
-  writeQueue(items);
+  if (!writeQueue(items)) {
+    return {
+      ok: false,
+      offline,
+      message:
+        "Could not save this action on this device — local storage is full. Free up space and try again.",
+    };
+  }
   return { ok: true, offline };
 }
 
@@ -131,26 +148,30 @@ export interface SyncReport {
    *  removed from the queue (they can never succeed as-is) but are reported so
    *  the UI shows a real error instead of a false "synced" success. */
   failed?: string[];
+  /** Latest server-returned order detail captured while syncing photo actions.
+   *  Present after a photo finished syncing, so callers can adopt the persisted
+   *  evidence (has_*_photo + photo IDs) without waiting on a second fetch. */
+  detail?: WorkerOrderDetail | null;
 }
 
-async function syncOne(action: QueuedAction): Promise<void> {
+async function syncOne(action: QueuedAction): Promise<WorkerOrderDetail | null> {
   switch (action.kind) {
     case "accept":
       await acceptJob(action.orderId, action.payload);
-      return;
+      return null;
     case "check-in":
       await checkIn(
         action.orderId,
         action.activityType || "EN_ROUTE",
         action.payload
       );
-      return;
+      return null;
     case "start":
       await startJob(action.orderId, action.payload);
-      return;
+      return null;
     case "notes":
       await saveWorkerNotes(action.orderId, action.note ?? "", action.payload.client_ref);
-      return;
+      return null;
     case "photo": {
       if (!action.fileDataUrl || !action.fileType) {
         throw new ApiError(400, "Queued photo payload is missing its data.");
@@ -161,23 +182,22 @@ async function syncOne(action: QueuedAction): Promise<void> {
         action.fileName || `${action.category?.toLowerCase() || "photo"}.jpg`,
         { type: action.fileType }
       );
-      await uploadWorkOrderPhoto(action.orderId, file, action.category || "BEFORE", {
+      return uploadWorkOrderPhoto(action.orderId, file, action.category || "BEFORE", {
         client_ref: action.payload.client_ref,
         latitude: action.payload.latitude,
         longitude: action.payload.longitude,
         geo_denied: action.payload.geo_denied,
       });
-      return;
     }
     case "finish":
       await finishJob(action.orderId, action.payload);
-      return;
+      return null;
     case "submit-evidence":
       await submitEvidence(action.orderId, action.payload);
-      return;
+      return null;
     case "start-rework":
       await startRework(action.orderId, action.payload);
-      return;
+      return null;
   }
 }
 
@@ -201,9 +221,11 @@ export async function processQueue(): Promise<SyncReport> {
   let synced = 0;
   const failed: string[] = [];
   const retained: QueuedAction[] = [];
+  let lastDetail: WorkerOrderDetail | null = null;
   for (const item of items) {
     try {
-      await syncOne(item);
+      const result = await syncOne(item);
+      if (result) lastDetail = result;
       synced += 1;
     } catch (err) {
       const status = err instanceof ApiError ? err.status : null;
@@ -211,7 +233,12 @@ export async function processQueue(): Promise<SyncReport> {
         // Session lost — stop pushing; the UI will re-auth and retry.
         retained.push(item);
         writeQueue(retained.concat(items.slice(items.indexOf(item) + 1)));
-        return { synced, remaining: retained.length + (items.length - items.indexOf(item) - 1), error: "Session expired." };
+        return {
+          synced,
+          remaining: retained.length + (items.length - items.indexOf(item) - 1),
+          error: "Session expired.",
+          detail: lastDetail,
+        };
       }
       if (status && status < 500) {
         // A permanent client error (unsupported/oversized photo, bad workflow
@@ -229,14 +256,15 @@ export async function processQueue(): Promise<SyncReport> {
         synced,
         remaining: retained.length + (items.length - items.indexOf(item) - 1),
         error: err instanceof Error ? err.message : "Sync failed.",
+        detail: lastDetail,
       };
     }
   }
   writeQueue(retained);
   if (failed.length > 0) {
-    return { synced, remaining: 0, error: failed[0], failed };
+    return { synced, remaining: 0, error: failed[0], failed, detail: lastDetail };
   }
-  return { synced, remaining: 0 };
+  return { synced, remaining: 0, detail: lastDetail };
 }
 
 export function onQueueChanged(listener: (count: number) => void): () => void {

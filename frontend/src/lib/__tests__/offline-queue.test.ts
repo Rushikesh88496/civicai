@@ -122,4 +122,103 @@ describe("processQueue permanent-error handling", () => {
     expect(report.failed).toBeUndefined();
     expect(pendingCount()).toBe(0);
   });
+
+  it("adopts the server-confirmed evidence detail from a synced photo upload", async () => {
+    stubFetch((url) => {
+      if (url.endsWith("/photos")) {
+        return jsonRes(200, {
+          work_order: {
+            id: "order-1",
+            status: "WORK_COMPLETED",
+            has_before_photo: true,
+            has_after_photo: false,
+          },
+          photos: [
+            {
+              id: "photo-1",
+              category: "BEFORE",
+              allowed: true,
+              url: "/media/order-1/before.png",
+              recorded_at: "2026-09-12T13:00:00Z",
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    enqueueAction({
+      orderId: "order-1",
+      kind: "photo",
+      category: "BEFORE",
+      fileDataUrl: "data:image/png;base64,AAAA",
+      fileName: "before.png",
+      fileType: "image/png",
+      payload: { client_ref: newClientRef(), geo_denied: false },
+    });
+    const report = await processQueue();
+    expect(report.synced).toBe(1);
+    expect(report.remaining).toBe(0);
+    // The persisted response must survive the queue so handleUploadPhoto can
+    // drive both the evidence preview and submit-validation from the same
+    // canonical server state — never from a stale local draft.
+    expect(report.detail?.work_order.has_before_photo).toBe(true);
+    expect(report.detail?.photos[0].id).toBe("photo-1");
+  });
+});
+
+describe("offline photo budget + queue persistence", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("queues a photo that fits the offline snapshot budget", () => {
+    const result = enqueueAction({
+      orderId: "order-1",
+      kind: "photo",
+      category: "BEFORE",
+      fileDataUrl: "data:image/jpeg;base64,AAAA",
+      fileName: "before.jpg",
+      fileType: "image/jpeg",
+      payload: { client_ref: newClientRef(), geo_denied: false },
+    });
+    expect(result.ok).toBe(true);
+    expect(pendingCount()).toBe(1);
+  });
+
+  it("rejects a photo larger than the offline snapshot budget instead of silently losing it", () => {
+    // ~2.1 MB of base64 raw line ≈ >1.5 MB of decoded bytes: a typical real
+    // phone camera photo that used to never reach the server.
+    const big = `data:image/jpeg;base64,${"A".repeat(2_100_000)}`;
+    const result = enqueueAction({
+      orderId: "order-1",
+      kind: "photo",
+      category: "BEFORE",
+      fileDataUrl: big,
+      fileName: "camera.jpg",
+      fileType: "image/jpeg",
+      payload: { client_ref: newClientRef(), geo_denied: false },
+    });
+    expect(result.ok).toBe(false);
+    expect(pendingCount()).toBe(0);
+  });
+
+  it("fails loudly when the queue cannot be persisted instead of reporting a false success", () => {
+    // localStorage quota full: the old code silently dropped the item but still
+    // returned ok:true, so the UI showed "Photo uploaded." though nothing was
+    // ever queued or sent.
+    vi.spyOn(Object.getPrototypeOf(localStorage), "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    const result = enqueueAction({
+      orderId: "order-1",
+      kind: "accept",
+      payload: { client_ref: newClientRef() },
+    });
+    expect(result.ok).toBe(false);
+    expect(pendingCount()).toBe(0);
+  });
 });

@@ -15,6 +15,7 @@ Exercises the full field worker lifecycle through the ``/worker`` API:
   are rejected appropriately; orders assigned to someone else are hidden.
 """
 
+import random as _random
 import uuid
 
 import pytest
@@ -43,8 +44,8 @@ _PASSWORD = "TestPass#2026"
 _WORKER_API = "/api/v1/worker"
 _COMPLAINTS = "/api/v1/complaints"
 _SETTINGS = get_settings()
-_LAT = 17.4327
-_LON = 78.3885
+_LAT = 18.4634
+_LON = 73.8912
 
 
 def _unique_email(prefix: str) -> str:
@@ -647,6 +648,119 @@ async def test_full_workflow_accept_start_photos_notes_finish_submit_evidence(cl
     detail = r.json()["work_order"]
     assert detail["status"] == "EVIDENCE_SUBMITTED"
     assert detail["evidence_submitted_at"] is not None
+
+
+def _big_jpeg(*, min_bytes: int = 2 * 1024 * 1024) -> bytes:
+    """Produce a valid JPEG of at least ``min_bytes``.
+
+    Simulates a real **phone camera photo** (typically 2-8 MB of JPEG) — the
+    size class that used to be silently rejected by the client's offline-queue
+    snapshot budget (1.5 MB of base64 ≈ ~1.1 MB of file bytes) before it ever
+    reached the server. Fully deterministic so the suite stays repeatable.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.new("RGB", (2600, 2600))
+    random = _random.Random(42)
+    img.putdata(
+        [
+            ((x * 3) % 256, (y * 5) % 256, (x + y + random.randint(0, 5)) % 256)
+            for y in range(2600)
+            for x in range(2600)
+        ]
+    )
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    data = buf.getvalue()
+    if len(data) < min_bytes:
+        # Backstop: pad the JPEG payload without touching the validated header.
+        data = data + b"\xff" * (min_bytes - len(data))
+    return data
+
+
+# --------------------------------------------------------------------------- #
+# Real-size camera photos: upload persistence + officer-side evidence
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_real_size_camera_photo_appears_in_officer_evidence(client):
+    """A real-size (>=2 MB) BEFORE/AFTER photo pair — the kind the old client
+    budget silently dropped — must persist, show up on the worker detail, and be
+    returned by the officer evidence endpoint with loadable URLs. The backend
+    cap is MAX_IMAGE_MB (10 MB), so genuine camera photos are accepted.
+    """
+    await _cleanup()
+    citizen = await _citizen_token(_unique_email("fw-big-citizen"))
+    wtoken = await _seed_worker(email=_unique_email("fw-big"), name="BigPhoto Worker")
+    wid = await _worker_id(wtoken)
+    cid = await _complain(client, citizen)
+    order_id = await _assign(client, citizen, cid, wid)
+    otok = await _officer(_unique_email("fw-big-officer"))
+
+    # Lifecycle to IN_PROGRESS (a started job is where photo upload lives).
+    await client.post(
+        f"{_WORKER_API}/orders/{order_id}/accept",
+        json={"client_ref": "big-accept"},
+        headers=_auth(wtoken),
+    )
+    await client.post(
+        f"{_WORKER_API}/orders/{order_id}/check-in",
+        json={
+            "activity_type": "ARRIVED",
+            "latitude": _LAT,
+            "longitude": _LON,
+            "accuracy_m": 9.0,
+            "client_ref": "big-arrive",
+        },
+        headers=_auth(wtoken),
+    )
+    await client.post(
+        f"{_WORKER_API}/orders/{order_id}/start",
+        json={"client_ref": "big-start"},
+        headers=_auth(wtoken),
+    )
+
+    big = _big_jpeg(min_bytes=2 * 1024 * 1024)
+
+    for category, ref in (("BEFORE", "big-photo-before"), ("AFTER", "big-photo-after")):
+        r = await client.post(
+            f"{_WORKER_API}/orders/{order_id}/photos",
+            files={"file": (f"{category.lower()}-real.jpg", big, "image/jpeg")},
+            data={"category": category, "client_ref": ref},
+            headers=_auth(wtoken),
+        )
+        assert r.status_code == 200, f"{category} upload failed: {r.text}"
+
+    detail = (await client.get(f"{_WORKER_API}/orders/{order_id}", headers=_auth(wtoken))).json()[
+        "work_order"
+    ]
+    assert detail["has_before_photo"] is True
+    assert detail["has_after_photo"] is True
+
+    # Finish + submit evidence → EVIDENCE_SUBMITTED.
+    await client.post(
+        f"{_WORKER_API}/orders/{order_id}/finish",
+        json={"client_ref": "big-finish"},
+        headers=_auth(wtoken),
+    )
+    r = await client.post(
+        f"{_WORKER_API}/orders/{order_id}/submit-evidence",
+        json={"notes": "Real-size camera JPEGs submitted.", "client_ref": "big-evidence"},
+        headers=_auth(wtoken),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["work_order"]["status"] == "EVIDENCE_SUBMITTED"
+
+    # Officer evidence bundle returns the persisted photos with URLs + metadata.
+    ev = (await client.get(f"/api/v1/work-orders/{order_id}/evidence", headers=_auth(otok))).json()
+    assert ev["evidence_submitted_at"] is not None
+    before = next((p for p in ev["before_photos"] if p["category"] == "BEFORE"), None)
+    after = next((p for p in ev["after_photos"] if p["category"] == "AFTER"), None)
+    assert before is not None and before["url"]
+    assert before["size_bytes"] >= 2 * 1024 * 1024
+    assert before["uploaded_by_name"]
+    assert after is not None and after["url"]
 
 
 # --------------------------------------------------------------------------- #

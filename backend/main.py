@@ -1,4 +1,6 @@
+import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,9 +17,36 @@ from app.middleware.security_headers import SecurityHeadersMiddleware
 
 settings = get_settings()
 
+# "uvicorn.error" always has a handler configured (by uvicorn directly or by the
+# container's docker/log_config.json), so the startup banner is never dropped.
+logger = logging.getLogger("uvicorn.error")
+
+
+def _log_startup_banner() -> None:
+    """Log the effective runtime profile without leaking any secrets."""
+
+    def _host(value: str) -> str:
+        try:
+            return urlparse(value).hostname or "(unset)"
+        except Exception:
+            return "(unset)"
+
+    logger.info(
+        "CivicAgent startup: version=%s environment=%s storage=%s "
+        "database_host=%s redis_host=%s groq_configured=%s rate_limit_enabled=%s",
+        settings.VERSION,
+        "development" if settings.DEBUG else "production",
+        settings.STORAGE_BACKEND,
+        _host(settings.DATABASE_URL),
+        _host(settings.REDIS_URL),
+        bool(settings.GROQ_API_KEY),
+        settings.RATE_LIMIT_ENABLED,
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _log_startup_banner()
     yield
     await close_redis()
 
@@ -54,7 +83,7 @@ if not settings.DEBUG:
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS.split(","),
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
@@ -65,6 +94,12 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 # Serve locally-stored uploads behind a signed-token / Bearer gate (Part 28, 1F).
 # LocalStorage.url() appends a short-lived ?token= so browser media tags work.
 app.include_router(media_router)
+
+
+@app.get("/health", tags=["health"])
+async def health() -> dict[str, str]:
+    """Liveness probe for the orchestrator (no external dependencies)."""
+    return {"status": "ok"}
 
 
 @app.get("/", tags=["root"])

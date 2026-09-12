@@ -1,9 +1,14 @@
 import type { NextConfig } from "next";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 const nextConfig: NextConfig = {
   async rewrites() {
+    // Rewrites exist only when an API origin is configured; without one the
+    // /media proxy must not map back onto itself (circular rewrite).
+    if (!API) {
+      return [];
+    }
     return [
       { source: "/media/:path*", destination: `${API}/media/:path*` },
     ];

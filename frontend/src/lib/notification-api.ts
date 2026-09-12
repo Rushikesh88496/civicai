@@ -97,7 +97,7 @@ export async function markAllNotificationsRead(): Promise<AcknowledgeOut> {
 export function notificationsWsUrl(): string {
   // Token is appended later by the caller (getAccessToken is async); the ws
   // scheme depends on whether the frontend talks to localhost over http.
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = process.env.NEXT_PUBLIC_API_URL ?? "";
   const host = base.replace(/^https?:\/\//, "");
   const scheme = base.startsWith("https") ? "wss" : "ws";
   return `${scheme}://${host}/ws/notifications`;

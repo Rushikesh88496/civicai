@@ -22,7 +22,7 @@ export const STATIC_LANGUAGES: LanguageOption[] = [
 ];
 
 export async function fetchLanguages(): Promise<LanguageOption[]> {
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = process.env.NEXT_PUBLIC_API_URL ?? "";
   const res = await fetch(`${base}/api/v1/languages`, {
     headers: { Accept: "application/json" },
   });

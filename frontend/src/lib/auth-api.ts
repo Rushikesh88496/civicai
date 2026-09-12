@@ -9,7 +9,7 @@
 // - When an access token is missing/expired the client transparently refreshes
 //   it and retries the request.
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 const REFRESH_KEY = "ca_refresh";
 

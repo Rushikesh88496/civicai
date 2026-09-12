@@ -1,0 +1,112 @@
+# ---------------------------------------------------------------------------
+# CivicAgent — Render Blueprint (Infrastructure as Code)
+#
+# Provisions and wires up everything for a production deployment:
+#   * civicagent-backend   — FastAPI + uvicorn web service (Docker)
+#   * civicagent-frontend  — Next.js web service (Docker)
+#   * civicagent-postgres  — Render Postgres (PostGIS + pgvector supported)
+#   * civicagent-redis     — Render Key Value (managed Redis)
+#
+# NO SECRETS live in this file. Sensitive values use either `generateValue`
+# (Render generates a random secret on creation) or `sync: false` (you are
+# prompted once during creation and can change them any time in the Dashboard).
+#
+# Read RENDER_DEPLOYMENT.md for the step-by-step guide, the REQUIRED FROM USER
+# checklist, and the full environment-variable reference.
+# ---------------------------------------------------------------------------
+
+databases:
+  - name: civicagent-postgres
+    databaseName: civicagent
+    user: civicagent
+    # Plans omitted => Render defaults (0.1c-256mb). Adjust to suit your data.
+    # PostgreSQL 13+ supports `CREATE EXTENSION postgis` and `CREATE EXTENSION
+    # vector`, which the backend's `alembic upgrade head` runs at deploy time.
+
+services:
+  # ---------------------------------------------------------------------------
+  # Managed Redis (optional but recommended: realtime pub/sub + caching).
+  # ipAllowList [] => internal/private-network connections only.
+  # ---------------------------------------------------------------------------
+  - type: keyvalue
+    name: civicagent-redis
+    ipAllowList: []
+
+  # ---------------------------------------------------------------------------
+  # Backend API.
+  # Render sets $PORT; the Dockerfile binds 0.0.0.0:$PORT (default 8000) and
+  # docker/entrypoint.sh waits for Postgres, runs `alembic upgrade head`, then
+  # starts uvicorn.
+  # ---------------------------------------------------------------------------
+  - type: web
+    runtime: docker
+    name: civicagent-backend
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      # Injected by Render as postgresql://... (no asyncpg driver); config.py
+      # normalizes it to postgresql+asyncpg:// at startup.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: civicagent-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: civicagent-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DEBUG
+        value: "false"
+      # ------------------------------------------------------------------ #
+      # AI / LLM (Groq). GROQ_API_KEY is prompt-on-create; GROQ_MODEL can be
+      # replaced with any chat model you have active on your Groq account.
+      # ------------------------------------------------------------------ #
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      # ------------------------------------------------------------------ #
+      # S3-compatible object storage (persists BEFORE/AFTER evidence images).
+      # On Render, the container filesystem is EPHEMERAL, so keep
+      # STORAGE_BACKEND=s3 and provide real bucket credentials. If you must use
+      # the local backend, attach a persistent disk (see RENDER_DEPLOYMENT.md).
+      # ------------------------------------------------------------------ #
+      - key: STORAGE_BACKEND
+        value: s3
+      - key: STORAGE_BUCKET
+        value: civicagent-uploads
+      - key: S3_REGION
+        value: us-east-1
+      - key: S3_SECURE
+        value: "true"
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY
+        sync: false
+      - key: S3_SECRET_KEY
+        sync: false
+      - key: S3_PUBLIC_BASE_URL
+        sync: false
+      # Comma-separated browser origins allowed to call the API.
+      # UPDATE after first deploy to the real frontend origin (REQUIRED).
+      - key: CORS_ORIGINS
+        value: https://civicagent-frontend.onrender.com
+
+  # ---------------------------------------------------------------------------
+  # Frontend (Next.js).
+  # NEXT_PUBLIC_API_URL is inlined into the browser bundle at BUILD time and is
+  # the backend URL from the browser's perspective — set it to the deployed
+  # backend origin AFTER the first deploy and re-deploy (REQUIRED).
+  # ---------------------------------------------------------------------------
+  - type: web
+    runtime: docker
+    name: civicagent-frontend
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: https://civicagent-backend.onrender.com

@@ -55,7 +55,9 @@ USER nextjs
 
 EXPOSE 3000
 
+# $PORT is the container port Render provisions (unknown at build time); the
+# 3000 fallback keeps docker-compose and other local handlers unchanged.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
-    CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    CMD node -e "const p=process.env.PORT||3000; fetch('http://127.0.0.1:'+p+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "node_modules/next/dist/bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]
+CMD ["sh", "-c", "node node_modules/next/dist/bin/next start -H 0.0.0.0 -p \"${PORT:-3000}\""]

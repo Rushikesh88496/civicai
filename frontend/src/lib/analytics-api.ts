@@ -3,7 +3,7 @@
 import { ApiError, getAccessToken, authorizedFetch, readErrorMessage } from "@/lib/auth-api";
 import { CATEGORY_LABELS } from "@/components/dashboard/format";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 // --------------------------------------------------------------------------- //
 // Types (mirror the backend /analytics and /rating schemas)

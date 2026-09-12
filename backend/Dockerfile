@@ -67,13 +67,14 @@ USER app
 
 EXPOSE 8000
 
+# $PORT is the container port Render provisions (unknown at build time); the
+# 8000 fallback keeps docker-compose and other local handlers unchanged.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=5 \
-    CMD curl -fsS http://127.0.0.1:8000/api/v1/health || exit 1
+    CMD sh -c 'curl -fsS http://127.0.0.1:${PORT:-8000}/api/v1/health || exit 1'
 
 # Production default: structured (JSON) logs. Scale with `--scale`/orchestrator.
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--log-config", "docker/log_config.json"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --log-config docker/log_config.json"]
 
 # ---- Stage 3: test ---------------------------------------------------------
 FROM runner AS test

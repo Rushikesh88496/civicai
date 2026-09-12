@@ -26,6 +26,18 @@ class Settings(BaseSettings):
             )
         return v
 
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def _database_url_asyncpg(cls, v: str) -> str:
+        # Render Postgres injects plain "postgres://" connection strings. Our
+        # engine is async (asyncpg), so the driver must be in the scheme;
+        # existing postgresql+asyncpg:// URLs pass through unchanged.
+        if v.startswith("postgres://"):
+            return "postgresql+asyncpg://" + v[len("postgres://") :]
+        if v.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + v[len("postgresql://") :]
+        return v
+
     JWT_ALGORITHM: str = "HS256"
     JWT_ISSUER: str = "civicagent"
     JWT_AUDIENCE: str = "civicagent-api"

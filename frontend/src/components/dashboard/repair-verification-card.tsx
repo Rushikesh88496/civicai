@@ -49,30 +49,40 @@ import {
   type WorkOrderEvidence,
   type WorkOrderVerification,
 } from "@/lib/citizen-api";
+import { cn } from "@/lib/utils";
 
 const STAFF_ROLES = ["OFFICER", "ADMIN", "WARD_REPRESENTATIVE"];
 
+// Work orders whose lifecycle is finished are never the resolution-review
+// target — evidence on a re-opened complaint lives on the live order, not on a
+// newer CLOSED/REJECTED/COMPLETED row.
+const TERMINAL_ORDER_STATUSES = new Set(["COMPLETED", "CLOSED", "REJECTED"]);
+
 const STATUS_META: Record<
   VerificationStatus,
-  { label: string; className: string; icon: typeof CheckCircle2 }
+  { label: string; className: string; description: string; icon: typeof CheckCircle2 }
 > = {
   VERIFIED: {
-    label: "AI verdict: verified — repair confirmed",
+    label: "VERIFIED",
+    description: "The AI found evidence the reported issue has been resolved.",
     className: "bg-green-100 text-green-700 border-green-200",
     icon: CheckCircle2,
   },
   PARTIALLY_RESOLVED: {
-    label: "AI verdict: partially resolved",
+    label: "PARTIALLY RESOLVED",
+    description: "The AI found the reported issue only partially addressed.",
     className: "bg-amber-100 text-amber-700 border-amber-200",
     icon: AlertTriangle,
   },
   NOT_RESOLVED: {
-    label: "AI verdict: not resolved",
+    label: "NOT VERIFIED",
+    description: "The AI found the reported issue is still unresolved.",
     className: "bg-red-100 text-red-700 border-red-200",
     icon: XCircle,
   },
   NEEDS_HUMAN_REVIEW: {
-    label: "AI verdict: needs human review",
+    label: "NEEDS REVIEW",
+    description: "The AI could not reach a confident verdict — review manually.",
     className: "bg-blue-100 text-blue-700 border-blue-200",
     icon: UserCheck,
   },
@@ -162,7 +172,7 @@ function PhotoFrame({
         <img
           src={photo.url}
           alt={label}
-          className="h-48 w-full object-cover transition-transform group-hover:scale-[1.02]"
+          className="aspect-[4/3] w-full object-cover transition-transform group-hover:scale-[1.02]"
         />
         <span className="absolute bottom-2 right-2 flex items-center gap-1 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white opacity-90 transition-opacity group-hover:opacity-100">
           <ZoomIn className="h-3.5 w-3.5" /> Zoom
@@ -266,7 +276,15 @@ export function RepairVerificationCard({ complaintId }: Props) {
       try {
         const list = await fetchComplaintWorkOrders(complaintId);
         if (cancelled) return;
-        const active = list?.work_orders?.[0] ?? null;
+        // Prefer the newest non-terminal work order over a blind list[0]: a
+        // re-opened complaint can end up with a newer CLOSED/REJECTED row that
+        // would otherwise hide the order actually carrying the resolution
+        // evidence from the officer's review.
+        const orders = list?.work_orders ?? [];
+        const active =
+          orders.find((o) => !TERMINAL_ORDER_STATUSES.has(o.status)) ??
+          orders[0] ??
+          null;
         setOrderStatus(active?.status ?? null);
         if (!active) {
           setOrder(null);
@@ -484,62 +502,55 @@ export function RepairVerificationCard({ complaintId }: Props) {
               </div>
             </section>
 
-            {/* -------------------------------------------- Work completion details */}
-            <section className="space-y-3">
-              <SectionTitle icon={ClipboardCheck}>Work Completion</SectionTitle>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <DetailRow
-                  icon={User}
-                  label="Completed by"
-                  value={order.worker_name || "Field Worker"}
-                />
-                <DetailRow
-                  icon={Clock}
-                  label="Work completed"
-                  value={order.completed_at ? formatDateTime(order.completed_at) : null}
-                />
-                <DetailRow
-                  icon={ClipboardCheck}
-                  label="Evidence submitted"
-                  value={
-                    order.evidence_submitted_at
-                      ? formatDateTime(order.evidence_submitted_at)
-                      : null
-                  }
-                />
-              </div>
-              {order.completion_notes && (
-                <DetailRow
-                  icon={FileText}
-                  label="Completion notes"
-                  value={order.completion_notes}
-                />
-              )}
-            </section>
-
             {/* ------------------------------------------- Work completion evidence */}
             <section className="space-y-3">
               <SectionTitle icon={Camera}>Work Completion Evidence</SectionTitle>
-              <p className="text-xs text-slate-400">
-                BEFORE / AFTER photos taken by the field worker on site
-                {workerForPhotos ? ` (uploaded by ${workerForPhotos})` : ""}.
-              </p>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <PhotoFrame
                   photo={evidenceBefore}
-                  label="Before"
+                  label="BEFORE PHOTO"
                   onOpen={() => {
                     if (evidenceBefore) setLightboxUrl(evidenceBefore.url);
                   }}
                 />
                 <PhotoFrame
                   photo={evidenceAfter}
-                  label="After"
+                  label="AFTER PHOTO"
                   onOpen={() => {
                     if (evidenceAfter) setLightboxUrl(evidenceAfter.url);
                   }}
                 />
               </div>
+              <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3 sm:grid-cols-3">
+                <DetailRow
+                  icon={User}
+                  label="Submitted By"
+                  value={workerForPhotos || order.worker_name || "Field Worker"}
+                />
+                <DetailRow
+                  icon={Clock}
+                  label="Submitted At"
+                  value={
+                    order.evidence_submitted_at
+                      ? formatDateTime(order.evidence_submitted_at)
+                      : evidenceBefore?.created_at || evidenceAfter?.created_at
+                        ? formatDateTime(
+                            (evidenceBefore?.created_at ?? evidenceAfter!.created_at)!
+                          )
+                        : null
+                  }
+                />
+                <DetailRow
+                  icon={FileText}
+                  label="Completion Notes"
+                  value={order.completion_notes}
+                />
+              </div>
+              {!order.completion_notes && (
+                <p className="text-xs text-slate-400">
+                  Completion Notes: not provided by the field worker.
+                </p>
+              )}
             </section>
 
             {/* -------------------------------------------- AI Repair Verification */}
@@ -549,9 +560,10 @@ export function RepairVerificationCard({ complaintId }: Props) {
               {isStaff && !hasVerification && photosReady && completed && (
                 <div className="flex flex-col items-center gap-3 rounded-lg border border-slate-200 bg-slate-50/60 py-4 text-center">
                   <p className="max-w-lg text-sm text-gray-500">
-                    Run the multimodal AI to compare the BEFORE / AFTER photos
-                    against the original complaint and get a structured verdict with
-                    confidence. The AI is advisory — the final decision is yours.
+                    Compare the original complaint with the Field Worker&apos;s BEFORE
+                    and AFTER evidence to assess whether the reported issue appears
+                    to have been resolved. The AI verdict is advisory — the final
+                    decision is yours.
                   </p>
                   <Button variant="default" size="sm" onClick={runNow} disabled={working}>
                     {working ? (
@@ -559,7 +571,7 @@ export function RepairVerificationCard({ complaintId }: Props) {
                     ) : (
                       <ShieldCheck className="mr-1.5 h-4 w-4" />
                     )}
-                    Verify repair with AI
+                    Run AI Verification
                   </Button>
                 </div>
               )}
@@ -606,35 +618,65 @@ export function RepairVerificationCard({ complaintId }: Props) {
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-4"
                 >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <StatusBadge status={verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"} />
-                    <span className="text-sm font-medium text-gray-700">
-                      {percent(verification?.confidence ?? 0)} confidence
-                    </span>
-                    {verification?.source === "pixel-diff" && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500">
-                        <Camera className="h-3 w-3" /> pixel-diff
-                      </span>
-                    )}
-                  </div>
+                  <div className="rounded-lg border border-slate-200 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      AI Verification Result
+                    </p>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <StatusBadge status={verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"} />
+                      {verification?.source === "pixel-diff" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500">
+                          <Camera className="h-3 w-3" /> pixel-diff
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-2 text-sm text-slate-500">
+                      {STATUS_META[verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"].description}
+                    </p>
 
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-lg border border-slate-200 p-3">
-                      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                        What the AI observed (repair evidence)
-                      </p>
-                      <p className="mt-1 text-sm leading-relaxed text-slate-700">
-                        {verification?.repair_evidence || "—"}
-                      </p>
+                    <div className="mt-4 space-y-3">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                          Status
+                        </p>
+                        <p className="text-sm font-semibold text-slate-700">
+                          {STATUS_META[verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"].label}
+                        </p>
+                      </div>
+                      <div className="flex items-baseline justify-between gap-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                          Confidence
+                        </p>
+                        <p className="text-sm font-semibold text-slate-700">
+                          {percent(verification?.confidence ?? 0)}
+                        </p>
+                      </div>
                     </div>
-                    <div className="rounded-lg border border-slate-200 p-3">
-                      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                        Remaining issue
-                      </p>
-                      <p className="mt-1 text-sm leading-relaxed text-slate-700">
-                        {verification?.remaining_issue || "None reported"}
-                      </p>
+
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-lg border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                          Summary
+                        </p>
+                        <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                          {verification?.repair_evidence || "—"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                          Observations
+                        </p>
+                        <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                          {verification?.remaining_issue || "None reported"}
+                        </p>
+                      </div>
                     </div>
+
+                    <p className="mt-3 flex items-start gap-1.5 text-xs text-slate-400">
+                      <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      The AI is advisory only — the final decision rests with the
+                      reviewing officer.
+                    </p>
                   </div>
 
                   {isStaff && completed && (
@@ -656,21 +698,35 @@ export function RepairVerificationCard({ complaintId }: Props) {
               <SectionTitle icon={UserCheck}>Officer Decision</SectionTitle>
 
               {reviewed ? (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
-                  <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-400">
-                    <ClipboardCheck className="h-3.5 w-3.5" /> Reviewed
+                <div
+                  className={cn(
+                    "rounded-lg border p-3 text-sm",
+                    verification?.verification_status === "VERIFIED"
+                      ? "border-green-200 bg-green-50 text-green-800"
+                      : "border-amber-200 bg-amber-50 text-amber-800"
+                  )}
+                >
+                  <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+                    {verification?.verification_status === "VERIFIED" ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+                    ) : (
+                      <ClipboardCheck className="h-3.5 w-3.5" />
+                    )}
+                    {verification?.verification_status === "VERIFIED"
+                      ? "Approved"
+                      : "Action taken"}
                   </p>
-                  <p className="mt-1">
+                  <p className="mt-1 font-medium">
                     {verification?.verification_status === "VERIFIED"
                       ? "Resolution approved — the complaint is resolved."
                       : "Resolution rejected — action was taken (rework / follow-up)."}
                   </p>
                   {verification?.review_note && (
-                    <p className="mt-1 text-slate-700">
+                    <p className="mt-1 text-sm">
                       “{verification.review_note}”
                     </p>
                   )}
-                  <p className="mt-1 text-xs text-slate-400">
+                  <p className="mt-1 text-xs text-slate-500">
                     {verification?.reviewed_by_name || "Officer"}
                     {verification?.reviewed_at
                       ? ` · ${formatDateTime(verification.reviewed_at)}`
@@ -696,23 +752,25 @@ export function RepairVerificationCard({ complaintId }: Props) {
                           onClick={() => setAction("confirm")}
                           disabled={working}
                         >
-                          <CheckCircle2 className="mr-1.5 h-4 w-4" /> Approve resolution
+                          <CheckCircle2 className="mr-1.5 h-4 w-4" /> Approve Resolution
                         </Button>
                         <Button
                           size="sm"
                           variant="outline"
+                          className="border-danger-200 text-danger-700 hover:bg-danger-50 hover:text-danger-800"
                           onClick={() => setAction("rework")}
                           disabled={working}
                         >
-                          <RotateCcw className="mr-1.5 h-4 w-4" /> Request rework
+                          <RotateCcw className="mr-1.5 h-4 w-4" /> Request Rework
                         </Button>
                         <Button
                           size="sm"
-                          variant="outline"
+                          variant="ghost"
+                          className="text-slate-400 hover:text-slate-600"
                           onClick={() => setAction("followup")}
                           disabled={working}
                         >
-                          <RotateCcw className="mr-1.5 h-4 w-4" /> Reopen for follow-up
+                          Reopen for follow-up
                         </Button>
                       </div>
 

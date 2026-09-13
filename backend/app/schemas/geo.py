@@ -93,7 +93,18 @@ class GeoLookupOut(BaseModel):
     hospitals: list[GeoPlace] = Field(default_factory=list)
     schools: list[GeoPlace] = Field(default_factory=list)
     bus_stops: list[GeoPlace] = Field(default_factory=list)
+    police_stations: list[GeoPlace] = Field(default_factory=list)
+    fire_stations: list[GeoPlace] = Field(default_factory=list)
+    public_facilities: list[GeoPlace] = Field(default_factory=list)
+    government_buildings: list[GeoPlace] = Field(default_factory=list)
     critical_infrastructure: list[GeoPlace] = Field(default_factory=list)
+    # Whether REAL nearby infrastructure could be resolved for this coordinate:
+    #   "available"   — at least one facility was found (DB or live OSM).
+    #   "empty"       — every lookup succeeded but nothing exists within range.
+    #   "unavailable" — the live (OSM) lookup failed and the DB had no data, so
+    #                   "no facilities" is NOT a claim. The UI must show a
+    #                   distinct "temporarily unavailable" state.
+    nearby_status: str = "available"
     radius_m: float
     demo_label: str
     calculated_at: datetime

@@ -1244,3 +1244,148 @@ async def test_api_audit_trail_for_verify_review_evidence(client, monkeypatch):
         assert confirmed.after["decision"] == "CONFIRM_VERIFIED"
         assert confirmed.after["actor_role"] == RoleName.OFFICER.value
         assert all(a.after.get("actor_role") == RoleName.OFFICER.value for a in rows)
+
+
+# --------------------------------------------------------------------------- #
+# Provider failures: distinguish rate-limit / unavailable / analysis-failed
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_api_rate_limit_returns_retryable_provider_state(client, monkeypatch):
+    """A Groq 429 does NOT look like 'verification failed': the response carries
+    ai_status=PROVIDER_RATE_LIMITED, an explicit Retry-After hint, no result,
+    and the response must not expose internal request IDs."""
+    from app.services.ai_service import AIRateLimitError
+
+    citizen = await _citizen_token(_unique_email("vf-rl-cit"))
+    otoken = await _staff_token(_unique_email("vf-rl-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-rl-wk"))
+    order_id, cid, _ = await _seed_completed_order(
+        citizen,
+        wid,
+        before_color=(70, 60, 50),
+        after_color=(200, 220, 90),
+    )
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI([AIRateLimitError("Groq rate limited", retry_after_seconds=30.0)])
+        ),
+    )
+
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "FAILED"
+    assert body["ai_status"] == "PROVIDER_RATE_LIMITED"
+    assert body["retry_allowed"] is True
+    assert body["retry_after_seconds"] == 30.0
+    assert body["result"] is None
+    assert body["message"]
+    assert "rate limited" in body["message"].lower()
+    # No internal request ID leaks into the officer-visible error.
+    assert "request" not in (body["error"] or "").lower()
+
+    # Provider failure is NOT an evidence failure: photos remain intact and no
+    # verification verdict was persisted (nothing was faked).
+    async with async_session_factory() as db:
+        order = await _order_with_photos(order_id, db)
+        assert len(order.photos) == 2
+    assert await _latest_verification(order_id) is None
+
+
+@pytest.mark.asyncio
+async def test_api_provider_unavailable_is_retryable(client, monkeypatch):
+    """Connection/timeout failures map to PROVIDER_UNAVAILABLE (retryable, not
+    a rejection of the evidence)."""
+    from app.services.ai_service import AIConnectionError
+
+    citizen = await _citizen_token(_unique_email("vf-pu-cit"))
+    otoken = await _staff_token(_unique_email("vf-pu-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-pu-wk"))
+    order_id, cid, _ = await _seed_completed_order(citizen, wid)
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI([AIConnectionError("cannot reach groq")]),
+        ),
+    )
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "FAILED"
+    assert body["ai_status"] == "PROVIDER_UNAVAILABLE"
+    assert body["retry_allowed"] is True
+    assert body["result"] is None
+    assert "temporarily unavailable" in body["message"].lower()
+    assert await _latest_verification(order_id) is None
+
+
+@pytest.mark.asyncio
+async def test_api_analysis_failure_is_clearly_failed_but_retryable(client, monkeypatch):
+    """A non-rate-limit provider error is ANALYSIS_FAILED — still retryable and
+    not misclassified as a rate limit."""
+    from app.services.ai_service import AIAPIError
+
+    citizen = await _citizen_token(_unique_email("vf-af-cit"))
+    otoken = await _staff_token(_unique_email("vf-af-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-af-wk"))
+    order_id, cid, _ = await _seed_completed_order(citizen, wid)
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI([AIAPIError("provider returned 500", code="server_error")])
+        ),
+    )
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "FAILED"
+    assert body["ai_status"] == "ANALYSIS_FAILED"
+    assert body["retry_allowed"] is True
+    assert body["result"] is None
+    assert await _latest_verification(order_id) is None
+
+
+@pytest.mark.asyncio
+async def test_api_rate_limit_preserves_prior_success(client, monkeypatch):
+    """A rate-limit on a later retry must NOT erase a previously successful
+    verification result."""
+    from app.services.ai_service import AIRateLimitError
+
+    citizen = await _citizen_token(_unique_email("vf-prior-cit"))
+    otoken = await _staff_token(_unique_email("vf-prior-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-prior-wk"))
+    order_id, cid, _ = await _seed_completed_order(citizen, wid)
+
+    # First call succeeds, second call hits a rate limit.
+    fake = FakeAI(
+        [
+            _out(status=VerificationStatus.VERIFIED, confidence=0.96, review=False),
+            AIRateLimitError("Groq rate limited", retry_after_seconds=45.0),
+        ]
+    )
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(ai=fake),
+    )
+
+    r1 = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["status"] == "SUCCEEDED"
+    assert r1.json()["result"]["verification_status"] == "VERIFIED"
+
+    r2 = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    assert body["status"] == "FAILED"
+    assert body["ai_status"] == "PROVIDER_RATE_LIMITED"
+    assert body["retry_after_seconds"] == 45.0
+
+    # The earlier successful verification is NOT overwritten by the failed run.
+    v = await _latest_verification(order_id)
+    assert v is not None
+    assert v.verification_status == VerificationStatus.VERIFIED
+    assert v.confidence == 0.96

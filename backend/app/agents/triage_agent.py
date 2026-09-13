@@ -31,7 +31,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.models import AgentRun, Complaint
-from app.models.enums import AgentStatus, ComplaintStatus, TriageSeverity, TriageUrgency
+from app.models.enums import (
+    AgentStatus,
+    ComplaintPriority,
+    ComplaintStatus,
+    TriageSeverity,
+    TriageUrgency,
+)
 from app.schemas.triage import TriageInput, TriageOutput
 from app.services import agent_run_service
 from app.services.ai_governance_service import PROMPT_VERSION_TRIAGE, log_ai_decision
@@ -198,6 +204,7 @@ async def _persist_node(state: TriageState) -> dict[str, Any]:
             state["complaint_id"],
             ComplaintStatus.PRIORITIZED,
             note="AI triage completed.",
+            priority=ComplaintPriority(state["output"].severity.value),
         )
     return {}
 
@@ -379,13 +386,22 @@ async def _transition_complaint(
     new_status: ComplaintStatus,
     *,
     note: str,
+    priority: ComplaintPriority | None = None,
 ) -> None:
-    """Set a complaint status and append an automated (system) timeline entry."""
+    """Set a complaint status and append an automated (system) timeline entry.
+
+    When a validated ``priority`` severity is supplied (e.g. the triage
+    engine's structured ``TriageSeverity``), it is also persisted onto the
+    complaint so the deterministic priority engine scores the CONTENT-derived
+    severity — the complaint's own words drive the score, never a default.
+    """
     complaint = await db.get(Complaint, complaint_id)
     if complaint is None:
         logger.warning("Triage persist: complaint %s no longer exists", complaint_id)
         return
-    if complaint.status == new_status:
+    if complaint.status == new_status and priority is None:
         return
     complaint.status = new_status
+    if priority is not None:
+        complaint.priority = priority
     db.add(record_status_transition(complaint, new_status, actor_id=None, note=note))

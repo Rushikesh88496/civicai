@@ -8,6 +8,7 @@ authenticated ``User`` from the dependency — never a client-supplied ID.
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from sqlalchemy import select
@@ -32,6 +33,8 @@ from app.schemas.complaint import (
     WorkOrderTimelineEvent,
 )
 from app.services.complaint_service import media_out, record_status_transition
+
+logger = logging.getLogger(__name__)
 
 
 class ComplaintNotFoundError(Exception):
@@ -118,7 +121,7 @@ async def get_complaint_detail(
             accuracy_m=loc.accuracy_m,
         )
 
-    return ComplaintDetailOut(
+    detail = ComplaintDetailOut(
         id=complaint.id,
         title=complaint.title,
         description=complaint.description,
@@ -134,6 +137,41 @@ async def get_complaint_detail(
         complaint_location=complaint_location,
         media=[media_out(m) for m in complaint.media],
     )
+
+    # INTELLIGENCE PIPELINE: for staff viewing the detail page, automatically
+    # enrich context (weather / GIS / history / infrastructure) and compute the
+    # deterministic priority score when they are missing or stale, so the
+    # officer sees real intelligence without clicking through the pipeline.
+    # The detail object above is fully built first; the agents use their own
+    # sessions/commits, so the read never races with the pipeline's writes.
+    if user.role.name in (
+        RoleName.OFFICER.value,
+        RoleName.ADMIN.value,
+        RoleName.WARD_REPRESENTATIVE.value,
+    ):
+        await ensure_auto_intelligence(db, user, complaint.id)
+
+    return detail
+
+
+async def ensure_auto_intelligence(db: AsyncSession, user: User, complaint_id: uuid.UUID) -> None:
+    """Auto-run the context → priority intelligence pipeline on detail views.
+
+    Gated to staff roles (officer / admin / ward rep) by
+    :func:`app.services.complaint_intelligence_service.ensure_intelligence_pipeline`;
+    idempotent (missing/FAILED/stale runs only), never raises — intelligence is
+    always an enhancement, never a reason the detail view fails.
+    """
+    try:
+        # Imported lazily to avoid an import cycle: the context/priority services
+        # themselves import this module (access helpers).
+        from app.services.complaint_intelligence_service import (
+            ensure_intelligence_pipeline,
+        )
+
+        await ensure_intelligence_pipeline(db, user, complaint_id)
+    except Exception as exc:  # noqa: BLE001 - auto-intelligence must never break reads
+        logger.warning("Auto-intelligence skipped for %s: %s", complaint_id, exc)
 
 
 async def get_complaint_timeline(

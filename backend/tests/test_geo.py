@@ -34,9 +34,9 @@ from app.db.session import async_session_factory
 from app.models import CriticalLocation, User
 from app.models.enums import CriticalLocationCategory
 from app.schemas.auth import RegisterIn
-from app.schemas.geo import GeoPlace
+from app.schemas.geo import GeoPlace, ReverseGeocodeOut
 from app.services import auth_service
-from app.services.geo_service import GeoService, get_geo_service
+from app.services.geo_service import GeoService, _osm_category_for, get_geo_service
 from tests.helpers import any_active_ward_id
 
 _PASSWORD = "TestPass#2026"
@@ -300,10 +300,12 @@ def _overpass_payload() -> dict:
 async def test_overpass_request_parses_live_elements(monkeypatch):
     svc = get_geo_service()
     monkeypatch.setattr(svc._settings, "GIS_OVERPASS_ENABLED", True)
+    monkeypatch.setattr(svc._settings, "GIS_CACHE_ENABLED", False)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "POST"
-        assert "around" in request.content.decode()  # distance + point encoded
+        assert request.method == "GET"
+        assert "data=" in str(request.url)  # QL sent as a GET param, not POST
+        assert "around" in str(request.url)  # distance + point encoded
         return httpx.Response(200, json=_overpass_payload())
 
     transport = httpx.MockTransport(handler)
@@ -321,6 +323,7 @@ async def test_overpass_request_parses_live_elements(monkeypatch):
 async def test_overpass_failure_returns_empty_list(monkeypatch):
     svc = get_geo_service()
     monkeypatch.setattr(svc._settings, "GIS_OVERPASS_ENABLED", True)
+    monkeypatch.setattr(svc._settings, "GIS_CACHE_ENABLED", False)
 
     async def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("overpass unreachable")
@@ -331,6 +334,182 @@ async def test_overpass_failure_returns_empty_list(monkeypatch):
         _SEED_LAT, _SEED_LON, 2000.0, CriticalLocationCategory.SCHOOL, client=client
     )
     assert places == []
+
+
+async def test_overpass_empty_elements_is_a_success(monkeypatch):
+    # An Overpass 200 with zero elements means "genuinely no facilities" — it
+    # must be reported as ok=True (so the UI shows the empty state, not the
+    # temporarily-unavailable state). The empty result is also cacheable.
+    svc = get_geo_service()
+    monkeypatch.setattr(svc._settings, "GIS_OVERPASS_ENABLED", True)
+    monkeypatch.setattr(svc._settings, "GIS_CACHE_ENABLED", False)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"elements": []})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport, base_url=_SETTINGS.GIS_OVERPASS_URL)
+    places, ok, source, cached = await svc._fetch_overpass(
+        _SEED_LAT, _SEED_LON, 2000.0, CriticalLocationCategory.BUS_STOP, client=client
+    )
+    assert places == []
+    assert ok is True
+    assert source == "overpass:overpass-api.de"
+    assert cached is False
+
+
+async def test_overpass_http_error_then_mirror_succeeds(monkeypatch):
+    # Primary returns HTTP 504 (busy) and the mirror serves the data.
+    svc = get_geo_service()
+    monkeypatch.setattr(svc._settings, "GIS_OVERPASS_ENABLED", True)
+    monkeypatch.setattr(svc._settings, "GIS_CACHE_ENABLED", False)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "overpass-api.de" in str(request.url):
+            return httpx.Response(504, text="server busy")
+        return httpx.Response(200, json=_overpass_payload())
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport, base_url=_SETTINGS.GIS_OVERPASS_URL)
+    places, ok, source, _cached = await svc._fetch_overpass(
+        _SEED_LAT, _SEED_LON, 2000.0, CriticalLocationCategory.HOSPITAL, client=client
+    )
+    assert ok is True
+    assert len(places) == 2
+    assert "maps.mail.ru" in (source or "")
+
+
+def test_osm_category_rules_resolve_combined_fetch():
+    samples = [
+        ({"amenity": "hospital"}, CriticalLocationCategory.HOSPITAL),
+        ({"healthcare": "clinic"}, CriticalLocationCategory.HOSPITAL),
+        ({"amenity": "school"}, CriticalLocationCategory.SCHOOL),
+        ({"amenity": "kindergarten"}, CriticalLocationCategory.SCHOOL),
+        ({"amenity": "bus_station"}, CriticalLocationCategory.BUS_STOP),
+        ({"highway": "bus_stop"}, CriticalLocationCategory.BUS_STOP),
+        ({"public_transport": "platform"}, CriticalLocationCategory.BUS_STOP),
+        ({"amenity": "police"}, CriticalLocationCategory.POLICE_STATION),
+        ({"amenity": "fire_station"}, CriticalLocationCategory.FIRE_STATION),
+        ({"railway": "station"}, CriticalLocationCategory.TRANSPORT),
+        ({"amenity": "library"}, CriticalLocationCategory.PUBLIC_FACILITY),
+        ({"amenity": "marketplace"}, CriticalLocationCategory.PUBLIC_FACILITY),
+        ({"amenity": "place_of_worship"}, CriticalLocationCategory.PUBLIC_FACILITY),
+        ({"office": "government"}, CriticalLocationCategory.GOVERNMENT_BUILDING),
+        ({"building": "government"}, CriticalLocationCategory.GOVERNMENT_BUILDING),
+        ({"amenity": "townhall"}, CriticalLocationCategory.GOVERNMENT_BUILDING),
+        ({"highway": "primary"}, CriticalLocationCategory.ROAD),
+        ({"amenity": "cafe"}, CriticalLocationCategory.OTHER),
+    ]
+    for tags, expected in samples:
+        assert _osm_category_for(tags) == expected
+
+
+def test_infra_cache_key_rounds_coordinates_and_namespaces():
+    svc = get_geo_service()
+    key = svc._cache_key_for(
+        CriticalLocationCategory.HOSPITAL, 18.4633599, 73.8912401, 500.0
+    )
+    assert ":nearby:hospital:" in key
+    assert "18.46336,73.89124:500" in key
+    key_all = svc._cache_key_for(None, 18.4633599, 73.8912401, 500.0)
+    assert "nearby:all:" in key_all
+
+
+async def test_geo_lookup_with_live_data_populates_all_categories(monkeypatch):
+    # With an empty verified table the full lookup surfaces REAL (Overpass)
+    # facilities for every category and reports nearby_status="available".
+    svc = get_geo_service()
+
+    async def fake_addr(lat, lon, client=None):
+        return ReverseGeocodeOut(degraded=False, source="test")
+
+    async def fake_ward(db, lat, lon):
+        return None
+
+    async def fake_fetch(lat, lon, radius, category, limit=20, client=None):
+        return (
+            [
+                GeoPlace(
+                    id=None,
+                    name=f"Live {category.value}",
+                    category=category,
+                    latitude=lat,
+                    longitude=lon,
+                    distance_m=90.0,
+                    is_demo=False,
+                )
+            ],
+            True,
+            "overpass:test",
+            False,
+        )
+
+    monkeypatch.setattr(svc, "reverse_geocode", fake_addr)
+    monkeypatch.setattr(svc, "find_ward", fake_ward)
+    monkeypatch.setattr(svc, "_fetch_overpass", fake_fetch)
+    async with async_session_factory() as db:
+        out = await svc.geo_lookup(db, _SEED_LAT, _SEED_LON)
+
+    assert out.nearby_status == "available"
+    assert len(out.hospitals) == 1
+    assert len(out.schools) == 1
+    assert len(out.bus_stops) == 1
+    assert len(out.police_stations) == 1
+    assert len(out.fire_stations) == 1
+    assert len(out.public_facilities) == 1
+    assert len(out.government_buildings) == 1
+    # Critical union covers every POI facility category.
+    union_categories = {p.category for p in out.critical_infrastructure}
+    assert CriticalLocationCategory.HOSPITAL in union_categories
+    assert CriticalLocationCategory.POLICE_STATION in union_categories
+    assert CriticalLocationCategory.PUBLIC_FACILITY in union_categories
+    assert CriticalLocationCategory.GOVERNMENT_BUILDING in union_categories
+
+
+async def test_geo_lookup_nearby_status_unavailable_when_live_down(monkeypatch):
+    # Empty table + live Overpass unavailable ⇒ "no facilities" is NOT claimed.
+    svc = get_geo_service()
+    monkeypatch.setattr(svc._settings, "GIS_OVERPASS_ENABLED", False)
+
+    async def fake_addr(lat, lon, client=None):
+        return ReverseGeocodeOut(degraded=False, source="test")
+
+    async def fake_ward(db, lat, lon):
+        return None
+
+    monkeypatch.setattr(svc, "reverse_geocode", fake_addr)
+    monkeypatch.setattr(svc, "find_ward", fake_ward)
+    async with async_session_factory() as db:
+        out = await svc.geo_lookup(db, _SEED_LAT, _SEED_LON)
+
+    assert out.nearby_status == "unavailable"
+    assert out.hospitals == []
+    assert out.schools == []
+    assert out.bus_stops == []
+    assert out.police_stations == []
+
+
+async def test_geo_lookup_nearby_status_empty_when_live_ok_but_no_data(monkeypatch):
+    # Every lookup succeeded but nothing exists within range ⇒ genuinely empty.
+    svc = get_geo_service()
+
+    async def fake_addr(lat, lon, client=None):
+        return ReverseGeocodeOut(degraded=False, source="test")
+
+    async def fake_ward(db, lat, lon):
+        return None
+
+    async def fake_fetch(lat, lon, radius, category, limit=20, client=None):
+        return [], True, "overpass:test", False
+
+    monkeypatch.setattr(svc, "reverse_geocode", fake_addr)
+    monkeypatch.setattr(svc, "find_ward", fake_ward)
+    monkeypatch.setattr(svc, "_fetch_overpass", fake_fetch)
+    async with async_session_factory() as db:
+        out = await svc.geo_lookup(db, _SEED_LAT, _SEED_LON)
+
+    assert out.nearby_status == "empty"
+    assert out.critical_infrastructure == []
 
 
 # --------------------------------------------------------------------------- #

@@ -25,8 +25,21 @@ interface ComplaintMapProps {
   latitude: number;
   longitude: number;
   address?: string | null;
+  className?: string;
 }
 
-export function ComplaintMap({ latitude, longitude, address }: ComplaintMapProps) {
-  return <MapCanvas latitude={latitude} longitude={longitude} address={address} />;
+export function ComplaintMap({
+  latitude,
+  longitude,
+  address,
+  className,
+}: ComplaintMapProps) {
+  return (
+    <MapCanvas
+      latitude={latitude}
+      longitude={longitude}
+      address={address}
+      className={className}
+    />
+  );
 }

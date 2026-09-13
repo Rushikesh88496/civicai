@@ -48,7 +48,21 @@ class AITimeoutError(AIError):
 
 
 class AIRateLimitError(AIError):
-    """Raised when Groq returns a rate-limit (429) response."""
+    """Raised when Groq returns a rate-limit (429) response.
+
+    ``retry_after_seconds`` carries Groq's ``Retry-After`` response header when
+    the provider supplied one, so callers can surface a precise wait hint to
+    the user instead of guessing.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class AIConnectionError(AIError):
@@ -170,7 +184,10 @@ class AIService:
                 f"Groq request timed out after {self._timeout:.1f}s (request {request_id})."
             )
         if isinstance(exc, RateLimitError):
-            return AIRateLimitError(f"Groq rate limit reached (request {request_id}); retry later.")
+            return AIRateLimitError(
+                f"Groq rate limit reached (request {request_id}); retry later.",
+                retry_after_seconds=_retry_after_from(exc),
+            )
         if isinstance(exc, APIConnectionError):
             return AIConnectionError(f"Unable to reach the Groq API (request {request_id}).")
         detail = getattr(exc, "body", None) or str(exc)
@@ -209,7 +226,10 @@ class AIService:
                         attempts=attempt,
                     )
                     raise last_error from exc
-                backoff = 0.5 * (2 ** (attempt - 1))
+                # Prefer the provider's Retry-After when it is given; otherwise
+                # fall back to a conservative exponential backoff (capped so we
+                # never stall a request for minutes on a busy provider).
+                backoff = _backoff_seconds(exc, attempt)
                 self._log(
                     "warning",
                     "Transient Groq failure; retrying",
@@ -490,6 +510,51 @@ def _extract_delta(chunk: ChatCompletionChunk) -> str:
     if not chunk.choices:
         return ""
     return chunk.choices[0].delta.content or ""
+
+
+# Longest wait we will self-impose between automatic retries (limits how long a
+# single AI call can stall under repeated 429 / 5xx pressure).
+_MAX_AUTO_RETRY_BACKOFF = 15.0
+
+
+def _retry_after_from(exc: APIError) -> float | None:
+    """Parse Groq's ``Retry-After`` header (seconds or HTTP-date) when present."""
+    try:
+        headers = getattr(exc, "response", None) and getattr(exc.response, "headers", None)
+        if not headers:
+            return None
+        header = headers.get("retry-after")
+        if not header:
+            try:
+                header = headers["Retry-After"]
+            except Exception:  # noqa: BLE001
+                return None
+        try:
+            return max(0.0, float(str(header).strip().split(",")[0]))
+        except ValueError:
+            import datetime as _dt
+            from email.utils import parsedate_to_datetime
+
+            try:
+                when = parsedate_to_datetime(str(header).strip())
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=_dt.UTC)
+
+                return max(0.0, (when - _dt.datetime.now(_dt.UTC)).total_seconds())
+            except Exception:  # noqa: BLE001
+                return None
+    except Exception:  # noqa: BLE001 - header parsing must never break a retry
+        return None
+
+
+def _backoff_seconds(exc: APIError, attempt: int) -> float:
+    """Wait before the next automatic retry: Retry-After when available, else a
+    conservative exponential backoff, capped at ``_MAX_AUTO_RETRY_BACKOFF``."""
+    if isinstance(exc, RateLimitError):
+        retry_after = _retry_after_from(exc)
+        if retry_after is not None:
+            return max(0.0, min(retry_after, 60.0))
+    return min(0.5 * (2 ** (attempt - 1)), _MAX_AUTO_RETRY_BACKOFF)
 
 
 def _with_json_instructions(

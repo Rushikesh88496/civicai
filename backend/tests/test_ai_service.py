@@ -280,3 +280,124 @@ async def test_missing_key_not_logged():
     with pytest.raises(AIConfigurationError) as exc_info:
         await svc.chat_completion([{"role": "user", "content": "hi"}])
     assert "GROQ_API_KEY" in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------- #
+# Rate-limit handling: 429 detection + Retry-After
+# --------------------------------------------------------------------------- #
+def test_translate_rate_limit_carries_retry_after():
+    """A Groq RateLimitError with a Retry-After header becomes an AIRateLimitError
+    that still exposes the wait hint to callers."""
+    from groq._exceptions import RateLimitError
+
+    from app.services.ai_service import _retry_after_from
+
+    exc = RateLimitError(
+        message="429",
+        response=types.SimpleNamespace(
+            status_code=429, request=_req(), headers={"retry-after": "30"}
+        ),
+        body=None,
+    )
+    assert exc.status_code == 429
+    assert _retry_after_from(exc) == 30.0
+
+    svc = _service(lambda **kw: None)
+    translated = svc._translate_error(exc, "req-1")
+    assert isinstance(translated, AIRateLimitError)
+    assert translated.retry_after_seconds == 30.0
+
+
+def test_rate_limit_without_retry_after_header():
+    """A 429 without a Retry-After header still maps to AIRateLimitError."""
+    from groq._exceptions import RateLimitError
+
+    from app.services.ai_service import _retry_after_from
+
+    exc = RateLimitError(
+        message="429",
+        response=types.SimpleNamespace(status_code=429, request=_req()),
+        body=None,
+    )
+    assert _retry_after_from(exc) is None
+    svc = _service(lambda **kw: None)
+    translated = svc._translate_error(exc, "req-9")
+    assert isinstance(translated, AIRateLimitError)
+    assert translated.retry_after_seconds is None
+
+
+def test_rate_limit_retry_after_http_date():
+    """A 429 carrying an HTTP-date Retry-After is parsed into seconds."""
+    import datetime as _dt
+    from email.utils import format_datetime
+
+    from groq._exceptions import RateLimitError
+
+    from app.services.ai_service import _retry_after_from
+
+    when = _dt.datetime.now(_dt.UTC) + _dt.timedelta(seconds=90)
+    header = format_datetime(when, usegmt=True)
+    exc = RateLimitError(
+        message="429",
+        response=types.SimpleNamespace(
+            status_code=429, request=_req(), headers={"retry-after": header}
+        ),
+        body=None,
+    )
+    wait = _retry_after_from(exc)
+    assert wait is not None and 89.0 <= wait <= 91.0
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_backoff_uses_retry_after():
+    """The automatic 429 retry prefers the provider's Retry-After wait."""
+    from groq._exceptions import APITimeoutError, RateLimitError
+
+    from app.services.ai_service import _backoff_seconds
+
+    rate = RateLimitError(
+        message="429",
+        response=types.SimpleNamespace(
+            status_code=429, request=_req(), headers={"retry-after": "12"}
+        ),
+        body=None,
+    )
+    assert _backoff_seconds(rate, 1) == 12.0
+    # Rate-limit retries respect the header; plain exponential otherwise.
+    timeout = APITimeoutError(request=_req())
+    assert _backoff_seconds(timeout, 2) == 1.0
+    assert _backoff_seconds(timeout, 5) == 8.0
+    assert _backoff_seconds(timeout, 6) == 15.0  # capped, bounded backoff
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_retry_waits_headers_then_succeeds(monkeypatch):
+    """After honoring Retry-After the call can succeed on a later attempt."""
+    from groq._exceptions import RateLimitError
+
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    async def _sleep(secs: float) -> None:
+        sleeps.append(secs)
+
+    monkeypatch.setattr("app.services.ai_service.asyncio.sleep", _sleep)
+
+    async def handler(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RateLimitError(
+                message="429",
+                response=types.SimpleNamespace(
+                    status_code=429, request=_req(), headers={"retry-after": "7"}
+                ),
+                body=None,
+            )
+        return _completion("recovered")
+
+    svc = _service(handler, GROQ_MAX_RETRIES=3)
+    result = await svc.chat_completion([{"role": "user", "content": "hi"}])
+    assert result.text == "recovered"
+    assert calls["n"] == 2
+    # The wait honored the provider's Retry-After header.
+    assert sleeps == [7.0]

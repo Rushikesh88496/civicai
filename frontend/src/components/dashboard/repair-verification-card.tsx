@@ -21,12 +21,11 @@ import {
   User,
   Clock,
   Image as ImageIcon,
+  BadgeCheck,
+  Sparkles,
 } from "lucide-react";
 import {
   Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
   CardContent,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -42,8 +41,10 @@ import {
   fetchWorkOrderVerification,
   runVerification,
   reviewVerification,
+  type AiVerificationStatus,
   type ComplaintMediaItem,
   type EvidencePhoto,
+  type RunVerificationResponse,
   type VerificationReviewDecision,
   type VerificationStatus,
   type WorkOrderEvidence,
@@ -60,31 +61,74 @@ const TERMINAL_ORDER_STATUSES = new Set(["COMPLETED", "CLOSED", "REJECTED"]);
 
 const STATUS_META: Record<
   VerificationStatus,
-  { label: string; className: string; description: string; icon: typeof CheckCircle2 }
+  { label: string; description: string; chipClass: string; icon: typeof CheckCircle2 }
 > = {
   VERIFIED: {
     label: "VERIFIED",
     description: "The AI found evidence the reported issue has been resolved.",
-    className: "bg-green-100 text-green-700 border-green-200",
+    chipClass: "border-success-200 bg-success-50 text-success-700",
     icon: CheckCircle2,
   },
   PARTIALLY_RESOLVED: {
     label: "PARTIALLY RESOLVED",
     description: "The AI found the reported issue only partially addressed.",
-    className: "bg-amber-100 text-amber-700 border-amber-200",
+    chipClass: "border-amber-200 bg-amber-50 text-amber-700",
     icon: AlertTriangle,
   },
   NOT_RESOLVED: {
     label: "NOT VERIFIED",
     description: "The AI found the reported issue is still unresolved.",
-    className: "bg-red-100 text-red-700 border-red-200",
+    chipClass: "border-danger-200 bg-danger-50 text-danger-700",
     icon: XCircle,
   },
   NEEDS_HUMAN_REVIEW: {
     label: "NEEDS REVIEW",
     description: "The AI could not reach a confident verdict — review manually.",
-    className: "bg-blue-100 text-blue-700 border-blue-200",
+    chipClass: "border-primary-200 bg-primary-50 text-primary-700",
     icon: UserCheck,
+  },
+};
+
+type SectionState =
+  | "awaiting-evidence"
+  | "awaiting-review"
+  | "ai-verified"
+  | "approved"
+  | "rework";
+
+const SECTION_STATE_META: Record<
+  SectionState,
+  { label: string; chipClass: string; dotClass: string; icon: typeof Clock }
+> = {
+  "awaiting-evidence": {
+    label: "Awaiting Evidence",
+    chipClass: "border-amber-200 bg-amber-50 text-amber-700",
+    dotClass: "bg-amber-400",
+    icon: Clock,
+  },
+  "awaiting-review": {
+    label: "Awaiting AI Review",
+    chipClass: "border-slate-200 bg-slate-50 text-slate-600",
+    dotClass: "bg-slate-300",
+    icon: Clock,
+  },
+  "ai-verified": {
+    label: "AI Verified",
+    chipClass: "border-violet-200 bg-violet-50 text-violet-700",
+    dotClass: "bg-violet-400",
+    icon: Sparkles,
+  },
+  approved: {
+    label: "Approved",
+    chipClass: "border-success-200 bg-success-50 text-success-700",
+    dotClass: "bg-success-500",
+    icon: BadgeCheck,
+  },
+  rework: {
+    label: "Rework / Follow-up",
+    chipClass: "border-danger-200 bg-danger-50 text-danger-700",
+    dotClass: "bg-danger-500",
+    icon: ClipboardCheck,
   },
 };
 
@@ -92,12 +136,129 @@ function percent(p: number): string {
   return `${Math.round(p * 100)}%`;
 }
 
+interface ConfidenceTone {
+  label: string;
+  textClass: string;
+  strokeClass: string;
+  chipClass: string;
+}
+
+function confidenceTone(value: number | null): ConfidenceTone {
+  if (value == null)
+    return {
+      label: "Confidence unavailable",
+      textClass: "text-slate-400",
+      strokeClass: "stroke-slate-200",
+      chipClass: "border-slate-200 bg-slate-50 text-slate-500",
+    };
+  if (value >= 0.7)
+    return {
+      label: "High confidence",
+      textClass: "text-success-600",
+      strokeClass: "stroke-success-500",
+      chipClass: "border-success-200 bg-success-50 text-success-700",
+    };
+  if (value >= 0.4)
+    return {
+      label: "Medium confidence",
+      textClass: "text-amber-600",
+      strokeClass: "stroke-amber-500",
+      chipClass: "border-amber-200 bg-amber-50 text-amber-700",
+    };
+  return {
+    label: "Low confidence",
+    textClass: "text-danger-600",
+    strokeClass: "stroke-danger-500",
+    chipClass: "border-danger-200 bg-danger-50 text-danger-700",
+  };
+}
+
 function StatusBadge({ status }: { status: VerificationStatus }) {
   const meta = STATUS_META[status];
   const Icon = meta.icon;
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${meta.className}`}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold",
+        meta.chipClass
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" /> {meta.label}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI provider-failure states. A rate limit or outage NEVER means the repair
+// failed verification: the evidence is untouched and the analysis is simply
+// retryable. These messages and colors mirror the backend classification.
+// ---------------------------------------------------------------------------
+const AI_FAILURE_MESSAGES: Record<AiVerificationStatus, string> = {
+  NOT_STARTED: "AI verification has not started yet.",
+  PROCESSING: "AI verification is in progress.",
+  COMPLETED: "AI verification completed.",
+  PROVIDER_RATE_LIMITED:
+    "Groq is temporarily rate limited — your evidence has NOT been rejected. Please retry verification.",
+  PROVIDER_UNAVAILABLE:
+    "The AI provider could not be reached — your evidence has NOT been rejected. Please try again.",
+  INVALID_EVIDENCE:
+    "The evidence is missing or invalid, so the AI could not complete verification.",
+  ANALYSIS_FAILED:
+    "The AI analysis did not finish. Please retry verification.",
+};
+
+const AI_FAILURE_TITLES: Partial<Record<AiVerificationStatus, string>> = {
+  PROVIDER_RATE_LIMITED: "AI verification temporarily unavailable.",
+  PROVIDER_UNAVAILABLE: "AI verification temporarily unavailable.",
+  INVALID_EVIDENCE: "AI verification could not be completed.",
+  ANALYSIS_FAILED: "AI verification could not be completed.",
+};
+
+function isProviderFailure(status: AiVerificationStatus): boolean {
+  return status === "PROVIDER_RATE_LIMITED" || status === "PROVIDER_UNAVAILABLE";
+}
+
+interface AiFailure {
+  status: AiVerificationStatus;
+  message: string;
+  technical: string | null;
+  retry_allowed: boolean;
+  retry_after_seconds: number | null;
+}
+
+function failureFromRun(resp: RunVerificationResponse): AiFailure {
+  const status: AiVerificationStatus = resp.ai_status ?? "ANALYSIS_FAILED";
+  return {
+    status,
+    message: resp.message ?? AI_FAILURE_MESSAGES[status],
+    technical: resp.error,
+    retry_allowed: resp.retry_allowed !== false,
+    retry_after_seconds: resp.retry_after_seconds ?? null,
+  };
+}
+
+function failureFallback(
+  message: string,
+  status: AiVerificationStatus = "ANALYSIS_FAILED"
+): AiFailure {
+  return {
+    status,
+    message: message || AI_FAILURE_MESSAGES[status],
+    technical: null,
+    retry_allowed: true,
+    retry_after_seconds: null,
+  };
+}
+
+function SectionStateChip({ state }: { state: SectionState }) {
+  const meta = SECTION_STATE_META[state];
+  const Icon = meta.icon;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold",
+        meta.chipClass
+      )}
     >
       <Icon className="h-3.5 w-3.5" /> {meta.label}
     </span>
@@ -107,35 +268,57 @@ function StatusBadge({ status }: { status: VerificationStatus }) {
 function SectionTitle({
   icon: Icon,
   children,
+  right,
 }: {
   icon: typeof Camera;
   children: React.ReactNode;
+  right?: React.ReactNode;
 }) {
   return (
-    <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
-      <Icon className="h-4 w-4" /> {children}
-    </h3>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <h3 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-widest text-slate-500">
+        <Icon className="h-3.5 w-3.5" /> {children}
+      </h3>
+      {right}
+    </div>
   );
 }
 
-function DetailRow({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof User;
-  label: string;
-  value: string | null | undefined;
-}) {
-  if (!value) return null;
+function ConfidenceRing({ value }: { value: number | null }) {
+  const R = 34;
+  const C = 2 * Math.PI * R;
+  const tone = confidenceTone(value);
+  const pct = Math.min(Math.max(value ?? 0, 0), 1);
   return (
-    <div className="flex items-start gap-2">
-      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
-      <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-          {label}
-        </p>
-        <p className="text-sm text-slate-700">{value}</p>
+    <div className="relative h-24 w-24 shrink-0">
+      <svg viewBox="0 0 80 80" className="-rotate-90">
+        <circle
+          cx={40}
+          cy={40}
+          r={R}
+          fill="none"
+          strokeWidth={7}
+          className="stroke-slate-100"
+        />
+        <circle
+          cx={40}
+          cy={40}
+          r={R}
+          fill="none"
+          strokeWidth={7}
+          strokeLinecap="round"
+          strokeDasharray={C}
+          strokeDashoffset={C * (1 - pct)}
+          className={cn("transition-all duration-700", tone.strokeClass)}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className={cn("text-xl font-bold tabular-nums", tone.textClass)}>
+          {value != null ? percent(value) : "—"}
+        </span>
+        <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">
+          Conf.
+        </span>
       </div>
     </div>
   );
@@ -152,16 +335,16 @@ function PhotoFrame({
 }) {
   if (!photo) {
     return (
-      <div className="flex h-48 flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 text-center">
-        <ImageIcon className="h-6 w-6 text-slate-300" />
-        <p className="px-3 text-sm text-slate-400">
+      <figure className="flex h-48 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/60 px-4 text-center">
+        <ImageIcon className="h-7 w-7 text-slate-300" />
+        <figcaption className="text-sm text-slate-400">
           {label} photo not submitted
-        </p>
-      </div>
+        </figcaption>
+      </figure>
     );
   }
   return (
-    <div className="overflow-hidden rounded-lg border border-slate-200">
+    <figure className="overflow-hidden rounded-xl border border-border-soft bg-surface">
       <button
         type="button"
         onClick={onOpen}
@@ -171,27 +354,27 @@ function PhotoFrame({
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={photo.url}
-          alt={label}
-          className="aspect-[4/3] w-full object-cover transition-transform group-hover:scale-[1.02]"
+          alt={`${label} evidence photo`}
+          className="aspect-[4/3] w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
         />
+        <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-white">
+          <Camera className="h-3.5 w-3.5" /> {label}
+        </span>
         <span className="absolute bottom-2 right-2 flex items-center gap-1 rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium text-white opacity-90 transition-opacity group-hover:opacity-100">
           <ZoomIn className="h-3.5 w-3.5" /> Zoom
         </span>
       </button>
-      <div className="space-y-1 border-t border-slate-100 px-3 py-2">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          {label}
-        </p>
-        <p className="flex items-center gap-1 text-xs text-slate-400">
-          <User className="h-3 w-3" />
-          Uploaded by {photo.uploaded_by_name || "Field Worker"}
-        </p>
-        <p className="flex items-center gap-1 text-xs text-slate-400">
-          <Clock className="h-3 w-3" />
+      <figcaption className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-border-soft bg-slate-50/40 px-3 py-2">
+        <span className="flex items-center gap-1 text-xs text-slate-500">
+          <User className="h-3 w-3 text-slate-400" />
+          {photo.uploaded_by_name || "Field Worker"}
+        </span>
+        <span className="flex items-center gap-1 text-xs text-slate-500">
+          <Clock className="h-3 w-3 text-slate-400" />
           {formatDateTime(photo.created_at)}
-        </p>
-      </div>
-    </div>
+        </span>
+      </figcaption>
+    </figure>
   );
 }
 
@@ -235,7 +418,7 @@ function Lightbox({
         src={url}
         alt={alt}
         onClick={(e) => e.stopPropagation()}
-        className="max-h-[90vh] max-w-[92vw] rounded-lg object-contain"
+        className="max-h-[90vh] max-w-[92vw] rounded-xl object-contain"
       />
     </div>
   );
@@ -263,7 +446,7 @@ export function RepairVerificationCard({ complaintId }: Props) {
   const [action, setAction] = useState<null | "confirm" | "followup" | "rework">(null);
   const [working, setWorking] = useState(false);
   const [note, setNote] = useState("");
-  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiFailure, setAiFailure] = useState<AiFailure | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
@@ -317,18 +500,20 @@ export function RepairVerificationCard({ complaintId }: Props) {
     if (!targetOrderId) return;
     setWorking(true);
     setError(null);
-    setAiError(null);
+    setAiFailure(null);
     try {
       const resp = await runVerification(targetOrderId);
       reload();
       if (resp.status === "FAILED") {
-        setAiError(resp.error || "AI verification failed. You can retry.");
+        setAiFailure(failureFromRun(resp));
       } else if (resp.result) {
         addToast("AI verification complete — review the result below.", "success");
       }
     } catch (e) {
-      setAiError(
-        e instanceof Error ? e.message : "Failed to run the AI verification."
+      setAiFailure(
+        failureFallback(
+          e instanceof Error ? e.message : "Failed to run the AI verification."
+        )
       );
     } finally {
       setWorking(false);
@@ -365,15 +550,17 @@ export function RepairVerificationCard({ complaintId }: Props) {
   if (loading) {
     return (
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-emerald-600" /> Resolution Review
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-3 p-5">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-10 w-10 rounded-xl" />
+            <div className="space-y-1.5">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-3 w-64" />
+            </div>
+          </div>
+          <Skeleton className="h-48 w-full rounded-xl" />
           <Skeleton className="h-4 w-48" />
-          <Skeleton className="h-44 w-full" />
-          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-40 w-full rounded-xl" />
         </CardContent>
       </Card>
     );
@@ -383,15 +570,24 @@ export function RepairVerificationCard({ complaintId }: Props) {
   if (!order && !orderStatus) {
     return (
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-emerald-600" /> Resolution Review
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="flex items-center gap-2 text-sm text-gray-500">
-            <Wrench className="h-4 w-4 text-gray-300" />
-            Appears once a field worker has submitted the resolution evidence.
+        <CardContent className="p-5">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-success-50 text-success-600">
+              <ShieldCheck className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-base font-semibold tracking-tight text-slate-900">
+                Resolution Review
+              </h2>
+              <p className="text-sm text-slate-500">
+                Appears once a field worker has submitted the resolution evidence.
+              </p>
+            </div>
+          </div>
+          <p className="mt-4 flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/40 px-3 py-3 text-sm text-slate-500">
+            <Wrench className="h-4 w-4 text-slate-300" />
+            The resolution review unlocks once a work order is assigned and
+            evidence is submitted.
           </p>
         </CardContent>
       </Card>
@@ -419,54 +615,91 @@ export function RepairVerificationCard({ complaintId }: Props) {
 
   const workerForPhotos = evidenceBefore?.uploaded_by_name || evidenceAfter?.uploaded_by_name;
 
+  const formattedBefore = evidenceBefore?.created_at
+    ? formatDateTime(evidenceBefore.created_at)
+    : null;
+  const formattedAfter = evidenceAfter?.created_at
+    ? formatDateTime(evidenceAfter.created_at)
+    : null;
+  const evidenceTime = order?.evidence_submitted_at
+    ? formatDateTime(order.evidence_submitted_at)
+    : formattedBefore ?? formattedAfter;
+
+  let sectionState: SectionState | null = null;
+  if (order || orderStatus) {
+    if (!hasEvidence) sectionState = "awaiting-evidence";
+    else if (reviewed)
+      sectionState =
+        verification?.verification_status === "VERIFIED" ? "approved" : "rework";
+    else if (hasVerification) sectionState = "ai-verified";
+    else sectionState = "awaiting-review";
+  }
+
+  const observations = (verification?.remaining_issue ?? "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-emerald-600" /> Resolution Review
-        </CardTitle>
-        <CardDescription>
-          Review the field worker&apos;s BEFORE / AFTER photos against the original
-          complaint, check the AI evaluation, and make the final decision — the
-          repair is only resolved once an officer approves it.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-6">
+    <Card className="overflow-hidden">
+      {/* Header band */}
+      <div className="border-b border-border-soft bg-gradient-to-r from-slate-50/80 via-surface to-surface px-4 py-4 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-success-50 text-success-600">
+              <ShieldCheck className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-base font-semibold tracking-tight text-slate-900">
+                Resolution Review
+              </h2>
+              <p className="text-sm text-slate-500">
+                Verify the field work against the reported issue and pass the
+                final verdict.
+              </p>
+            </div>
+          </div>
+          {sectionState && <SectionStateChip state={sectionState} />}
+        </div>
+      </div>
+
+      <CardContent className="space-y-7 p-4 sm:p-6">
         {error && (
-          <div className="flex items-start gap-2 rounded-lg border border-red-100 bg-red-50 p-3 text-sm text-red-700">
+          <div className="flex items-start gap-2 rounded-lg border border-danger-200 bg-danger-50 p-3 text-sm text-danger-700">
             <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {!order ? (
-          isStaff ? (
-            <p className="flex items-center gap-2 text-sm text-gray-500">
-              <Loader2 className="h-4 w-4 text-gray-300" />
-              The resolution review unlocks once the work order evidence is submitted.
-            </p>
-          ) : (
-            <p className="text-sm text-gray-500">
-              Waiting for the field worker to submit their resolution evidence.
-            </p>
-          )
-        ) : !hasEvidence ? (
-          <p className="flex items-center gap-2 text-sm text-gray-500">
-            <Loader2 className="h-4 w-4 text-gray-300" />
+          <p className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/40 px-3 py-3 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 text-slate-300" />
             {isStaff
-              ? "Waiting for the field worker to submit BEFORE / AFTER evidence."
+              ? "The resolution review unlocks once the work order evidence is submitted."
               : "Waiting for the field worker to submit their resolution evidence."}
           </p>
+        ) : !hasEvidence ? (
+          <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-amber-200 bg-amber-50/40 px-4 py-6 text-center">
+            <Wrench className="h-6 w-6 text-amber-400" />
+            <p className="text-sm font-medium text-amber-800">
+              Waiting for field evidence
+            </p>
+            <p className="max-w-md text-sm text-amber-700/80">
+              {isStaff
+                ? "The field worker has not submitted BEFORE / AFTER photos yet. The review workspace appears here once the evidence arrives."
+                : "The field worker has not submitted the BEFORE / AFTER evidence yet."}
+            </p>
+          </div>
         ) : (
           <>
-            {/* ------------------------------------------------ Original complaint */}
+            {/* ---------------------------------------------------- Original complaint */}
             <section className="space-y-3">
-              <SectionTitle icon={FileText}>Original Complaint</SectionTitle>
-              <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-                <p className="text-sm font-medium text-slate-800">
+              <SectionTitle icon={FileText}>Original complaint</SectionTitle>
+              <div className="rounded-xl border border-border-soft bg-slate-50/40 p-3.5">
+                <p className="text-sm font-semibold text-slate-800">
                   {order.complaint_title || "Complaint"}
                   {order.complaint_category ? (
-                    <span className="ml-2 text-xs font-normal uppercase text-slate-400">
+                    <span className="ml-2 inline-flex rounded-full bg-slate-200/60 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                       {order.complaint_category}
                     </span>
                   ) : null}
@@ -483,7 +716,7 @@ export function RepairVerificationCard({ complaintId }: Props) {
                         key={m.id}
                         type="button"
                         onClick={() => setLightboxUrl(m.url)}
-                        className="group relative block h-24 w-24 overflow-hidden rounded-md border border-slate-200"
+                        className="group relative block h-20 w-20 overflow-hidden rounded-lg border border-border-soft"
                         aria-label="Open the original complaint photo"
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -502,74 +735,77 @@ export function RepairVerificationCard({ complaintId }: Props) {
               </div>
             </section>
 
-            {/* ------------------------------------------- Work completion evidence */}
+            {/* ------------------------------------------------ Before / After workspace */}
             <section className="space-y-3">
-              <SectionTitle icon={Camera}>Work Completion Evidence</SectionTitle>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <SectionTitle
+                icon={Camera}
+                right={
+                  <span className="text-xs text-slate-400">
+                    Field worker&apos;s submitted evidence
+                  </span>
+                }
+              >
+                Before / After
+              </SectionTitle>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <PhotoFrame
                   photo={evidenceBefore}
-                  label="BEFORE PHOTO"
+                  label="Before"
                   onOpen={() => {
                     if (evidenceBefore) setLightboxUrl(evidenceBefore.url);
                   }}
                 />
                 <PhotoFrame
                   photo={evidenceAfter}
-                  label="AFTER PHOTO"
+                  label="After"
                   onOpen={() => {
                     if (evidenceAfter) setLightboxUrl(evidenceAfter.url);
                   }}
                 />
               </div>
-              <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3 sm:grid-cols-3">
-                <DetailRow
-                  icon={User}
-                  label="Submitted By"
-                  value={workerForPhotos || order.worker_name || "Field Worker"}
-                />
-                <DetailRow
-                  icon={Clock}
-                  label="Submitted At"
-                  value={
-                    order.evidence_submitted_at
-                      ? formatDateTime(order.evidence_submitted_at)
-                      : evidenceBefore?.created_at || evidenceAfter?.created_at
-                        ? formatDateTime(
-                            (evidenceBefore?.created_at ?? evidenceAfter!.created_at)!
-                          )
-                        : null
-                  }
-                />
-                <DetailRow
-                  icon={FileText}
-                  label="Completion Notes"
-                  value={order.completion_notes}
-                />
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-border-soft bg-slate-50/40 px-3.5 py-2.5 text-xs text-slate-500">
+                <span className="flex items-center gap-1.5">
+                  <User className="h-3.5 w-3.5 text-slate-400" />
+                  <span className="text-slate-400">Submitted by</span>
+                  <span className="font-medium text-slate-700">
+                    {workerForPhotos || order.worker_name || "Field Worker"}
+                  </span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-slate-400" />
+                  <span className="text-slate-400">At</span>
+                  <span className="font-medium text-slate-700">
+                    {evidenceTime || "—"}
+                  </span>
+                </span>
               </div>
-              {!order.completion_notes && (
-                <p className="text-xs text-slate-400">
-                  Completion Notes: not provided by the field worker.
-                </p>
-              )}
+              <p className="text-xs text-slate-400">
+                {order.completion_notes
+                  ? `Completion notes: ${order.completion_notes}`
+                  : "Completion notes: not provided by the field worker."}
+              </p>
             </section>
 
-            {/* -------------------------------------------- AI Repair Verification */}
+            {/* ---------------------------------------------------- AI verification */}
             <section className="space-y-3">
-              <SectionTitle icon={ShieldCheck}>AI Repair Verification</SectionTitle>
+              <SectionTitle icon={Sparkles} right={null}>
+                AI verification
+              </SectionTitle>
 
-              {isStaff && !hasVerification && photosReady && completed && (
-                <div className="flex flex-col items-center gap-3 rounded-lg border border-slate-200 bg-slate-50/60 py-4 text-center">
-                  <p className="max-w-lg text-sm text-gray-500">
-                    Compare the original complaint with the Field Worker&apos;s BEFORE
-                    and AFTER evidence to assess whether the reported issue appears
-                    to have been resolved. The AI verdict is advisory — the final
-                    decision is yours.
+              {isStaff && !hasVerification && !aiFailure && photosReady && completed && (
+                <div className="flex flex-col items-center gap-3 rounded-xl border border-violet-200 bg-violet-50/50 px-4 py-5 text-center">
+                  <Sparkles className="h-6 w-6 text-violet-400" />
+                  <p className="max-w-lg text-sm text-slate-600">
+                    Compare the original complaint with the Field Worker&apos;s
+                    BEFORE and AFTER evidence to assess whether the reported
+                    issue appears to have been resolved. The AI verdict is
+                    advisory — the final decision is yours.
                   </p>
                   <Button variant="default" size="sm" onClick={runNow} disabled={working}>
                     {working ? (
                       <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
                     ) : (
-                      <ShieldCheck className="mr-1.5 h-4 w-4" />
+                      <Sparkles className="mr-1.5 h-4 w-4" />
                     )}
                     Run AI Verification
                   </Button>
@@ -577,36 +813,68 @@ export function RepairVerificationCard({ complaintId }: Props) {
               )}
 
               {isStaff && !hasVerification && !photosReady && completed && (
-                <p className="flex items-center gap-2 rounded-lg border border-amber-100 bg-amber-50 p-3 text-sm text-amber-800">
+                <p className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                   <AlertTriangle className="h-4 w-4 shrink-0" />
-                  Both a BEFORE and an AFTER photo must be submitted before the AI
-                  can verify the repair. Ask the field worker to re-submit evidence.
+                  Both a BEFORE and an AFTER photo must be submitted before the
+                  AI can verify the repair. Ask the field worker to re-submit
+                  evidence.
                 </p>
               )}
 
               {!isStaff && !hasVerification && (
-                <p className="text-sm text-gray-500">
+                <p className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/40 px-3 py-3 text-sm text-slate-500">
+                  <Loader2 className="h-4 w-4 text-slate-300" />
                   Waiting for the AI repair verification to be run by an officer.
                 </p>
               )}
 
-              {aiError && (
-                <div className="flex items-start justify-between gap-2 rounded-lg border border-red-100 bg-red-50 p-3 text-sm text-red-700">
-                  <span className="flex items-start gap-2">
-                    <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              {aiFailure && (
+                <div
+                  className={cn(
+                    "flex items-start justify-between gap-2 rounded-lg border p-3 text-sm",
+                    isProviderFailure(aiFailure.status)
+                      ? "border-amber-200 bg-amber-50 text-amber-800"
+                      : "border-danger-200 bg-danger-50 text-danger-700"
+                  )}
+                >
+                  <span className="min-w-0 flex items-start gap-2">
+                    <AlertTriangle
+                      className={cn(
+                        "mt-0.5 h-4 w-4 shrink-0",
+                        isProviderFailure(aiFailure.status)
+                          ? "text-amber-500"
+                          : "text-danger-500"
+                      )}
+                    />
                     <span>
-                      <span className="font-semibold">AI verification failed.</span>{" "}
-                      {aiError}
+                      <span className="font-semibold">
+                        {AI_FAILURE_TITLES[aiFailure.status] ?? "AI verification could not be completed."}
+                      </span>{" "}
+                      {aiFailure.message}
+                      {!isProviderFailure(aiFailure.status) &&
+                        aiFailure.technical &&
+                        aiFailure.technical !== aiFailure.message && (
+                          <span className="mt-1 block text-xs opacity-70">
+                            {aiFailure.technical}
+                          </span>
+                        )}
+                      {aiFailure.retry_after_seconds != null && (
+                        <span className="mt-1 block text-xs opacity-70">
+                          The AI provider suggests retrying in ~
+                          {Math.ceil(aiFailure.retry_after_seconds)}s.
+                        </span>
+                      )}
                     </span>
                   </span>
-                  {isStaff && (
+                  {isStaff && aiFailure.retry_allowed && (
                     <Button
                       variant="outline"
                       size="sm"
+                      className="shrink-0"
                       onClick={runNow}
                       disabled={working}
                     >
-                      <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry
+                      <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry Verification
                     </Button>
                   )}
                 </div>
@@ -616,73 +884,87 @@ export function RepairVerificationCard({ complaintId }: Props) {
                 <motion.div
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="space-y-4"
                 >
-                  <div className="rounded-lg border border-slate-200 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      AI Verification Result
-                    </p>
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <StatusBadge status={verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"} />
-                      {verification?.source === "pixel-diff" && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500">
-                          <Camera className="h-3 w-3" /> pixel-diff
+                  <div className="overflow-hidden rounded-xl border border-violet-200">
+                    <div className="flex flex-wrap items-center gap-2 border-b border-violet-100 bg-violet-50/50 px-4 py-3">
+                      <Sparkles className="h-4 w-4 text-violet-500" />
+                      <p className="text-xs font-semibold uppercase tracking-wider text-violet-700">
+                        AI Verification Result
+                      </p>
+                      <div className="ml-auto flex flex-wrap items-center gap-2">
+                        <StatusBadge
+                          status={verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"}
+                        />
+                        {verification?.source === "pixel-diff" && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                            <Camera className="h-3 w-3" /> pixel-diff
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid gap-5 p-4 md:grid-cols-[auto_1fr]">
+                      <div className="flex flex-col items-center gap-2 md:items-start">
+                        <ConfidenceRing value={verification?.confidence ?? null} />
+                        <span
+                          className={cn(
+                            "rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                            confidenceTone(verification?.confidence ?? null).chipClass
+                          )}
+                        >
+                          {confidenceTone(verification?.confidence ?? null).label}
                         </span>
-                      )}
+                      </div>
+                      <div className="min-w-0 space-y-4">
+                        <p className="text-sm leading-relaxed text-slate-500">
+                          {STATUS_META[
+                            verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"
+                          ].description}
+                        </p>
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">
+                            AI Summary
+                          </p>
+                          <p className="mt-1 text-sm leading-relaxed text-slate-700">
+                            {verification?.repair_evidence ||
+                              "No AI summary available."}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">
+                            Observations
+                          </p>
+                          {observations.length > 0 ? (
+                            <ul className="mt-1 space-y-1.5">
+                              {observations.map((obs, i) => (
+                                <li
+                                  key={i}
+                                  className="flex items-start gap-2 text-sm leading-relaxed text-slate-600"
+                                >
+                                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
+                                  {obs}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1 text-sm text-slate-600">
+                              No AI observations available.
+                            </p>
+                          )}
+                        </div>
+                        <p className="flex items-start gap-1.5 text-xs text-slate-400">
+                          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          The AI is advisory only — the final decision rests with
+                          the reviewing officer.
+                        </p>
+                      </div>
                     </div>
-                    <p className="mt-2 text-sm text-slate-500">
-                      {STATUS_META[verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"].description}
-                    </p>
-
-                    <div className="mt-4 space-y-3">
-                      <div className="flex items-baseline justify-between gap-3">
-                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                          Status
-                        </p>
-                        <p className="text-sm font-semibold text-slate-700">
-                          {STATUS_META[verification?.verification_status ?? "NEEDS_HUMAN_REVIEW"].label}
-                        </p>
-                      </div>
-                      <div className="flex items-baseline justify-between gap-3">
-                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                          Confidence
-                        </p>
-                        <p className="text-sm font-semibold text-slate-700">
-                          {percent(verification?.confidence ?? 0)}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-lg border border-slate-200 p-3">
-                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                          Summary
-                        </p>
-                        <p className="mt-1 text-sm leading-relaxed text-slate-700">
-                          {verification?.repair_evidence || "—"}
-                        </p>
-                      </div>
-                      <div className="rounded-lg border border-slate-200 p-3">
-                        <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                          Observations
-                        </p>
-                        <p className="mt-1 text-sm leading-relaxed text-slate-700">
-                          {verification?.remaining_issue || "None reported"}
-                        </p>
-                      </div>
-                    </div>
-
-                    <p className="mt-3 flex items-start gap-1.5 text-xs text-slate-400">
-                      <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      The AI is advisory only — the final decision rests with the
-                      reviewing officer.
-                    </p>
                   </div>
 
                   {isStaff && completed && (
                     <Button
                       variant="outline"
                       size="sm"
+                      className="mt-2"
                       onClick={runNow}
                       disabled={working}
                     >
@@ -693,60 +975,88 @@ export function RepairVerificationCard({ complaintId }: Props) {
               )}
             </section>
 
-            {/* ------------------------------------------------- Officer decision */}
+            {/* ----------------------------------------------------- Officer decision */}
             <section className="space-y-3">
-              <SectionTitle icon={UserCheck}>Officer Decision</SectionTitle>
+              <SectionTitle icon={UserCheck} right={null}>
+                Officer decision
+              </SectionTitle>
 
               {reviewed ? (
                 <div
                   className={cn(
-                    "rounded-lg border p-3 text-sm",
+                    "rounded-xl border p-4",
                     verification?.verification_status === "VERIFIED"
-                      ? "border-green-200 bg-green-50 text-green-800"
-                      : "border-amber-200 bg-amber-50 text-amber-800"
+                      ? "border-success-200 bg-success-50"
+                      : "border-amber-200 bg-amber-50"
                   )}
                 >
-                  <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
-                    {verification?.verification_status === "VERIFIED" ? (
-                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
-                    ) : (
-                      <ClipboardCheck className="h-3.5 w-3.5" />
-                    )}
-                    {verification?.verification_status === "VERIFIED"
-                      ? "Approved"
-                      : "Action taken"}
-                  </p>
-                  <p className="mt-1 font-medium">
-                    {verification?.verification_status === "VERIFIED"
-                      ? "Resolution approved — the complaint is resolved."
-                      : "Resolution rejected — action was taken (rework / follow-up)."}
-                  </p>
-                  {verification?.review_note && (
-                    <p className="mt-1 text-sm">
-                      “{verification.review_note}”
-                    </p>
-                  )}
-                  <p className="mt-1 text-xs text-slate-500">
-                    {verification?.reviewed_by_name || "Officer"}
-                    {verification?.reviewed_at
-                      ? ` · ${formatDateTime(verification.reviewed_at)}`
-                      : ""}
-                  </p>
+                  <div className="flex items-start gap-3">
+                    <span
+                      className={cn(
+                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
+                        verification?.verification_status === "VERIFIED"
+                          ? "bg-success-500 text-white"
+                          : "bg-amber-500 text-white"
+                      )}
+                    >
+                      {verification?.verification_status === "VERIFIED" ? (
+                        <BadgeCheck className="h-5 w-5" />
+                      ) : (
+                        <ClipboardCheck className="h-5 w-5" />
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <p
+                        className={cn(
+                          "text-sm font-semibold",
+                          verification?.verification_status === "VERIFIED"
+                            ? "text-success-800"
+                            : "text-amber-800"
+                        )}
+                      >
+                        {verification?.verification_status === "VERIFIED"
+                          ? "Resolution approved — the complaint is resolved."
+                          : "Action taken — rework or follow-up has been requested."}
+                      </p>
+                      {verification?.review_note && (
+                        <p className="mt-1 text-sm italic text-slate-600">
+                          “{verification.review_note}”
+                        </p>
+                      )}
+                      <p className="mt-1.5 flex items-center gap-1 text-xs text-slate-500">
+                        <UserCheck className="h-3.5 w-3.5" />
+                        {verification?.reviewed_by_name || "Officer"}
+                        {verification?.reviewed_at
+                          ? ` · ${formatDateTime(verification.reviewed_at)}`
+                          : ""}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               ) : isStaff ? (
                 <>
                   {!hasVerification ? (
-                    <p className="flex items-center gap-2 text-sm text-gray-500">
-                      <Loader2 className="h-4 w-4 text-gray-300" />
-                      Run the AI repair verification first — an officer decision is
-                      available once the AI has reviewed the evidence.
+                    <p className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/40 px-3 py-3 text-sm text-slate-500">
+                      <Loader2 className="h-4 w-4 text-slate-300" />
+                      Run the AI repair verification first — an officer decision
+                      is available once the AI has reviewed the evidence.
                     </p>
                   ) : (
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-                      <p className="text-sm font-medium text-slate-700">
-                        Make the final decision
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
+                    <div className="rounded-xl border border-border-soft p-4">
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-600">
+                          <UserCheck className="h-5 w-5" />
+                        </span>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">
+                            Make the final decision
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            The AI verdict is advisory — the final decision is yours.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                         <Button
                           size="sm"
                           onClick={() => setAction("confirm")}
@@ -778,7 +1088,7 @@ export function RepairVerificationCard({ complaintId }: Props) {
                         <motion.div
                           initial={{ opacity: 0, y: 4 }}
                           animate={{ opacity: 1, y: 0 }}
-                          className="mt-4 space-y-3 rounded-lg border border-slate-200 bg-white p-3"
+                          className="mt-4 space-y-3 rounded-lg border border-border-soft bg-slate-50/40 p-3"
                         >
                           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
                             {action === "confirm"
@@ -804,7 +1114,7 @@ export function RepairVerificationCard({ complaintId }: Props) {
                               onChange={(e) => setNote(e.target.value)}
                             />
                           </div>
-                          <div className="flex gap-2">
+                          <div className="flex flex-wrap gap-2">
                             <Button
                               size="sm"
                               onClick={() =>
@@ -840,8 +1150,8 @@ export function RepairVerificationCard({ complaintId }: Props) {
                   )}
                 </>
               ) : (
-                <p className="flex items-center gap-2 text-sm text-gray-500">
-                  <Loader2 className="h-4 w-4 text-gray-300" />
+                <p className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/40 px-3 py-3 text-sm text-slate-500">
+                  <Loader2 className="h-4 w-4 text-slate-300" />
                   Waiting for officer verification — the repair is resolved only
                   once an officer approves it.
                 </p>
@@ -851,7 +1161,10 @@ export function RepairVerificationCard({ complaintId }: Props) {
         )}
 
         {order && (
-          <div className="flex items-center justify-between text-xs text-gray-400">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border-soft pt-3 text-xs text-slate-400">
+            <span className="truncate">
+              Work order <span className="font-medium text-slate-500">{order.order_id}</span>
+            </span>
             <span>
               {verification
                 ? `AI verified ${formatDateTime(verification.created_at)}`

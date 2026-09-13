@@ -349,7 +349,11 @@ export type CriticalLocationCategory =
   | "FIRE_STATION"
   | "ROAD"
   | "TRANSPORT"
+  | "PUBLIC_FACILITY"
+  | "GOVERNMENT_BUILDING"
   | "OTHER";
+
+export type NearbyStatus = "available" | "empty" | "unavailable";
 
 export interface GeoPlace {
   id: string | null;
@@ -389,7 +393,12 @@ export interface GeoLookup {
   hospitals: GeoPlace[];
   schools: GeoPlace[];
   bus_stops: GeoPlace[];
+  police_stations: GeoPlace[];
+  fire_stations: GeoPlace[];
+  public_facilities: GeoPlace[];
+  government_buildings: GeoPlace[];
   critical_infrastructure: GeoPlace[];
+  nearby_status: NearbyStatus;
   radius_m: number;
   demo_label: string;
   calculated_at: string;
@@ -510,7 +519,14 @@ export interface InfrastructureContext {
   hospitals: number;
   schools: number;
   bus_stops: number;
+  police_stations: number;
+  fire_stations: number;
+  public_facilities: number;
+  government_buildings: number;
+  major_roads: number;
+  status: NearbyStatus;
   highlights: InfrastructureEntry[];
+  places: InfrastructureEntry[];
   available: boolean;
 }
 
@@ -1101,12 +1117,24 @@ export interface WorkOrderVerification {
   created_at: string;
 }
 
+export type AiVerificationStatus =
+  | "NOT_STARTED"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "PROVIDER_RATE_LIMITED"
+  | "PROVIDER_UNAVAILABLE"
+  | "INVALID_EVIDENCE"
+  | "ANALYSIS_FAILED";
+
 export interface RunVerificationResponse {
   run_id: string;
   status: AgentRunStatus;
   result: WorkOrderVerification | null;
   error: string | null;
   retry_allowed: boolean;
+  ai_status: AiVerificationStatus;
+  message: string | null;
+  retry_after_seconds: number | null;
 }
 
 export interface VerificationReviewOut {

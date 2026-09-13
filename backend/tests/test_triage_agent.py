@@ -22,6 +22,7 @@ from app.models import AgentRun, Complaint, User
 from app.models.enums import (
     AgentStatus,
     ComplaintCategory,
+    ComplaintPriority,
     ComplaintStatus,
     TriageSeverity,
     TriageUrgency,
@@ -193,6 +194,9 @@ async def test_triage_road_complaint(client):
 
     _, complaint = await _fetch_run(complaint_id)
     assert complaint.status == ComplaintStatus.PRIORITIZED
+    # The validated severity is now wired straight into the stored priority so
+    # the deterministic priority engine actually reflects complaint content.
+    assert complaint.priority == ComplaintPriority(result.severity.value)
 
     await _delete_user(email)
 

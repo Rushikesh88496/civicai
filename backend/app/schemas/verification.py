@@ -12,6 +12,7 @@ staff, reviewable) through the work-order API.
 
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 
@@ -22,6 +23,31 @@ from app.models.enums import (
     VerificationReviewDecision,
     VerificationStatus,
 )
+
+
+class AiVerificationStatus(enum.StrEnum):
+    """UI-facing state of an AI repair-verification attempt.
+
+    Deliberately separates *analysis outcomes* from *provider availability* so
+    the officer UI can distinguish "the evidence failed verification" from "the
+    AI provider is temporarily unavailable / rate limited". States:
+
+    * ``NOT_STARTED`` — no run has been attempted.
+    * ``PROCESSING`` — a run is in flight (used by clients rendering async state).
+    * ``COMPLETED`` — the model produced a verdict; a verification row exists.
+    * ``PROVIDER_RATE_LIMITED`` — Groq returned 429; retryable, evidence intact.
+    * ``PROVIDER_UNAVAILABLE`` — timeout / connection / config; retryable.
+    * ``INVALID_EVIDENCE`` — BEFORE/AFTER evidence is missing or unreadable.
+    * ``ANALYSIS_FAILED`` — the provider responded but analysis could not finish.
+    """
+
+    NOT_STARTED = "NOT_STARTED"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    PROVIDER_RATE_LIMITED = "PROVIDER_RATE_LIMITED"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    INVALID_EVIDENCE = "INVALID_EVIDENCE"
+    ANALYSIS_FAILED = "ANALYSIS_FAILED"
 
 
 class VerificationInput(BaseModel):
@@ -149,13 +175,24 @@ class WorkOrderVerificationOut(BaseModel):
 
 
 class VerificationRunResponse(BaseModel):
-    """Response envelope for running (or fetching) constraint verification."""
+    """Response envelope for running (or fetching) constraint verification.
+
+    ``ai_status`` distinguishes a failed analysis from a temporarily unavailable
+    provider (rate limit / outage): a provider failure is retryable and does NOT
+    mean the evidence was rejected. ``message`` is a user-safe explanation;
+    ``retry_after_seconds`` carries the provider's ``Retry-After`` hint when one
+    was returned. The technical ``error`` is a short sanitized reason — internal
+    request IDs stay in the persisted agent run, not in this response.
+    """
 
     run_id: uuid.UUID
     status: AgentStatus
     result: WorkOrderVerificationOut | None = None
     error: str | None = None
     retry_allowed: bool = True
+    ai_status: AiVerificationStatus = AiVerificationStatus.NOT_STARTED
+    message: str | None = None
+    retry_after_seconds: float | None = None
 
 
 class VerificationReviewIn(BaseModel):
@@ -234,6 +271,7 @@ class WorkOrderEvidenceOut(BaseModel):
 
 
 __all__ = [
+    "AiVerificationStatus",
     "ComplaintMediaOut",
     "EvidencePhotoOut",
     "VerificationInput",

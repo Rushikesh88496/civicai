@@ -340,32 +340,51 @@ def _historical_summary(total_prior: int, same_ward_count: int | None) -> str:
     return base + "."
 
 
-def _collect_infrastructure(
-    infra_names: dict[str, list[Any]], radius_m: float | None
-) -> InfrastructureContext:
+def _collect_infrastructure(lookup: Any) -> InfrastructureContext:
     """Derive counts/highlights from the attended critical-location lists."""
-    hospitals = list(infra_names.get("hospitals", []))
-    schools = list(infra_names.get("schools", []))
-    bus_stops = list(infra_names.get("bus_stops", []))
-    all_places = [*hospitals, *schools, *bus_stops]
+    hospitals = list(lookup.hospitals)
+    schools = list(lookup.schools)
+    bus_stops = list(lookup.bus_stops)
+    police = list(getattr(lookup, "police_stations", []))
+    fire = list(getattr(lookup, "fire_stations", []))
+    public = list(getattr(lookup, "public_facilities", []))
+    government = list(getattr(lookup, "government_buildings", []))
+    roads = list(lookup.nearby_roads)
+    poi = [*hospitals, *schools, *bus_stops, *police, *fire, *public, *government]
+    poi.sort(key=lambda p: (p.distance_m is None, p.distance_m or 0))
 
     def to_entry(p) -> InfrastructureEntry:
         cat = getattr(p, "category", "infrastructure")
         return InfrastructureEntry(
             name=p.name,
-            category=cat.value if isinstance(cat, str) and hasattr(cat, "value") else str(cat),
+            category=(
+                cat.value if isinstance(cat, str) and hasattr(cat, "value") else str(cat)
+            ),
             distance_m=float(p.distance_m) if p.distance_m is not None else None,
         )
 
-    highlights = [to_entry(p) for p in all_places[:5]]
+    status = str(getattr(lookup, "nearby_status", "available"))
+    if status == "unavailable":
+        available = False
+    else:
+        available = bool(poi)
+
+    highlights = [to_entry(p) for p in poi[:5]]
     return InfrastructureContext(
-        radius_m=radius_m,
-        total_nearby=len(all_places),
+        radius_m=lookup.radius_m,
+        total_nearby=len(poi),
         hospitals=len(hospitals),
         schools=len(schools),
         bus_stops=len(bus_stops),
+        police_stations=len(police),
+        fire_stations=len(fire),
+        public_facilities=len(public),
+        government_buildings=len(government),
+        major_roads=len(roads),
+        status=status,
         highlights=highlights,
-        available=bool(all_places),
+        places=[to_entry(p) for p in poi[:25]],
+        available=available,
     )
 
 
@@ -420,14 +439,7 @@ async def _enrich_node(state: ContextState) -> dict[str, Any]:
                 demo_label=lookup.demo_label,
                 available=True,
             )
-            infrastructure = _collect_infrastructure(
-                {
-                    "hospitals": lookup.hospitals,
-                    "schools": lookup.schools,
-                    "bus_stops": lookup.bus_stops,
-                },
-                lookup.radius_m,
-            )
+            infrastructure = _collect_infrastructure(lookup)
             sources.append(
                 ContextSource(
                     name="nominatim",

@@ -83,13 +83,17 @@ export default function GeoMapCanvas({
       }
     }
 
-    // Nearby facilities.
+    // Nearby facilities (colour-coded, capped so the map stays legible).
     const facilities = [
       ...lookup.hospitals.map((p) => ({ ...p, dcolor: "#ef4444" })),
       ...lookup.schools.map((p) => ({ ...p, dcolor: "#3b82f6" })),
       ...lookup.bus_stops.map((p) => ({ ...p, dcolor: "#10b981" })),
-      ...lookup.critical_infrastructure.map((p) => ({ ...p, dcolor: "#8b5cf6" })),
-    ];
+      ...lookup.police_stations.map((p) => ({ ...p, dcolor: "#f59e0b" })),
+      ...lookup.fire_stations.map((p) => ({ ...p, dcolor: "#f97316" })),
+      ...lookup.public_facilities.map((p) => ({ ...p, dcolor: "#14b8a6" })),
+      ...lookup.government_buildings.map((p) => ({ ...p, dcolor: "#6366f1" })),
+      ...lookup.nearby_roads.slice(0, 5).map((p) => ({ ...p, dcolor: "#6b7280" })),
+    ].slice(0, 40);
     for (const f of facilities) {
       L.marker([f.latitude, f.longitude], { icon: placeIcon(f.dcolor) })
         .addTo(map)

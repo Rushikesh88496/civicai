@@ -10,12 +10,14 @@ interface ComplaintMapCanvasProps {
   latitude: number;
   longitude: number;
   address?: string | null;
+  className?: string;
 }
 
 export default function ComplaintMapCanvas({
   latitude,
   longitude,
   address,
+  className = "h-64 w-full z-0",
 }: ComplaintMapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -57,5 +59,5 @@ export default function ComplaintMapCanvas({
     };
   }, [latitude, longitude, address]);
 
-  return <div ref={containerRef} className="h-64 w-full z-0" />;
+  return <div ref={containerRef} className={className} />;
 }

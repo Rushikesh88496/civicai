@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
   },
   // Allow this machine's LAN IP to request dev-only assets (HMR, dev fonts)
   // when the dev server is reached through http://10.135.111.74:3000.
-  allowedDevOrigins: ["10.135.111.74"],
+  allowedDevOrigins: ["10.135.111.74", "127.0.0.1"],
   // Explicit project root. Without it Next.js scans lockfiles upward from the
   // project and warns about a stray package-lock.json in the user's home
   // directory (outside this Git repository); the auto-detected root already

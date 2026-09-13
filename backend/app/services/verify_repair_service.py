@@ -27,14 +27,22 @@ serializes the dedicated ``work_order_verifications`` row.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.agents.verify_repair_agent import VerifyRepairAgent
+from app.agents.verify_repair_agent import (
+    FATAL_REASON_ANALYSIS,
+    FATAL_REASON_EVIDENCE,
+    FATAL_REASON_RATE_LIMIT,
+    FATAL_REASON_UNAVAILABLE,
+    VerifyRepairAgent,
+)
 from app.core.config import get_settings
 from app.core.notification_types import (
     EVENT_AI_VERIFICATION_RESULT,
@@ -66,6 +74,7 @@ from app.models.enums import (
     WorkOrderStatus,
 )
 from app.schemas.verification import (
+    AiVerificationStatus,
     ComplaintMediaOut,
     EvidencePhotoOut,
     VerificationInput,
@@ -94,6 +103,85 @@ _STAFF_ROLES = (
     RoleName.ADMIN.value,
     RoleName.WARD_REPRESENTATIVE.value,
 )
+
+# User-safe explanations keyed by the agent's fatal-reason tag. A provider
+# failure never means "the repair failed verification" — evidence stays intact
+# and the analysis is simply retryable.
+_AI_MESSAGES: dict[str, str] = {
+    FATAL_REASON_RATE_LIMIT: (
+        "AI verification is temporarily unavailable. Groq is temporarily rate "
+        "limited — your evidence has NOT been rejected. Please retry verification."
+    ),
+    FATAL_REASON_UNAVAILABLE: (
+        "AI verification is temporarily unavailable. The AI provider could not be "
+        "reached — your evidence has NOT been rejected. Please try again."
+    ),
+    FATAL_REASON_EVIDENCE: (
+        "AI verification could not be completed because the resolution evidence is "
+        "missing or invalid."
+    ),
+    FATAL_REASON_ANALYSIS: (
+        "AI verification could not be completed. No verdict was produced — please "
+        "retry verification."
+    ),
+}
+
+# Optimistic tag → status fallback; anything unrecognized is a plain analysis failure.
+_AI_STATUS_BY_REASON: dict[str, AiVerificationStatus] = {
+    FATAL_REASON_RATE_LIMIT: AiVerificationStatus.PROVIDER_RATE_LIMITED,
+    FATAL_REASON_UNAVAILABLE: AiVerificationStatus.PROVIDER_UNAVAILABLE,
+    FATAL_REASON_EVIDENCE: AiVerificationStatus.INVALID_EVIDENCE,
+    FATAL_REASON_ANALYSIS: AiVerificationStatus.ANALYSIS_FAILED,
+}
+
+_REQUEST_ID_IN_ERROR = re.compile(r"\(request [0-9a-f-]{36}\)")
+
+
+def _sanitize_technical_error(error: str | None) -> str | None:
+    """Strip internal request IDs from a technical message before it reaches the UI."""
+    if not error:
+        return error
+    cleaned = _REQUEST_ID_IN_ERROR.sub("(internal)", error).strip()
+    return cleaned[:400] or None
+
+
+def _failure_meta(run: Any) -> tuple[AiVerificationStatus, str, float | None]:
+    """Classify a FAILED verify run from its persisted trace events.
+
+    Reads the agent's ``validate.provider_failed`` event (which carries the
+    reason tag + the provider's ``Retry-After`` hint). Falls back to a plain
+    analysis-failure classification when the reason is not recoverable so the
+    API always responds with a structured, user-safe outcome.
+    """
+    reason: str | None = None
+    retry_after: float | None = None
+    for event in getattr(run, "events", []) or []:
+        if getattr(event, "event", None) != "validate.provider_failed":
+            continue
+        payload = getattr(event, "payload", None) or {}
+        if isinstance(payload, dict):
+            reason = payload.get("reason") or reason
+            retry_after = payload.get("retry_after_seconds") or retry_after
+
+    key = (
+        reason
+        if reason in _AI_STATUS_BY_REASON
+        else FATAL_REASON_ANALYSIS
+    )
+    return (
+        _AI_STATUS_BY_REASON[key],
+        _AI_MESSAGES[key],
+        _coerce_retry_after(retry_after),
+    )
+
+
+def _coerce_retry_after(value: object) -> float | None:
+    try:
+        if isinstance(value, (int, float)):
+            return max(0.0, float(value))
+    except Exception:  # noqa: BLE001 - best-effort hint only
+        return None
+    return None
 
 
 class VerifyNotFoundError(Exception):
@@ -422,12 +510,16 @@ async def run_verification(
         input_data=input_data,
     )
     if run.status == AgentStatus.FAILED:
+        ai_status, message, retry_after = _failure_meta(run)
         return VerificationRunResponse(
             run_id=run.id,
             status=run.status,
             result=None,
-            error=run.error,
+            error=_sanitize_technical_error(run.error),
             retry_allowed=True,
+            ai_status=ai_status,
+            message=message,
+            retry_after_seconds=retry_after,
         )
     verification = await _latest_verification(db, order_id)
     if verification is not None:
@@ -456,6 +548,7 @@ async def run_verification(
         result=_to_out(verification) if verification is not None else None,
         error=None,
         retry_allowed=True,
+        ai_status=AiVerificationStatus.COMPLETED,
     )
 
 

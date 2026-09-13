@@ -103,7 +103,20 @@ class InfrastructureContext(BaseModel):
     hospitals: int = 0
     schools: int = 0
     bus_stops: int = 0
+    police_stations: int = 0
+    fire_stations: int = 0
+    public_facilities: int = 0
+    government_buildings: int = 0
+    major_roads: int = 0
+    # Whether REAL nearby infrastructure could be resolved:
+    #   "available"   — at least one facility found (DB or live OSM).
+    #   "empty"       — lookups succeeded; nothing within the radius.
+    #   "unavailable" — live OSM failed and the DB had nothing (not a claim).
+    status: str = "available"
     highlights: list[InfrastructureEntry] = Field(default_factory=list)
+    # Full sorted nearby-facility list (capped) for the officer UI.
+    places: list[InfrastructureEntry] = Field(default_factory=list)
+    # Backwards-compatible flag: True when real infrastructure is available.
     available: bool = False
 
 

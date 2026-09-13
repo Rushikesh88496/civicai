@@ -23,7 +23,11 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app.agents.context_agent import ContextAgent, _parse_weather_payload
+from app.agents.context_agent import (
+    ContextAgent,
+    _collect_infrastructure,
+    _parse_weather_payload,
+)
 from app.core.config import get_settings
 from app.core.security import create_access_token
 from app.db.session import async_session_factory
@@ -322,6 +326,52 @@ async def test_run_context_without_coordinates_uses_ward_only(client):
     assert result["weather_context"]["available"] is False
     assert result["gis_context"]["latitude"] is None
     await _delete_user(email)
+
+
+# --------------------------------------------------------------------------- #
+# Infrastructure status propagation (available / empty / unavailable)
+# --------------------------------------------------------------------------- #
+def test_collect_infrastructure_propagates_live_status():
+    lookup = _seed_lookup()
+    lookup.nearby_status = "available"
+    ctx = _collect_infrastructure(lookup)
+    assert ctx.status == "available"
+    assert ctx.available is True
+    assert ctx.hospitals == 1
+    assert ctx.schools == 1
+    assert ctx.bus_stops == 1
+    assert ctx.police_stations == 0
+    assert ctx.fire_stations == 0
+    assert ctx.public_facilities == 0
+    assert ctx.government_buildings == 0
+    assert ctx.total_nearby == 3
+    assert len(ctx.places) == 3
+
+
+def test_collect_infrastructure_empty_status_is_kept():
+    lookup = _seed_lookup()
+    lookup.hospitals = []
+    lookup.schools = []
+    lookup.bus_stops = []
+    lookup.critical_infrastructure = []
+    lookup.nearby_status = "empty"
+    ctx = _collect_infrastructure(lookup)
+    assert ctx.status == "empty"
+    assert ctx.available is False
+    assert ctx.total_nearby == 0
+
+
+def test_collect_infrastructure_unavailable_is_not_treated_as_empty():
+    lookup = _seed_lookup()
+    lookup.hospitals = []
+    lookup.schools = []
+    lookup.bus_stops = []
+    lookup.critical_infrastructure = []
+    lookup.nearby_status = "unavailable"
+    ctx = _collect_infrastructure(lookup)
+    assert ctx.status == "unavailable"
+    assert ctx.available is False
+    assert ctx.total_nearby == 0
 
 
 # --------------------------------------------------------------------------- #

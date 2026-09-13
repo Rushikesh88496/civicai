@@ -82,15 +82,18 @@ export function PriorityIndexCard({ complaintId }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     Promise.all([
       fetchPriorityResult(complaintId),
       fetchPriorityHistory(complaintId),
     ])
       .then(([r, h]) => {
-        if (!cancelled) {
-          setRun(r);
-          setHistory(h?.entries ?? []);
-          setError(null);
+        if (cancelled) return;
+        setRun(r);
+        setHistory(h?.entries ?? []);
+        setError(null);
+        if (r !== null && r.status === "RUNNING") {
+          timer = setTimeout(() => setReloadKey((k) => k + 1), 2500);
         }
       })
       .catch((e) => {
@@ -105,6 +108,7 @@ export function PriorityIndexCard({ complaintId }: Props) {
       });
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
   }, [complaintId, reloadKey]);
 

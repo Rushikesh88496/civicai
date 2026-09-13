@@ -147,17 +147,37 @@ class Settings(BaseSettings):
     GIS_DEFAULT_RADIUS_M: float = 500.0
     GIS_MAX_RADIUS_M: float = 5000.0
     # Radius (metres) used to look up nearby critical infrastructure by default.
-    GIS_CRITICAL_RADIUS_M: float = 1500.0
+    # (The complete-intelligence pipeline reports "nearby infrastructure within
+    # this radius" as a priority input, per the ops spec: 500 m.)
+    GIS_CRITICAL_RADIUS_M: float = 500.0
     # Label appended to any geometry/location that is illustrative demo data
     # rather than an authoritative boundary or facility.
     GIS_DEMO_LABEL: str = "DEMO DATA"
     # OSM Overpass endpoint used to source REAL nearby infrastructure when the
     # verified ``critical_locations`` table has no facilities for a query. When
     # disabled (or on any network failure) the lookup returns an empty list and
-    # the UI shows "Nearby infrastructure data unavailable".
+    # the UI shows "Nearby infrastructure data temporarily unavailable".
     GIS_OVERPASS_URL: str = "https://overpass-api.de/api/interpreter"
-    GIS_OVERPASS_TIMEOUT_SECONDS: float = 6.0
+    GIS_OVERPASS_TIMEOUT_SECONDS: float = 20.0
     GIS_OVERPASS_ENABLED: bool = True
+    # Additional public Overpass mirrors (comma separated), primary first. The
+    # community interpreter is frequently busy / rate-limited (429/504) and
+    # rejects or times out on heavier queries, so a failed attempt falls
+    # through to the next mirror before the lookup degrades.
+    GIS_OVERPASS_MIRRORS: str = (
+        "https://overpass-api.de/api/interpreter,"
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter,"
+        "https://overpass.kumi.systems/api/interpreter"
+    )
+    # Retry budget per mirror before trying the next one.
+    GIS_OVERPASS_MAX_RETRIES: int = 0
+    # Redis cache for the REAL nearby-infrastructure results. Only a genuine
+    # live Overpass success (200 + parseable JSON, even an empty result) is
+    # cached — a failed fetch is never cached, so a cache hit always means real
+    # data. Keys are namespaced by category + coordinates (5 decimals, ~1 m) +
+    # radius, matching the context cache namespace.
+    GIS_CACHE_ENABLED: bool = True
+    GIS_CACHE_TTL_SECONDS: int = 3600
 
     # ===== Context Enrichment Agent (Part 11) =====
     # Weather comes from Open-Meteo's public forecast API. It is free and
@@ -182,6 +202,18 @@ class Settings(BaseSettings):
     # context (count of prior complaints in the same ward / near the location).
     CONTEXT_HISTORICAL_WINDOW_HOURS: float = 168.0
     CONTEXT_HISTORICAL_RADIUS_M: float = 1000.0
+
+    # ===== Automatic Intelligence Pipeline (INTELLIGENCE PIPELINE) =====
+    # When True, viewing a complaint detail as an officer/admin/ward
+    # representative automatically runs the situation-context enrichment agent
+    # (weather / GIS / historical / infrastructure) and, once its signals are
+    # available, the deterministic priority engine for that complaint — so an
+    # officer always sees real context + a real score without clicking through
+    # the pipeline. Runs are idempotent: only missing or FAILED runs are
+    # replaced on each view (manual buttons remain as an explicit re-run).
+    # The test suite forces this off so its hundreds of detail reads never
+    # cross external weather/geocoding services.
+    COMPLAINTS_AUTO_INTELLIGENCE: bool = True
 
     # ===== Dynamic Priority & Risk Engine (Part 12) =====
     # Deterministic, weighted scoring — the priority engine NEVER lets an LLM

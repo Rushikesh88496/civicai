@@ -11,6 +11,12 @@ os.environ.setdefault("REDIS_URL", "")
 # Overpass mirror on every geo test. Tests opt in explicitly (GIS_OVERPASS_URL
 # pointed at a mocked transport and GIS_OVERPASS_ENABLED forced true).
 os.environ.setdefault("GIS_OVERPASS_ENABLED", "false")
+# The automatic intelligence pipeline (context + deterministic priority) is
+# normally triggered whenever a staff member views a complaint detail. The suite
+# runs hundreds of detail reads; forcing it off keeps them deterministic, fast
+# and free of external Open-Meteo / Nominatim calls. The pipeline is tested
+# deliberately in test_intelligence_pipeline.py with the flag re-enabled.
+os.environ.setdefault("COMPLAINTS_AUTO_INTELLIGENCE", "false")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient

@@ -181,8 +181,8 @@ async def get_priority_result(
 ) -> PriorityRunOut | None:
     """Return the most recent priority engine run for a complaint, if any."""
     await _assert_can_view(db, user, complaint_id)
-    run = await agent_run_service.get_latest_run(db, complaint_id)
-    if run is None or run.agent != AGENT_NAME:
+    run = await agent_run_service.get_latest_run_for_agent(db, complaint_id, AGENT_NAME)
+    if run is None:
         return None
     result = (
         PriorityOutput.model_validate(run.structured_result)

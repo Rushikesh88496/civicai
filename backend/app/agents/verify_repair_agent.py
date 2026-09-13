@@ -54,9 +54,13 @@ from app.schemas.verification import VerificationInput, VerificationOutput
 from app.services import agent_run_service
 from app.services.ai_service import (
     AIAPIError,
+    AIConfigurationError,
+    AIConnectionError,
     AIError,
+    AIRateLimitError,
     AIService,
     AIStructuredParsingError,
+    AITimeoutError,
     get_ai_service,
 )
 from app.storage import get_storage
@@ -105,6 +109,13 @@ _FALLBACK = VerificationOutput(
     human_review_required=True,
 )
 
+# Fatal-run taxonomy. Provider failures are NOT evidence failures and are NOT a
+# verdict against the repair: they only mean the analysis could not run.
+FATAL_REASON_RATE_LIMIT = "PROVIDER_RATE_LIMITED"
+FATAL_REASON_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+FATAL_REASON_EVIDENCE = "INVALID_EVIDENCE"
+FATAL_REASON_ANALYSIS = "ANALYSIS_FAILED"
+
 
 class VerifyState(TypedDict, total=False):
     """Graph state for the resolution-verification agent."""
@@ -118,6 +129,8 @@ class VerifyState(TypedDict, total=False):
     human_review: bool
     parse_error: bool  # True when the last verify call was un-parseable
     fatal_error: bool  # True when evidence/provider failure (no verdict)
+    fatal_reason: str  # FATAL_REASON_* tag classifying the failure
+    retry_after_seconds: float | None  # Groq Retry-After for rate-limit failures
     error: str | None
     route: str
     source: str  # "groq" | "pixel-diff"
@@ -198,6 +211,17 @@ def _validate_image_payload(data: bytes) -> str | None:
         return "Image payload is not a valid, decodable image."
 
 
+def _safe_retry_after(exc: BaseException) -> float | None:
+    """Best-effort read of the provider's ``Retry-After`` hint (never raises)."""
+    try:
+        value = getattr(exc, "retry_after_seconds", None)
+        if isinstance(value, (int, float)):
+            return max(0.0, float(value))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _images_identical(before_data: bytes, after_data: bytes) -> bool:
     """Return True when the two photos are byte- or pixel-identical.
 
@@ -222,12 +246,21 @@ def _images_identical(before_data: bytes, after_data: bytes) -> bool:
 # --------------------------------------------------------------------------- #
 # Graph nodes
 # --------------------------------------------------------------------------- #
-def _fatal(state: VerifyState, attempt: int, error: str) -> dict[str, Any]:
+def _fatal(
+    state: VerifyState,
+    attempt: int,
+    error: str,
+    *,
+    reason: str = FATAL_REASON_ANALYSIS,
+    retry_after_seconds: float | None = None,
+) -> dict[str, Any]:
     return {
         "output": None,
         "attempt": attempt,
         "parse_error": False,
         "fatal_error": True,
+        "fatal_reason": reason,
+        "retry_after_seconds": retry_after_seconds,
         "error": error,
         "human_review": False,
     }
@@ -258,21 +291,29 @@ async def _verify_node(state: VerifyState) -> dict[str, Any]:
     images: list[tuple[str, bytes]] = []
     for label, key in (("BEFORE", input_data.before_key), ("AFTER", input_data.after_key)):
         if not key:
-            return _fatal(state, attempt, _MSG_MISSING_IMAGES)
+            return _fatal(
+                state, attempt, _MSG_MISSING_IMAGES, reason=FATAL_REASON_EVIDENCE
+            )
         try:
             media = await db.scalar(select(WorkOrderPhoto).where(WorkOrderPhoto.storage_key == key))
         except Exception:  # noqa: BLE001 - unexpected DB error
             media = None
         if media is None:
-            return _fatal(state, attempt, _MSG_MISSING_IMAGES)
+            return _fatal(
+                state, attempt, _MSG_MISSING_IMAGES, reason=FATAL_REASON_EVIDENCE
+            )
         try:
             data = get_storage().read(media.storage_key)
         except Exception as exc:  # noqa: BLE001 - storage read failure
             logger.error("Verify photo read failed for %s: %s", key, exc)
-            return _fatal(state, attempt, _MSG_INVALID_IMAGE)
+            return _fatal(
+                state, attempt, _MSG_INVALID_IMAGE, reason=FATAL_REASON_EVIDENCE
+            )
         problem = _validate_image_payload(data)
         if problem is not None:
-            return _fatal(state, attempt, problem)
+            return _fatal(
+                state, attempt, problem, reason=FATAL_REASON_EVIDENCE
+            )
         images.append((media.content_type, data))
         # First image loaded is BEFORE; use it for the unchanged guard.
         if label == "BEFORE":
@@ -368,10 +409,27 @@ async def _verify_node(state: VerifyState) -> dict[str, Any]:
                 "human_review": False,
             }
         logger.error("Verify provider failure (attempt %s): %s", attempt, exc)
-        return _fatal(state, attempt, str(exc))
-    except AIError as exc:  # timeout / rate limit / connection / config
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_ANALYSIS)
+    except AIRateLimitError as exc:
+        # Groq 429: a transient provider condition, NOT a verdict on the repair.
+        # No verification row is persisted and no fake result is produced; the
+        # caller surfaces a retryable state using the provider's Retry-After.
+        logger.warning(
+            "Verify rate limited (attempt %s): %s", attempt, exc
+        )
+        return _fatal(
+            state,
+            attempt,
+            str(exc),
+            reason=FATAL_REASON_RATE_LIMIT,
+            retry_after_seconds=_safe_retry_after(exc),
+        )
+    except (AITimeoutError, AIConnectionError, AIConfigurationError) as exc:
+        logger.error("Verify provider unavailable (attempt %s): %s", attempt, exc)
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_UNAVAILABLE)
+    except AIError as exc:  # any other controlled provider failure
         logger.error("Verify provider failure (attempt %s): %s", attempt, exc)
-        return _fatal(state, attempt, str(exc))
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_ANALYSIS)
 
 
 def _validate_node(state: VerifyState) -> dict[str, Any]:
@@ -379,7 +437,22 @@ def _validate_node(state: VerifyState) -> dict[str, Any]:
     events: list[tuple[str, dict | None]] = state.get("event_log", [])
 
     if state.get("fatal_error"):
-        events.append(("validate.provider_failed", {"error": state.get("error")}))
+        events.append(
+            (
+                "validate.provider_failed",
+                {
+                    "error": state.get("error"),
+                    "reason": state.get(
+                        "fatal_reason", FATAL_REASON_ANALYSIS
+                    ),
+                    **(
+                        {"retry_after_seconds": state.get("retry_after_seconds")}
+                        if state.get("retry_after_seconds") is not None
+                        else {}
+                    ),
+                },
+            )
+        )
         return {"event_log": events, "route": "fail"}
 
     if state.get("output") is None and state.get("parse_error"):
@@ -591,6 +664,8 @@ class VerifyRepairAgent:
             "human_review": False,
             "parse_error": False,
             "fatal_error": False,
+            "fatal_reason": FATAL_REASON_ANALYSIS,
+            "retry_after_seconds": None,
             "error": None,
             "route": "pending",
             "source": "groq",

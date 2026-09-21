@@ -253,15 +253,21 @@ def score_priority(
     complaint_band: float = 10.0,
     history_band: float = 15.0,
     time_band_hours: float = 168.0,
+    location_available: bool = True,
 ) -> tuple[int, DynamicPriority, list[dict[str, object]]]:
     """Score a complaint against the seven priority inputs (pure).
+
+    ``location_available`` encodes null-vs-0 for the critical-infrastructure
+    factor: True means the GIS lookup genuinely resolved the area (counts are a
+    verified figure, even an honest 0); False means the lookup could not be
+    performed (DATA_UNAVAILABLE) and the location factor is excluded from the
+    weighted score entirely — an unknown is never scored as "no infrastructure".
 
     :returns: (integer 0..100 score, DynamicPriority bucket, factor list)
     """
     units: dict[str, float] = {
         "severity": severity_unit(severity),
         "weather": weather_unit(weather_condition, rain_mm, weather_rain_mm, weather_available),
-        "location": infrastructure_unit(hospitals, schools, bus_stops, 5.0),
         "crowd": min(
             1.0,
             0.5 * population_unit(population, population_band)
@@ -270,6 +276,8 @@ def score_priority(
         "history": history_unit(historical_recurrence, history_band),
         "time": time_unit(time_unresolved_hours, time_band_hours),
     }
+    if location_available:
+        units["location"] = infrastructure_unit(hospitals, schools, bus_stops, 5.0)
     score, contributions = score_from_units(
         units, weights, threshold_p1, threshold_p2, threshold_p3
     )
@@ -303,6 +311,7 @@ def score_priority(
                 "historical_recurrence": historical_recurrence,
                 "ward_resolved": ward_resolved,
                 "time_unresolved_hours": time_unresolved_hours,
+                "location_available": location_available,
             },
         )
         factors.append(
@@ -342,6 +351,8 @@ def _input_label(key: str, inputs: dict[str, object]) -> str:
             return f"{condition or 'n/a'} (no rainfall data)"
         return f"{condition or 'n/a'}, {float(rain):.1f} mm"
     if key == "location":
+        if not inputs.get("location_available", True):
+            return "lookup unavailable (no claim)"
         return f"{inputs['hospitals']} hosp, {inputs['schools']} school, {inputs['bus_stops']} bus"
     if key == "crowd":
         return f"pop {inputs['population']}, reports {inputs['complaint_count']}"

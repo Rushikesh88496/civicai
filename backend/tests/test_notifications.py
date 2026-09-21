@@ -82,6 +82,9 @@ class FakeAI:
         self._responses = responses
         self.calls = 0
 
+    async def ensure_vision_ready(self, model=None):
+        return None
+
     async def structured_vision_completion(self, content, schema, **kwargs):
         self.calls += 1
         outcome = self._responses[min(self.calls - 1, len(self._responses) - 1)]
@@ -630,6 +633,9 @@ async def test_worker_start_and_complete_notify(client, monkeypatch):
     monkeypatch.setattr(_SETTINGS, "ROUTING_API_KEY", "")
 
     class _FakeVerifyAI:
+        async def ensure_vision_ready(self, model=None):
+            return None
+
         async def structured_vision_completion(self, content, schema, **kwargs):
             return VerificationOutput(
                 repair_evidence="AFTER photo shows the site cleared.",

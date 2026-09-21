@@ -1,14 +1,16 @@
 "use client";
 
 import * as React from "react";
+import { motion } from "framer-motion";
 import {
-  ImagePlus,
-  Video,
-  X,
+  Camera,
   RefreshCw,
+  X,
   Loader2,
   CheckCircle2,
   AlertTriangle,
+  UploadCloud,
+  Video,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -53,38 +55,53 @@ function fileToObjectUrl(file: File): string {
 export function MediaUploader({ onMediaChange, onMediaRemove }: MediaUploaderProps) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [items, setItems] = React.useState<UploadItem[]>([]);
+  const [dragging, setDragging] = React.useState(false);
 
+  const images = items.filter((i) => i.file.type.startsWith("image/")).length;
   const videos = items.filter((i) => i.file.type.startsWith("video/")).length;
 
-  const handleSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    // Reset the input so re-selecting the same file is allowed.
-    event.target.value = "";
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    const video = files.find((f) => f.type.startsWith("video/"));
+  // Shared validation + upload pipeline for both the file picker and drag-drop.
+  const processFiles = (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    const pickedImages = files.filter((f) => f.type.startsWith("image/"));
+    const pickedVideo = files.find((f) => f.type.startsWith("video/"));
 
-    if (fileTooBig(video)) {
+    if (fileTooBig(pickedVideo)) {
       alert(`Short videos up to ${MAX_VIDEO_MB} MB are allowed.`);
       return;
     }
-    const alreadyUploadedImages = items.length;
-    if (images.length + alreadyUploadedImages > MAX_IMAGES) {
+    if (pickedImages.length + images > MAX_IMAGES) {
       alert(`You can attach up to ${MAX_IMAGES} images.`);
       return;
     }
-    for (const image of images) {
+    for (const image of pickedImages) {
       if (fileTooBig(image)) {
         alert(`Images up to ${MAX_IMAGE_MB} MB are allowed.`);
         return;
       }
       void startUpload(image);
     }
-    if (video) {
+    if (pickedVideo) {
       if (videos >= 1) {
         alert("You can attach one short video.");
         return;
       }
-      void startUpload(video);
+      void startUpload(pickedVideo);
+    }
+  };
+
+  const handleSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    // Reset the input so re-selecting the same file is allowed.
+    event.target.value = "";
+    processFiles(files);
+  };
+
+  const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+      processFiles(event.dataTransfer.files);
     }
   };
 
@@ -144,23 +161,49 @@ export function MediaUploader({ onMediaChange, onMediaRemove }: MediaUploaderPro
   return (
     <div className="space-y-4">
       <div
-        className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center transition-colors hover:border-blue-400 hover:bg-blue-50/40"
+        role="button"
+        tabIndex={0}
+        aria-label="Upload photos or a short video"
         onClick={() => inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={onDrop}
+        className={cn(
+          "group flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed px-4 py-10 text-center transition-all duration-200 sm:py-12",
+          dragging
+            ? "border-primary-500 bg-primary-50/60 ring-2 ring-primary-200"
+            : "border-border-strong bg-slate-50/60 hover:border-primary-400 hover:bg-primary-50/40"
+        )}
       >
         <div className="flex gap-2">
-          <span className="rounded-lg bg-blue-100 p-2 text-blue-600">
-            <ImagePlus className="h-5 w-5" />
+          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-50 text-primary-600 ring-1 ring-inset ring-primary-100">
+            <Camera className="h-6 w-6" />
           </span>
-          <span className="rounded-lg bg-indigo-100 p-2 text-indigo-600">
-            <Video className="h-5 w-5" />
+          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-200">
+            <Video className="h-6 w-6" />
           </span>
         </div>
-        <p className="text-sm font-medium text-gray-700">
-          Click to upload evidence (photos / short video)
-        </p>
-        <p className="text-xs text-gray-500">
-          Up to {MAX_IMAGES} images ({MAX_IMAGE_MB} MB each) and one short video ({MAX_VIDEO_MB} MB)
-        </p>
+        <div>
+          <p className="text-sm font-semibold text-slate-800">
+            {dragging ? "Drop to add your evidence" : "Add photos or a short video"}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {MAX_IMAGES} images ({MAX_IMAGE_MB} MB each) and one short video ({MAX_VIDEO_MB} MB)
+          </p>
+          <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-primary-600">
+            <UploadCloud className="h-3.5 w-3.5" />
+            Drag &amp; drop or click to browse
+          </p>
+        </div>
       </div>
       <input
         ref={inputRef}
@@ -172,16 +215,23 @@ export function MediaUploader({ onMediaChange, onMediaRemove }: MediaUploaderPro
       />
 
       {items.length > 0 && (
-        <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {items.map((item) => (
-            <MediaThumbnail
-              key={item.key}
-              item={item}
-              onRemove={() => removeItem(item.key)}
-              onRetry={() => retryItem(item.key)}
-            />
-          ))}
-        </ul>
+        <>
+          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {items.map((item, index) => (
+              <MediaThumbnail
+                key={item.key}
+                item={item}
+                index={index}
+                onRemove={() => removeItem(item.key)}
+                onRetry={() => retryItem(item.key)}
+              />
+            ))}
+          </ul>
+          <p className="text-xs text-slate-400">
+            {images} of {MAX_IMAGES} images {videos > 0 && "· 1 video"} — uploads happen
+            automatically as files are added.
+          </p>
+        </>
       )}
     </div>
   );
@@ -189,51 +239,61 @@ export function MediaUploader({ onMediaChange, onMediaRemove }: MediaUploaderPro
 
 function MediaThumbnail({
   item,
+  index,
   onRemove,
   onRetry,
 }: {
   item: UploadItem;
+  index: number;
   onRemove: () => void;
   onRetry: () => void;
 }) {
+  const isVideo = item.file.type.startsWith("video/");
   return (
-    <li className="group relative overflow-hidden rounded-xl border border-gray-200 bg-white">
-      {item.file.type.startsWith("video/") ? (
-        <video src={item.previewUrl} className="h-28 w-full object-cover" muted playsInline />
-      ) : (
-        // Client-side blob URL preview; next/image can't load unoptimized blob: URLs.
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={item.previewUrl} alt={item.file.name} className="h-28 w-full object-cover" />
-      )}
-
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent p-2">
-        <p className="truncate text-[11px] font-medium text-white">{item.file.name}</p>
+    <motion.li
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ delay: index * 0.04, duration: 0.18 }}
+      className="group relative overflow-hidden rounded-xl border border-border-soft bg-white shadow-sm"
+    >
+      <div className="relative">
+        {isVideo ? (
+          <video src={item.previewUrl} className="h-28 w-full object-cover" muted playsInline />
+        ) : (
+          // Client-side blob URL preview; next/image can't load unoptimized blob: URLs.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={item.previewUrl} alt={item.file.name} className="h-28 w-full object-cover" />
+        )}
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent p-2">
+          <p className="truncate text-[11px] font-medium text-white">{item.file.name}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${item.file.name}`}
+          className="absolute right-1.5 top-1.5 rounded-full bg-black/60 p-1 text-white opacity-100 transition-opacity hover:bg-black/80 sm:opacity-0 sm:group-hover:opacity-100"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
       </div>
-
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label="Remove file"
-        className="absolute right-1.5 top-1.5 rounded-full bg-black/50 p-1 text-white opacity-0 transition-opacity hover:bg-black/70 group-hover:opacity-100"
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
 
       <div className="flex items-center gap-2 px-2 py-1.5">
         {item.status === "uploading" && (
           <>
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary-600" />
             <Progress value={item.progress} className="flex-1" />
-            <span className="w-9 text-right text-[10px] text-gray-500">{item.progress}%</span>
+            <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-slate-500">
+              {item.progress}%
+            </span>
           </>
         )}
         {item.status === "done" && (
-          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-green-700">
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success-700">
             <CheckCircle2 className="h-3.5 w-3.5" /> Uploaded
           </span>
         )}
         {item.status === "error" && (
-          <span className={cn("inline-flex items-center gap-1 text-[11px] font-medium text-red-700")}>
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-danger-700">
             <AlertTriangle className="h-3.5 w-3.5" /> Failed
             <Button
               type="button"
@@ -248,8 +308,8 @@ function MediaThumbnail({
         )}
       </div>
       {item.status === "error" && item.error && (
-        <p className="px-2 pb-1.5 text-[10px] text-red-600">{item.error}</p>
+        <p className="px-2 pb-1.5 text-[10px] text-danger-600">{item.error}</p>
       )}
-    </li>
+    </motion.li>
   );
 }

@@ -329,7 +329,7 @@ reference in `infrastructure/.env.docker.example`). The most important ones:
 | `DATABASE_URL` | Async Postgres DSN | `postgresql+asyncpg://civicagent:civicagent@localhost:5433/civicagent` |
 | `REDIS_URL` | Redis DSN | `redis://localhost:6379/0` |
 | `GROQ_API_KEY` | Groq API key (chat + vision) | required for AI features |
-| `GROQ_MODEL` / `VISION_MODEL` | Chat and vision models | `openai/gpt-oss-120b`, `qwen/qwen3.6-27b` |
+| `GROQ_MODEL` / `VISION_MODEL` | Chat and vision models | `openai/gpt-oss-120b`, `qwen/qwen3.8-27b` |
 | `STORAGE_BACKEND` | `local` or `s3` | `local` |
 | `CORS_ORIGINS` | Allowed frontend origins | `http://localhost:3000` |
 | `DEBUG` | Enable `/docs`, `true` only in dev | `false` |
@@ -344,7 +344,7 @@ variables — all documented in `config.py` and `.env.example`.
 
 1. Create an API key at <https://console.groq.com/keys> and set `GROQ_API_KEY`.
 2. Verify the configured models exist on your account: the defaults
-   (`GROQ_MODEL=openai/gpt-oss-120b`, `VISION_MODEL=qwen/qwen3.6-27b`) were
+   (`GROQ_MODEL=openai/gpt-oss-120b`, `VISION_MODEL=qwen/qwen3.8-27b`) were
    checked against Groq's live model list; list your available models with
    `groq.models.list()` if you change them.
 3. The embedding model (`BAAI/bge-small-en-v1.5`) is **local and offline**; it

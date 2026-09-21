@@ -1124,7 +1124,10 @@ export type AiVerificationStatus =
   | "PROVIDER_RATE_LIMITED"
   | "PROVIDER_UNAVAILABLE"
   | "INVALID_EVIDENCE"
-  | "ANALYSIS_FAILED";
+  | "ANALYSIS_FAILED"
+  | "MODEL_NOT_FOUND"
+  | "MODEL_ACCESS_DENIED"
+  | "CONFIGURATION";
 
 export interface RunVerificationResponse {
   run_id: string;

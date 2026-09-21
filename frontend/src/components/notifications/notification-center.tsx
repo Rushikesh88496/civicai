@@ -135,17 +135,21 @@ export function NotificationCenter() {
           {items.map((item) => {
             const visual = notificationVisual(item.notification_type);
             return (
-              <Card key={item.id}>
+              <Card
+                key={item.id}
+                className="overflow-hidden rounded-2xl shadow-card transition-shadow hover:shadow-card-hover"
+              >
                 <button
                   onClick={() => handleOpenItem(item)}
                   className={cn(
-                    "flex w-full items-start gap-4 p-4 text-left transition-colors hover:bg-slate-50",
-                    !item.is_read && "border-l-4 border-l-primary-500"
+                    "flex w-full items-start gap-4 p-4 text-left transition-colors",
+                    item.is_read ? "hover:bg-slate-50" : "border-l-4 border-l-primary-500 bg-primary-50/40 hover:bg-primary-50/70"
                   )}
                 >
                   <span
                     className={cn(
-                      "shrink-0 rounded-lg bg-slate-50 p-2",
+                      "shrink-0 rounded-xl p-2",
+                      item.is_read ? "bg-slate-50" : "bg-white",
                       visual.tone
                     )}
                   >

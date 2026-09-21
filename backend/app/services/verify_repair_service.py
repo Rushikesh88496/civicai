@@ -38,7 +38,10 @@ from sqlalchemy.orm import selectinload
 
 from app.agents.verify_repair_agent import (
     FATAL_REASON_ANALYSIS,
+    FATAL_REASON_CONFIGURATION,
     FATAL_REASON_EVIDENCE,
+    FATAL_REASON_MODEL_ACCESS_DENIED,
+    FATAL_REASON_MODEL_NOT_FOUND,
     FATAL_REASON_RATE_LIMIT,
     FATAL_REASON_UNAVAILABLE,
     VerifyRepairAgent,
@@ -124,6 +127,19 @@ _AI_MESSAGES: dict[str, str] = {
         "AI verification could not be completed. No verdict was produced — please "
         "retry verification."
     ),
+    FATAL_REASON_MODEL_NOT_FOUND: (
+        "The configured AI vision model is not accessible with the current Groq "
+        "account. Please update the VISION_MODEL environment variable to an "
+        "accessible multimodal model and restart the server."
+    ),
+    FATAL_REASON_MODEL_ACCESS_DENIED: (
+        "Groq refused to run the configured vision model for this account. "
+        "Please check your Groq API key or choose a different model."
+    ),
+    FATAL_REASON_CONFIGURATION: (
+        "AI verification is not configured correctly. Check that GROQ_API_KEY "
+        "is set and VISION_MODEL points to a multimodal (vision-capable) model."
+    ),
 }
 
 # Optimistic tag → status fallback; anything unrecognized is a plain analysis failure.
@@ -132,6 +148,9 @@ _AI_STATUS_BY_REASON: dict[str, AiVerificationStatus] = {
     FATAL_REASON_UNAVAILABLE: AiVerificationStatus.PROVIDER_UNAVAILABLE,
     FATAL_REASON_EVIDENCE: AiVerificationStatus.INVALID_EVIDENCE,
     FATAL_REASON_ANALYSIS: AiVerificationStatus.ANALYSIS_FAILED,
+    FATAL_REASON_MODEL_NOT_FOUND: AiVerificationStatus.MODEL_NOT_FOUND,
+    FATAL_REASON_MODEL_ACCESS_DENIED: AiVerificationStatus.MODEL_ACCESS_DENIED,
+    FATAL_REASON_CONFIGURATION: AiVerificationStatus.CONFIGURATION,
 }
 
 _REQUEST_ID_IN_ERROR = re.compile(r"\(request [0-9a-f-]{36}\)")
@@ -511,12 +530,17 @@ async def run_verification(
     )
     if run.status == AgentStatus.FAILED:
         ai_status, message, retry_after = _failure_meta(run)
+        retry_allowed = ai_status not in {
+            AiVerificationStatus.MODEL_NOT_FOUND,
+            AiVerificationStatus.MODEL_ACCESS_DENIED,
+            AiVerificationStatus.CONFIGURATION,
+        }
         return VerificationRunResponse(
             run_id=run.id,
             status=run.status,
             result=None,
             error=_sanitize_technical_error(run.error),
-            retry_allowed=True,
+            retry_allowed=retry_allowed,
             ai_status=ai_status,
             message=message,
             retry_after_seconds=retry_after,

@@ -88,7 +88,7 @@ export function AssistantWidget() {
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
 
-  const loadHistory = async () => {
+  const loadHistory = React.useCallback(async () => {
     if (loaded) return;
     try {
       const conversation = await fetchAssistantConversation();
@@ -98,7 +98,20 @@ export function AssistantWidget() {
     } finally {
       setLoaded(true);
     }
-  };
+  }, [loaded]);
+
+  // Allow other citizen surfaces (e.g. the home-page assistant card) to open
+  // the floating widget, optionally prefilling a question.
+  React.useEffect(() => {
+    function onOpen(event: Event) {
+      const detail = (event as CustomEvent<{ query?: string }>).detail;
+      setOpen(true);
+      void loadHistory();
+      if (detail?.query?.trim()) setInput(detail.query);
+    }
+    window.addEventListener("civicai:open-assistant", onOpen);
+    return () => window.removeEventListener("civicai:open-assistant", onOpen);
+  }, [loadHistory]);
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next);

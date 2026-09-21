@@ -64,6 +64,7 @@ import {
 } from "@/lib/citizen-api";
 import { EvidenceVerificationCard } from "@/components/dashboard/evidence-verification-card";
 import { GeoSpatialCard } from "@/components/dashboard/geo-spatial-card";
+import { NearbyInfrastructureCard } from "@/components/officer/nearby-infrastructure-card";
 import { ContextIntelligenceCard } from "@/components/dashboard/context-intelligence-card";
 import { PriorityIndexCard } from "@/components/dashboard/priority-index-card";
 import { RoutingCard } from "@/components/dashboard/routing-card";
@@ -683,6 +684,12 @@ export function OfficerComplaintDetailView({ id }: { id: string }) {
 
             {location && (
               <GeoSpatialCard
+                latitude={location.latitude}
+                longitude={location.longitude}
+              />
+            )}
+            {location && (
+              <NearbyInfrastructureCard
                 latitude={location.latitude}
                 longitude={location.longitude}
               />

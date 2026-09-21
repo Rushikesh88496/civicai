@@ -39,6 +39,9 @@ class AiVerificationStatus(enum.StrEnum):
     * ``PROVIDER_UNAVAILABLE`` — timeout / connection / config; retryable.
     * ``INVALID_EVIDENCE`` — BEFORE/AFTER evidence is missing or unreadable.
     * ``ANALYSIS_FAILED`` — the provider responded but analysis could not finish.
+    * ``MODEL_NOT_FOUND`` — Groq does not serve the configured model; config must change first.
+    * ``MODEL_ACCESS_DENIED`` — the model exists but the account is unauthorized.
+    * ``CONFIGURATION`` — API key missing or multimodal unsupported; config must change.
     """
 
     NOT_STARTED = "NOT_STARTED"
@@ -48,6 +51,9 @@ class AiVerificationStatus(enum.StrEnum):
     PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
     INVALID_EVIDENCE = "INVALID_EVIDENCE"
     ANALYSIS_FAILED = "ANALYSIS_FAILED"
+    MODEL_NOT_FOUND = "MODEL_NOT_FOUND"
+    MODEL_ACCESS_DENIED = "MODEL_ACCESS_DENIED"
+    CONFIGURATION = "CONFIGURATION"
 
 
 class VerificationInput(BaseModel):

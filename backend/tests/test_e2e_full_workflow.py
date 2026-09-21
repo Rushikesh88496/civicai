@@ -92,6 +92,9 @@ class FakeVisionAI:
 
 
 class FakeVerifyAI:
+    async def ensure_vision_ready(self, model=None):
+        return None
+
     async def structured_vision_completion(self, content, schema, **kwargs):
         return VerificationOutput(
             repair_evidence="AFTER photo shows the area cleared of garbage.",
@@ -552,6 +555,9 @@ async def test_verification_reopen_cycle(client, monkeypatch):
     state = {"i": 0}
 
     class ReopenVerifyAI:
+        async def ensure_vision_ready(self, model=None):
+            return None
+
         async def structured_vision_completion(self, content, schema, **kwargs):
             out = responses["first" if state["i"] == 0 else "second"]
             state["i"] += 1

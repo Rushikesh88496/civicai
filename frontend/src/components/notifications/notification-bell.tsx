@@ -14,9 +14,11 @@ import { timeAgo } from "@/components/dashboard/format";
 
 interface NotificationBellProps {
   onNavigate?: (href: string) => void;
+  /** Where the "View all" footer resolves to. Defaults to /notifications. */
+  allHref?: string;
 }
 
-export function NotificationBell({ onNavigate }: NotificationBellProps) {
+export function NotificationBell({ onNavigate, allHref = "/notifications" }: NotificationBellProps) {
   const router = useRouter();
   const { items, unreadCount, loading, markRead, markAllRead } = useNotifications();
   const [open, setOpen] = React.useState(false);
@@ -159,7 +161,7 @@ export function NotificationBell({ onNavigate }: NotificationBellProps) {
 
           <div className="border-t border-slate-100 px-4 py-2">
             <Link
-              href="/notifications"
+              href={allHref}
               onClick={() => setOpen(false)}
               className="text-xs font-medium text-primary-600 hover:underline"
             >

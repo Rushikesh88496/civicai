@@ -57,6 +57,9 @@ from app.services.ai_service import (
     AIConfigurationError,
     AIConnectionError,
     AIError,
+    AIModelAccessDeniedError,
+    AIModelNotFoundError,
+    AIMultimodalUnsupportedError,
     AIRateLimitError,
     AIService,
     AIStructuredParsingError,
@@ -115,6 +118,9 @@ FATAL_REASON_RATE_LIMIT = "PROVIDER_RATE_LIMITED"
 FATAL_REASON_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
 FATAL_REASON_EVIDENCE = "INVALID_EVIDENCE"
 FATAL_REASON_ANALYSIS = "ANALYSIS_FAILED"
+FATAL_REASON_MODEL_NOT_FOUND = "MODEL_NOT_FOUND"
+FATAL_REASON_MODEL_ACCESS_DENIED = "MODEL_ACCESS_DENIED"
+FATAL_REASON_CONFIGURATION = "CONFIGURATION"
 
 
 class VerifyState(TypedDict, total=False):
@@ -287,6 +293,23 @@ async def _verify_node(state: VerifyState) -> dict[str, Any]:
         },
     )
 
+    # --- Pre-flight: fail-fast when the vision model is clearly unaccessible ---
+    try:
+        await ai.ensure_vision_ready(state.get("model"))
+    except AIModelNotFoundError as exc:
+        logger.error("Verify vision model not found (attempt %s): %s", attempt, exc)
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_MODEL_NOT_FOUND)
+    except AIModelAccessDeniedError as exc:
+        logger.error("Verify vision model access denied (attempt %s): %s", attempt, exc)
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_MODEL_ACCESS_DENIED)
+    except (AIConfigurationError, AIMultimodalUnsupportedError) as exc:
+        logger.error("Verify vision pre-flight failed (attempt %s): %s", attempt, exc)
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_CONFIGURATION)
+    except (AIRateLimitError, AITimeoutError, AIConnectionError):
+        # Transient provider failure during the pre-flight: defer to the real
+        # structured call — if it fails too it will classify the error there.
+        pass
+
     # --- Load & validate both evidence photos from storage (order matters). ---
     images: list[tuple[str, bytes]] = []
     for label, key in (("BEFORE", input_data.before_key), ("AFTER", input_data.after_key)):
@@ -424,9 +447,18 @@ async def _verify_node(state: VerifyState) -> dict[str, Any]:
             reason=FATAL_REASON_RATE_LIMIT,
             retry_after_seconds=_safe_retry_after(exc),
         )
-    except (AITimeoutError, AIConnectionError, AIConfigurationError) as exc:
+    except (AITimeoutError, AIConnectionError) as exc:
         logger.error("Verify provider unavailable (attempt %s): %s", attempt, exc)
         return _fatal(state, attempt, str(exc), reason=FATAL_REASON_UNAVAILABLE)
+    except AIModelNotFoundError as exc:
+        logger.error("Verify vision model not found (attempt %s): %s", attempt, exc)
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_MODEL_NOT_FOUND)
+    except AIModelAccessDeniedError as exc:
+        logger.error("Verify vision model access denied (attempt %s): %s", attempt, exc)
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_MODEL_ACCESS_DENIED)
+    except AIConfigurationError as exc:
+        logger.error("Verify AI config invalid (attempt %s): %s", attempt, exc)
+        return _fatal(state, attempt, str(exc), reason=FATAL_REASON_CONFIGURATION)
     except AIError as exc:  # any other controlled provider failure
         logger.error("Verify provider failure (attempt %s): %s", attempt, exc)
         return _fatal(state, attempt, str(exc), reason=FATAL_REASON_ANALYSIS)

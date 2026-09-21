@@ -133,7 +133,7 @@ uploads.
 | `DEBUG` | no | `false` | Must stay `false` in production (disables `/docs`, enables security headers). |
 | `GROQ_API_KEY` | yes (for AI/vision) | — | Prompted at Blueprint creation. Services degrade gracefully when unset. |
 | `GROQ_MODEL` | no | `openai/gpt-oss-120b` | Any active Groq chat model. |
-| `VISION_MODEL` | no | `qwen/qwen3.6-27b` | Multimodal model for image evidence + verification. |
+| `VISION_MODEL` | no | `qwen/qwen3.8-27b` | Multimodal model for image evidence + verification. |
 | `STORAGE_BACKEND` | yes | `local` | `s3` recommended on Render. |
 | `STORAGE_BUCKET` | no | `civicagent-uploads` | Bucket name. |
 | `S3_ENDPOINT_URL` | yes (s3) | localhost MinIO URL | e.g. `https://s3.us-east-1.amazonaws.com`. |

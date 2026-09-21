@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import math
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -48,7 +49,10 @@ from app.models import (
     Ward,
     WardBoundary,
 )
-from app.models.enums import CriticalLocationCategory
+from app.models.enums import (
+    CriticalLocationCategory,
+    InfrastructureDataStatus,
+)
 from app.schemas.geo import (
     GeoLookupOut,
     GeoPlace,
@@ -396,7 +400,12 @@ class GeoService:
 
         stmt = (
             select(CriticalLocation)
-            .where(ST_DWithin(CriticalLocation.geom.cast(gh), point.cast(gh), radius))
+            .where(
+                CriticalLocation.is_active.is_(True),
+                CriticalLocation.verification_status == InfrastructureDataStatus.FOUND,
+                CriticalLocation.geom.is_not(None),
+                ST_DWithin(CriticalLocation.geom.cast(gh), point.cast(gh), radius),
+            )
             .order_by(ST_Distance(CriticalLocation.geom.cast(gh), point.cast(gh)).asc())
             .limit(int(limit))
         )
@@ -406,6 +415,8 @@ class GeoService:
         rows = (await db.execute(stmt)).scalars().all()
         places: list[GeoPlace] = []
         for loc in rows:
+            if loc.latitude is None or loc.longitude is None:
+                continue
             places.append(
                 GeoPlace(
                     id=loc.id,
@@ -708,42 +719,57 @@ class GeoService:
             self.find_ward(db, latitude, longitude),
         )
 
+        # Registering the real pipeline (lazy import: the registry module
+        # imports this module at module level).
+        from app.services.infrastructure_registry import InfrastructureRegistry
+
+        registry = InfrastructureRegistry(settings=self._settings)
         critical_radius = float(self._settings.GIS_CRITICAL_RADIUS_M)
         categories = (*_POI_CATEGORIES, CriticalLocationCategory.ROAD)
         limits = {
             CriticalLocationCategory.ROAD: 10,
         }
+        registry_has = await registry._registry_counts(db, categories)
         by_category: dict[CriticalLocationCategory, list[GeoPlace]] = {}
+        statuses: dict[CriticalLocationCategory, InfrastructureDataStatus] = {}
         for category in categories:
-            by_category[category] = await self._find_nearby_db(
-                db, latitude, longitude, critical_radius, category
+            summary = await registry.resolve_category(
+                db,
+                latitude=latitude,
+                longitude=longitude,
+                radius_m=critical_radius,
+                category=category,
+                limit=limits.get(category, 20),
+                client=None,
+                registry_has=registry_has,
+                geo_service=self,
             )
-
-        # Only categories the verified table left empty are queried live (each
-        # database hit already counts as a successful, real lookup).
-        live_needed = [
-            (category, limits.get(category, 20))
-            for category in categories
-            if not by_category[category]
-        ]
-        live_outcomes = await asyncio.gather(
-            *[
-                self._fetch_overpass(latitude, longitude, critical_radius, category, limit)
-                for category, limit in live_needed
-            ]
-        )
-        live_ok: dict[CriticalLocationCategory, bool] = {}
-        for (category, _limit), (places, ok, _source, _cached) in zip(
-            live_needed, live_outcomes
-        ):
+            statuses[category] = summary.status
+            places: list[GeoPlace] = []
+            for place in summary.places:
+                if place.latitude is None or place.longitude is None:
+                    continue
+                places.append(
+                    GeoPlace(
+                        id=uuid.UUID(place.id) if place.id else None,
+                        name=place.name,
+                        category=place.category,
+                        address=place.address,
+                        latitude=place.latitude,
+                        longitude=place.longitude,
+                        distance_m=place.distance_m,
+                        is_demo=place.is_demo,
+                    )
+                )
             by_category[category] = places
-            live_ok[category] = ok
 
         poi = list(_POI_CATEGORIES)
         found_any = any(by_category[c] for c in poi)
         if found_any:
             nearby_status = "available"
-        elif any(not live_ok.get(c, True) for c in poi):
+        elif any(
+            statuses.get(c) == InfrastructureDataStatus.DATA_UNAVAILABLE for c in poi
+        ):
             nearby_status = "unavailable"
         else:
             nearby_status = "empty"

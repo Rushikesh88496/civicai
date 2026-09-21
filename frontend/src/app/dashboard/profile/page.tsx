@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Loader2, MapPin, Save } from "lucide-react";
+import { Loader2, MapPin, Save, ShieldCheck } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,6 +10,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/components/auth/auth-provider";
 import { initials } from "@/components/dashboard/format";
+import { roleLabel } from "@/components/layout/nav-config";
 import { updateMyProfile } from "@/lib/auth-api";
 
 export default function ProfilePage() {
@@ -46,97 +47,130 @@ export default function ProfilePage() {
 
   return (
     <div className="space-y-6">
-      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">Profile</h1>
-        <p className="mt-1 text-slate-500">Manage your personal and contact information.</p>
-      </motion.div>
-
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <Card>
-          <CardContent className="flex flex-col items-center p-6 pt-6">
-            <Avatar size="lg" alt={user?.full_name} fallback={initials(user?.full_name)} />
-            <p className="mt-3 text-lg font-medium text-slate-900">{user?.full_name}</p>
-            <p className="text-sm text-slate-500">{user?.email}</p>
-            <span className="mt-2 rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-600">
-              {user?.role.name}
-            </span>
-            {user?.ward ? (
-              <div className="mt-4 flex w-full items-start gap-2 rounded-lg border border-border-soft bg-slate-50 px-3 py-2.5">
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-primary-600" />
-                <div className="text-left">
-                  <p className="text-xs font-medium text-slate-500">My Ward</p>
-                  <p className="text-sm font-medium text-slate-900">
-                    {user.ward.name || user.ward.code}
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="lg:col-span-1"
+        >
+          <Card className="h-full">
+            <CardContent className="flex h-full flex-col items-center p-6">
+              <div className="relative">
+                <Avatar size="lg" alt={user?.full_name} fallback={initials(user?.full_name)} />
+                <span className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-surface bg-success-500 text-white">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                </span>
+              </div>
+              <p className="mt-3 text-lg font-medium text-slate-900">{user?.full_name}</p>
+              <p className="text-sm text-slate-500">{user?.email}</p>
+              <span className="mt-2 rounded-full bg-primary-50 px-3 py-1 text-xs font-medium text-primary-700">
+                {roleLabel(user?.role.name)}
+              </span>
+
+              {user?.ward ? (
+                <div className="mt-5 w-full rounded-2xl border border-border-soft bg-gradient-to-br from-slate-50 to-white p-3.5">
+                  <div className="flex items-start gap-2.5">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary-50 text-primary-600">
+                      <MapPin className="h-5 w-5" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                        Registered ward
+                      </p>
+                      <p className="truncate text-sm font-semibold text-slate-900">
+                        {user.ward.name || user.ward.code}
+                      </p>
+                      <p className="text-xs text-slate-500">{user.ward.code}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              <p className="mt-auto pt-5 text-center text-xs leading-5 text-slate-400">
+                Your registered ward was chosen when you created your account and
+                determines which civic area you belong to.
+              </p>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.05 }}
+          className="lg:col-span-2"
+        >
+          <Card className="h-full">
+            <CardHeader>
+              <CardTitle>Contact Information</CardTitle>
+              <CardDescription>
+                These details help your municipality reach you about your complaints.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="phone">Phone</Label>
+                    <Input
+                      id="phone"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="+91 00000 00000"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="city">City</Label>
+                    <Input
+                      id="city"
+                      value={city}
+                      onChange={(e) => setCity(e.target.value)}
+                      placeholder="Pune"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="address">Address</Label>
+                  <Input
+                    id="address"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    placeholder="Street address"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="timezone">Timezone</Label>
+                  <Input
+                    id="timezone"
+                    value={timezone}
+                    onChange={(e) => setTimezone(e.target.value)}
+                    placeholder="e.g. Asia/Kolkata"
+                  />
+                </div>
+
+                {message && (
+                  <p className="rounded-xl bg-success-50 px-3 py-2 text-sm text-success-700">
+                    {message}
                   </p>
-                  <p className="text-xs text-slate-500">{user.ward.code}</p>
-                </div>
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Contact Information</CardTitle>
-            <CardDescription>
-              These details help your municipality reach you about your complaints.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="phone">Phone</Label>
-                  <Input
-                    id="phone"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="+1 (555) 000-0000"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="city">City</Label>
-                  <Input
-                    id="city"
-                    value={city}
-                    onChange={(e) => setCity(e.target.value)}
-                    placeholder="Your city"
-                  />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="address">Address</Label>
-                <Input
-                  id="address"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  placeholder="Street address"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="timezone">Timezone</Label>
-                <Input
-                  id="timezone"
-                  value={timezone}
-                  onChange={(e) => setTimezone(e.target.value)}
-                  placeholder="e.g. Asia/Kolkata"
-                />
-              </div>
-
-              {message && <p className="text-sm text-success-600">{message}</p>}
-              {error && <p className="text-sm text-danger-600">{error}</p>}
-
-              <Button type="submit" disabled={saving}>
-                {saving ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Save className="h-4 w-4" />
                 )}
-                <span className="ml-2">Save Changes</span>
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+                {error && (
+                  <p className="rounded-xl bg-danger-50 px-3 py-2 text-sm text-danger-700">
+                    {error}
+                  </p>
+                )}
+
+                <Button type="submit" disabled={saving} className="gap-2 rounded-xl">
+                  {saving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                  Save Changes
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+        </motion.div>
       </div>
     </div>
   );

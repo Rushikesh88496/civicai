@@ -367,6 +367,34 @@ class InfrastructureCategory(enum.StrEnum):
     PUBLIC_BUILDING = "PUBLIC_BUILDING"
 
 
+class InfrastructureDataStatus(enum.StrEnum):
+    """Data-quality state of a verified nearby-infrastructure registry record.
+
+    The Real Nearby Infrastructure pipeline (Part 35) only ever reports what is
+    actually known. These states distinguish a completed search that found
+    nothing (``NO_VERIFIED_RECORDS``) from a lookup that genuinely could not be
+    performed (``DATA_UNAVAILABLE``) so callers never confuse "unknown" with
+    "zero facilities":
+
+    * ``FOUND`` — at least one verified registry record was resolved.
+    * ``NO_VERIFIED_RECORDS`` — the search ran and returned an empty result for
+      the category; verified records exist in the registry but none are within
+      range (or the category is unpopulated).
+    * ``DATA_UNAVAILABLE`` — the lookup could not be performed (no registry
+      coverage and the live source failed / is disabled); nothing is claimed.
+    * ``PARTIAL_DATA`` — some categories were resolved and others degraded.
+    * ``PENDING_VERIFICATION`` — real live (unpersisted) candidates were found
+      on the fly for a category with no verified registry coverage; treat them
+      as signal, not fact.
+    """
+
+    FOUND = "FOUND"
+    NO_VERIFIED_RECORDS = "NO_VERIFIED_RECORDS"
+    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+    PARTIAL_DATA = "PARTIAL_DATA"
+    PENDING_VERIFICATION = "PENDING_VERIFICATION"
+
+
 class InfrastructureRiskLevel(enum.StrEnum):
     """Predicted-maintenance-risk bucket for an infrastructure asset (Part 24).
 

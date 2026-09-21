@@ -20,10 +20,10 @@ const footerLinks = {
 export function Footer() {
   return (
     <footer className="border-t border-white/10 bg-navy-950 text-slate-300">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-14">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-          <div className="col-span-2 md:col-span-1">
-            <Link href="/" className="flex items-center gap-2 mb-4">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
+        <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+          <div className="col-span-2 sm:col-span-1">
+            <Link href="/" className="mb-3 flex items-center gap-2">
               <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-600 text-white">
                 <Landmark className="h-4 w-4" />
               </span>
@@ -31,21 +31,21 @@ export function Footer() {
                 CivicAgent
               </span>
             </Link>
-            <p className="text-sm text-slate-400 max-w-xs">
-              Building smarter cities through AI-powered civic governance and citizen engagement.
+            <p className="text-xs text-slate-400 sm:text-sm">
+              AI-powered civic governance and citizen engagement.
             </p>
           </div>
           {Object.entries(footerLinks).map(([category, links]) => (
             <div key={category}>
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
+              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                 {category}
               </h3>
-              <ul className="space-y-2">
+              <ul className="space-y-1.5">
                 {links.map((link) => (
                   <li key={link.href}>
                     <Link
                       href={link.href}
-                      className="text-sm text-slate-400 hover:text-white transition-colors"
+                      className="text-xs text-slate-400 transition-colors hover:text-white sm:text-sm"
                     >
                       {link.label}
                     </Link>
@@ -55,11 +55,11 @@ export function Footer() {
             </div>
           ))}
         </div>
-        <div className="mt-10 border-t border-white/10 pt-8 flex flex-col items-center justify-between gap-2 sm:flex-row">
-          <p className="text-sm text-slate-500">
+        <div className="mt-6 flex flex-col items-center justify-between gap-2 border-t border-white/10 pt-4 text-center sm:flex-row sm:text-left">
+          <p className="text-xs text-slate-500 sm:text-sm">
             &copy; {new Date().getFullYear()} CivicAgent. All rights reserved.
           </p>
-          <p className="text-xs text-slate-600">
+          <p className="text-[10px] text-slate-600 sm:text-xs">
             AI recommendations are advisory and verified by officials before any decision is taken.
           </p>
         </div>

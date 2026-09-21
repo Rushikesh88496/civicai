@@ -1,11 +1,7 @@
 "use client";
 
-import { AppShell } from "@/components/layout/app-shell";
+import { CitizenShell } from "@/components/citizen/citizen-shell";
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <AppShell allow={["CITIZEN"]} narrow>
-      {children}
-    </AppShell>
-  );
+  return <CitizenShell>{children}</CitizenShell>;
 }

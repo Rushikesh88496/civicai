@@ -14,9 +14,10 @@ from pydantic import BaseModel, Field
 
 from app.core.config import Settings
 from app.services.ai_service import (
-    AIAPIError,
     AIConfigurationError,
     AIConnectionError,
+    AIModelAccessDeniedError,
+    AIModelNotFoundError,
     AIRateLimitError,
     AIService,
     AIStructuredParsingError,
@@ -168,7 +169,9 @@ async def test_chat_completion_hard_error_no_retry():
         )
 
     svc = _service(handler)
-    with pytest.raises(AIAPIError):
+    # An invalid/missing key is a configuration problem (distinct CONFIGURATION
+    # state), not a generic API error.
+    with pytest.raises(AIConfigurationError):
         await svc.chat_completion([{"role": "user", "content": "hi"}])
     # Hard errors must not be retried.
     assert calls["n"] == 1
@@ -401,3 +404,204 @@ async def test_rate_limit_retry_waits_headers_then_succeeds(monkeypatch):
     assert calls["n"] == 2
     # The wait honored the provider's Retry-After header.
     assert sleeps == [7.0]
+
+
+# --------------------------------------------------------------------------- #
+# _translate_error — model classification
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_translate_error_model_not_found():
+    """A 404 / model_not_found maps to AIModelNotFoundError."""
+    from groq._exceptions import NotFoundError
+
+    async def handler(**kw):
+        raise NotFoundError(
+            message="model_not_found",
+            response=types.SimpleNamespace(
+                status_code=404, request=_req(), headers={}
+            ),
+            body={"error": {"code": "model_not_found", "message": "Model not found"}},
+        )
+
+    svc = _service(handler)
+    with pytest.raises(AIModelNotFoundError):
+        await svc.chat_completion([{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
+async def test_translate_error_model_access_denied():
+    """A 403 / model_access_denied maps to AIModelAccessDeniedError."""
+    from groq._exceptions import PermissionDeniedError
+
+    async def handler(**kw):
+        raise PermissionDeniedError(
+            message="access denied",
+            response=types.SimpleNamespace(
+                status_code=403, request=_req(), headers={}
+            ),
+            body={"error": {"code": "model_access_denied"}},
+        )
+
+    svc = _service(handler)
+    with pytest.raises(AIModelAccessDeniedError):
+        await svc.chat_completion([{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
+async def test_translate_error_invalid_api_key():
+    """A 401 / invalid_api_key maps to AIConfigurationError."""
+    from groq._exceptions import AuthenticationError
+
+    async def handler(**kw):
+        raise AuthenticationError(
+            message="invalid api key",
+            response=types.SimpleNamespace(
+                status_code=401, request=_req(), headers={}
+            ),
+            body={"error": {"code": "invalid_api_key"}},
+        )
+
+    svc = _service(handler)
+    with pytest.raises(AIConfigurationError):
+        await svc.chat_completion([{"role": "user", "content": "hi"}])
+
+
+# --------------------------------------------------------------------------- #
+# vision_readiness — pre-flight check
+# --------------------------------------------------------------------------- #
+class _FakeModels:
+    def __init__(self, models: list[str], retrieve_error: Exception | None = None) -> None:
+        self._models = models
+        self._retrieve_error = retrieve_error
+
+    async def list(self):  # type: ignore[override]
+        return types.SimpleNamespace(
+            data=[types.SimpleNamespace(id=m) for m in self._models]
+        )
+
+    async def retrieve(self, model_id: str):  # type: ignore[override]
+        if self._retrieve_error:
+            raise self._retrieve_error
+        return types.SimpleNamespace(id=model_id)
+
+
+class _FakeChat:
+    def __init__(self, handler):
+        self.completions = _FakeCompletions(handler)
+
+
+class _FakeFullClient:
+    def __init__(self, handler, models: _FakeModels) -> None:
+        self.chat = _FakeChat(handler)
+        self.models = models
+
+
+def _full_service(handler, models: _FakeModels, **overrides) -> AIService:
+    client = _FakeFullClient(handler, models)
+    svc = AIService(settings=_settings(**overrides), client=client)
+    svc._model = _settings(**overrides).GROQ_MODEL
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_vision_readiness_no_api_key():
+    svc = AIService(settings=_settings(GROQ_API_KEY=""), client=None)
+    result = await svc.vision_readiness("any-model")
+    assert result.ok is False
+    assert result.error == "no_api_key"
+
+
+@pytest.mark.asyncio
+async def test_vision_readiness_model_not_in_list():
+    from groq._exceptions import NotFoundError
+
+    models = _FakeModels(
+        ["existing-model"],
+        retrieve_error=NotFoundError(
+            message="not found",
+            response=types.SimpleNamespace(status_code=404, request=_req(), headers={}),
+            body=None,
+        ),
+    )
+    svc = _full_service(lambda **kw: _completion("ok"), models)
+    result = await svc.vision_readiness("missing-model")
+    assert result.ok is False
+    assert result.error == "model_not_found"
+
+
+@pytest.mark.asyncio
+async def test_vision_readiness_model_access_denied():
+    from groq._exceptions import PermissionDeniedError
+
+    models = _FakeModels(
+        ["existing-model"],
+        retrieve_error=PermissionDeniedError(
+            message="denied",
+            response=types.SimpleNamespace(status_code=403, request=_req(), headers={}),
+            body=None,
+        ),
+    )
+    svc = _full_service(lambda **kw: _completion("ok"), models)
+    result = await svc.vision_readiness("restricted-model")
+    assert result.ok is False
+    assert result.error == "model_access_denied"
+
+
+@pytest.mark.asyncio
+async def test_vision_readiness_model_not_vision():
+    """A text-only model that refuses image content returns model_not_vision."""
+    from groq._exceptions import BadRequestError
+
+    async def handler(**kw):
+        raise BadRequestError(
+            message="content must be a string",
+            response=types.SimpleNamespace(status_code=400, request=_req(), headers={}),
+            body={"error": {"message": "content must be a string"}},
+        )
+
+    models = _FakeModels(["text-only-model"])
+    svc = _full_service(handler, models)
+    result = await svc.vision_readiness("text-only-model")
+    assert result.ok is False
+    assert result.error == "model_not_vision"
+
+
+@pytest.mark.asyncio
+async def test_vision_readiness_ok():
+    async def handler(**kw):
+        return _completion("ok")
+
+    models = _FakeModels(["qwen/qwen3.8-27b"])
+    svc = _full_service(handler, models)
+    result = await svc.vision_readiness("qwen/qwen3.8-27b")
+    assert result.ok is True
+    assert result.model == "qwen/qwen3.8-27b"
+    assert result.error is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_vision_ready_raises_for_model_not_found():
+    from groq._exceptions import NotFoundError
+
+    models = _FakeModels(
+        [],
+        retrieve_error=NotFoundError(
+            message="not found",
+            response=types.SimpleNamespace(status_code=404, request=_req(), headers={}),
+            body=None,
+        ),
+    )
+    svc = _full_service(lambda **kw: _completion("ok"), models)
+    with pytest.raises(AIModelNotFoundError):
+        await svc.ensure_vision_ready("missing-model")
+
+
+@pytest.mark.asyncio
+async def test_ensure_vision_ready_ok():
+    async def handler(**kw):
+        return _completion("ok")
+
+    models = _FakeModels(["qwen/qwen3.8-27b"])
+    svc = _full_service(handler, models)
+    # Should not raise.
+    await svc.ensure_vision_ready("qwen/qwen3.8-27b")

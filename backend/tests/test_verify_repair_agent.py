@@ -76,13 +76,20 @@ class FakeAI:
 
     ``responses`` is a list of ``VerificationOutput`` objects or exceptions,
     cycled in order (last repeats). ``callable_fail`` is optional: when set it
-    raises before cycling each call.
+    raises before cycling each call. ``preflight_exc`` (optional) makes the
+    pre-flight ``ensure_vision_ready`` raise on every attempt so model/config
+    failures can be exercised without touching the vision call.
     """
 
-    def __init__(self, responses: list, callable_fail=None):
+    def __init__(self, responses: list, callable_fail=None, preflight_exc=None):
         self._responses = responses
         self._callable_fail = callable_fail
+        self._preflight_exc = preflight_exc
         self.calls = 0
+
+    async def ensure_vision_ready(self, model=None):
+        if self._preflight_exc is not None:
+            raise self._preflight_exc
 
     async def structured_vision_completion(self, content, schema, **kwargs):
         self.calls += 1
@@ -1389,3 +1396,123 @@ async def test_api_rate_limit_preserves_prior_success(client, monkeypatch):
     assert v is not None
     assert v.verification_status == VerificationStatus.VERIFIED
     assert v.confidence == 0.96
+
+
+@pytest.mark.asyncio
+async def test_api_model_not_found_is_not_retryable(client, monkeypatch):
+    """An unserved model id maps to MODEL_NOT_FOUND and must NOT invite a retry
+    (the configuration has to change first)."""
+    from app.services.ai_service import AIModelNotFoundError
+
+    citizen = await _citizen_token(_unique_email("vf-mnf-cit"))
+    otoken = await _staff_token(_unique_email("vf-mnf-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-mnf-wk"))
+    order_id, cid, _ = await _seed_completed_order(citizen, wid)
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI(
+                [],
+                preflight_exc=AIModelNotFoundError("groq has no model 'x'"),
+            ),
+        ),
+    )
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "FAILED"
+    assert body["ai_status"] == "MODEL_NOT_FOUND"
+    assert body["retry_allowed"] is False
+    assert body["result"] is None
+    assert "VISION_MODEL" in body["message"]
+    assert await _latest_verification(order_id) is None
+
+
+@pytest.mark.asyncio
+async def test_api_model_access_denied_is_not_retryable(client, monkeypatch):
+    """A model the account cannot use maps to MODEL_ACCESS_DENIED (config change
+    required, no retry loop)."""
+    from app.services.ai_service import AIModelAccessDeniedError
+
+    citizen = await _citizen_token(_unique_email("vf-mad-cit"))
+    otoken = await _staff_token(_unique_email("vf-mad-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-mad-wk"))
+    order_id, cid, _ = await _seed_completed_order(citizen, wid)
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI([], preflight_exc=AIModelAccessDeniedError("denied")),
+        ),
+    )
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "FAILED"
+    assert body["ai_status"] == "MODEL_ACCESS_DENIED"
+    assert body["retry_allowed"] is False
+    assert body["result"] is None
+
+
+@pytest.mark.asyncio
+async def test_api_configuration_error_is_not_retryable(client, monkeypatch):
+    """A missing/invalid API key maps to CONFIGURATION and is not retryable."""
+    from app.services.ai_service import AIConfigurationError
+
+    citizen = await _citizen_token(_unique_email("vf-cfg-cit"))
+    otoken = await _staff_token(_unique_email("vf-cfg-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-cfg-wk"))
+    order_id, cid, _ = await _seed_completed_order(citizen, wid)
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI([], preflight_exc=AIConfigurationError("no key")),
+        ),
+    )
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "FAILED"
+    assert body["ai_status"] == "CONFIGURATION"
+    assert body["retry_allowed"] is False
+    assert "configured" in body["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_api_transient_preflight_failure_defers_to_real_call(client, monkeypatch):
+    """A transient rate-limit during the pre-flight must NOT fail the run: the
+    agent defers and the real call either succeeds or classifies the error."""
+    from app.schemas.verification import VerificationOutput
+    from app.services.ai_service import AIRateLimitError
+
+    citizen = await _citizen_token(_unique_email("vf-tpr-cit"))
+    otoken = await _staff_token(_unique_email("vf-tpr-off"))
+    wtoken, wid = await _seed_worker(_unique_email("vf-tpr-wk"))
+    order_id, cid, _ = await _seed_completed_order(citizen, wid)
+
+    monkeypatch.setattr(
+        "app.services.verify_repair_service._agent",
+        lambda: VerifyRepairAgent(
+            ai=FakeAI(
+                [
+                    VerificationOutput(
+                        repair_evidence="Asphalt patch visible.",
+                        remaining_issue="",
+                        confidence=0.97,
+                        verification_status=VerificationStatus.VERIFIED,
+                        issue_fixed=True,
+                        human_review_required=False,
+                    )
+                ],
+                preflight_exc=AIRateLimitError("rate limited", retry_after_seconds=5.0),
+            ),
+        ),
+    )
+    r = await client.post(f"{_VERIFY}/{order_id}/verify", headers=_auth(otoken))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "SUCCEEDED"
+    assert body["ai_status"] == "COMPLETED"
+    assert body["result"]["verification_status"] == "VERIFIED"

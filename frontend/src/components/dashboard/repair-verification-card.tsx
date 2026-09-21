@@ -205,6 +205,12 @@ const AI_FAILURE_MESSAGES: Record<AiVerificationStatus, string> = {
     "The evidence is missing or invalid, so the AI could not complete verification.",
   ANALYSIS_FAILED:
     "The AI analysis did not finish. Please retry verification.",
+  MODEL_NOT_FOUND:
+    "The configured vision model is not available on Groq. Update VISION_MODEL and restart the server.",
+  MODEL_ACCESS_DENIED:
+    "Groq refused to run the configured vision model for this account. Update VISION_MODEL and restart the server.",
+  CONFIGURATION:
+    "AI verification is not configured correctly. Update GROQ_API_KEY / VISION_MODEL and restart the server.",
 };
 
 const AI_FAILURE_TITLES: Partial<Record<AiVerificationStatus, string>> = {
@@ -212,6 +218,9 @@ const AI_FAILURE_TITLES: Partial<Record<AiVerificationStatus, string>> = {
   PROVIDER_UNAVAILABLE: "AI verification temporarily unavailable.",
   INVALID_EVIDENCE: "AI verification could not be completed.",
   ANALYSIS_FAILED: "AI verification could not be completed.",
+  MODEL_NOT_FOUND: "Vision model not configured.",
+  MODEL_ACCESS_DENIED: "Vision model not configured.",
+  CONFIGURATION: "AI not configured.",
 };
 
 function isProviderFailure(status: AiVerificationStatus): boolean {

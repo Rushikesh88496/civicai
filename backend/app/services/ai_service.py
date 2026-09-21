@@ -11,8 +11,11 @@ it is never logged and never exposed to the browser.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -26,6 +29,7 @@ from groq._exceptions import (
     RateLimitError,
 )
 from groq.types.chat import ChatCompletion, ChatCompletionChunk
+from PIL import Image
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings, get_settings
@@ -34,13 +38,40 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T", bound=BaseModel)
 
+# How long a Groq model-list snapshot is trusted before re-fetching.
+_MODEL_LIST_TTL_SECONDS = 300.0
+# How long a confirmed vision-capable probe for a given model id is trusted
+# (set to a day; the list snapshot above still re-validates accessibility).
+VISION_PROBE_TTL_SECONDS = 86400.0
+
 
 class AIError(Exception):
     """Base class for controlled AI-service failures."""
 
 
 class AIConfigurationError(AIError):
-    """Raised when no Groq API key is configured."""
+    """Raised when no Groq API key is configured (or the key is invalid)."""
+
+
+class AIModelNotFoundError(AIError):
+    """Raised when Groq does not know the requested model (``model_not_found``).
+
+    This is a configuration problem, not a verdict on the analysed content: the
+    fix is a correct model id, never a fabricated AI result.
+    """
+
+
+class AIModelAccessDeniedError(AIError):
+    """Raised when the configured model exists but the current account is not
+    authorized to run it (``model_access_denied`` / 403)."""
+
+
+class AIMultimodalUnsupportedError(AIError):
+    """Raised when the configured model exists but does not accept image input.
+
+    Only a multimodal model may be used for evidence verification — a text-only
+    model must never be silently substituted.
+    """
 
 
 class AITimeoutError(AIError):
@@ -99,6 +130,23 @@ class AIUsage:
 
 
 @dataclass
+class VisionReadiness:
+    """Result of the pre-flight check for a vision-capable model.
+
+    ``ok`` is True only when the model is configured, accessible to the current
+    Groq account AND has just been probed to accept image input (or a previous
+    probe is still cached). ``error`` carries a stable token the agents map to a
+    structured, user-safe failure:
+    ``no_api_key`` | ``model_unset`` | ``model_not_found`` |
+    ``model_access_denied`` | ``model_not_vision`` | ``provider_unavailable``.
+    """
+
+    ok: bool
+    model: str | None = None
+    error: str | None = None
+
+
+@dataclass
 class AICompletionResult:
     """Result of a non-streaming chat / structured completion."""
 
@@ -135,6 +183,40 @@ def _build_client(settings: Settings) -> AsyncGroq | None:
     )
 
 
+def _first_error(detail: object) -> str:
+    """Best-effort extraction of the provider's human-readable error message."""
+    if isinstance(detail, dict):
+        error = detail.get("error") or detail
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("code")
+            if message:
+                return str(message)
+        if detail.get("message"):
+            return str(detail["message"])
+    return str(detail)[:200]
+
+
+def _readiness_exception(token: str | None, model: str | None) -> AIError:
+    """Map a :class:`VisionReadiness` error token to a structured AI exception."""
+    name = model or "the configured vision model"
+    if token == "model_not_found":
+        return AIModelNotFoundError(
+            f"Groq does not serve {name!r} (model_not_found). Configure an "
+            "accessible vision model via VISION_MODEL."
+        )
+    if token == "model_access_denied":
+        return AIModelAccessDeniedError(
+            f"Groq refuses to run {name!r} for this account (model_access_denied)."
+        )
+    if token == "model_not_vision":
+        return AIMultimodalUnsupportedError(
+            f"{name!r} does not accept image input; choose a multimodal (VL) model."
+        )
+    return AIConfigurationError(
+        "Groq vision is not configured. Set GROQ_API_KEY and VISION_MODEL."
+    )
+
+
 class AIService:
     """Centralized Groq integration with retries, timeouts and safe parsing."""
 
@@ -149,6 +231,8 @@ class AIService:
         self._max_retries = self._settings.GROQ_MAX_RETRIES
         self._log_level = self._settings.GROQ_LOG_LEVEL.upper()
         self._client = client if client is not None else _build_client(self._settings)
+        self._model_list_cache: tuple[float, list[str]] | None = None
+        self._vision_probe_cache: dict[str, tuple[float, bool]] = {}
 
     # ------------------------------------------------------------------ #
     # internal helpers
@@ -195,7 +279,23 @@ class AIService:
         if isinstance(detail, dict):
             error = detail.get("error") or {}
             if isinstance(error, dict):
-                code = error.get("code")
+                code = error.get("code") or error.get("type")
+        status = int(getattr(exc, "status_code", 0) or 0)
+        if code == "model_not_found" or status == 404:
+            # Account cannot use this model id (unknown or withdrawn model).
+            return AIModelNotFoundError(
+                f"Groq cannot run the configured model (request {request_id}): "
+                f"{_first_error(detail)}"
+            )
+        if code in ("model_access_denied", "permission_denied") or status == 403:
+            return AIModelAccessDeniedError(
+                f"Groq denied access to the configured model for this account "
+                f"(request {request_id})."
+            )
+        if code in ("invalid_api_key", "authentication_error") or status == 401:
+            return AIConfigurationError(
+                "Groq rejected the configured API key. Check GROQ_API_KEY."
+            )
         return AIAPIError(f"Groq API error (request {request_id}): {detail!r}", code=code)
 
     async def _run_with_retry(
@@ -484,6 +584,136 @@ class AIService:
         except APIError as exc:
             raise self._translate_error(exc, request_id) from exc
         yield AIStreamChunk(delta="", request_id=request_id, model=_model, done=True)
+
+    # ------------------------------------------------------------------ #
+    # Model access & vision pre-flight
+    # ------------------------------------------------------------------ #
+    async def list_models(self, *, force: bool = False) -> list[str]:
+        """Return the model ids accessible to the current Groq account.
+
+        A fresh ``models.list`` result is cached for ``_MODEL_LIST_TTL_SECONDS``
+        so handling verification requests does not hammer the provider. When a
+        transient failure hits and a snapshot exists, the stale snapshot is
+        served rather than blocking verification.
+        """
+        client = self._require_client()
+        now = time.monotonic()
+        cached = self._model_list_cache
+        if not force and cached and (now - cached[0]) < _MODEL_LIST_TTL_SECONDS:
+            return cached[1]
+        request_id = self._new_request_id()
+        self._log("info", "Groq model list requested", request_id=request_id)
+        try:
+            listing = await self._run_with_retry(request_id, client.models.list)
+        except AIError:
+            if cached:
+                return cached[1]
+            raise
+        models = [
+            getattr(model, "id", None)
+            for model in (getattr(listing, "data", None) or [])
+        ]
+        snapshot = [model for model in models if model]
+        self._model_list_cache = (now, snapshot)
+        return snapshot
+
+    async def _probe_vision(self, model: str) -> bool:
+        """Ask the model to describe a tiny image; ``True`` means it accepts
+        visual input. Spec failures (wrong model / denied) propagate so callers
+        can classify them instead of hiding them."""
+        cached = self._vision_probe_cache.get(model)
+        now = time.monotonic()
+        if cached and (now - cached[0]) < VISION_PROBE_TTL_SECONDS:
+            return cached[1]
+        client = self._require_client()
+        request_id = self._new_request_id()
+        buffer = io.BytesIO()
+        Image.new("RGB", (16, 16), color=(40, 60, 80)).save(buffer, format="PNG")
+        data_uri = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": "Reply with the single word: ok"},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ]
+        try:
+            await self._run_with_retry(
+                request_id,
+                client.chat.completions.create,
+                model=model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=4,
+                stream=False,
+            )
+            self._vision_probe_cache[model] = (now, True)
+            return True
+        except AIModelNotFoundError:
+            raise
+        except AIModelAccessDeniedError:
+            raise
+        except AIError as exc:
+            if "must be a string" in str(exc):
+                # Provider refuses image content entirely: a text-only model.
+                return False
+            raise
+
+    async def vision_readiness(self, model: str | None = None) -> VisionReadiness:
+        """Pre-flight check before sending user-provided images to Groq.
+
+        Verifies, in order: an API key exists, the model id is non-empty, the
+        model is in the account's accessible model list (with a live retrieve
+        fallback to distinguish ``model_not_found`` from ``model_access_denied``)
+        and a tiny image probe succeeds. Failures are summarized as a stable
+        ``error`` token, never as an AI verdict.
+        """
+        if self._client is None:
+            return VisionReadiness(ok=False, model=model, error="no_api_key")
+        target = (model or "").strip() or (self._model or "").strip()
+        if not target:
+            return VisionReadiness(ok=False, model=None, error="model_unset")
+        try:
+            models = await self.list_models()
+        except AIError as exc:
+            tokens = {
+                AIConfigurationError: "no_api_key",
+                AIConnectionError: "provider_unavailable",
+                AITimeoutError: "provider_unavailable",
+                AIRateLimitError: "provider_unavailable",
+            }
+            return VisionReadiness(
+                ok=False, model=target, error=tokens.get(type(exc), "provider_unavailable")
+            )
+        if target not in models:
+            try:
+                await self._run_with_retry(
+                    self._new_request_id(), self._require_client().models.retrieve, target
+                )
+            except AIModelNotFoundError:
+                return VisionReadiness(ok=False, model=target, error="model_not_found")
+            except AIModelAccessDeniedError:
+                return VisionReadiness(ok=False, model=target, error="model_access_denied")
+            except AIError:
+                return VisionReadiness(ok=False, model=target, error="provider_unavailable")
+        try:
+            vision = await self._probe_vision(target)
+        except AIModelNotFoundError:
+            return VisionReadiness(ok=False, model=target, error="model_not_found")
+        except AIModelAccessDeniedError:
+            return VisionReadiness(ok=False, model=target, error="model_access_denied")
+        except (AIRateLimitError, AITimeoutError, AIConnectionError):
+            # Transient provider problem: don't block the attempt; the actual
+            # verification call classifies and reports it without faking output.
+            vision = True
+        except AIError:
+            vision = True
+        if not vision:
+            return VisionReadiness(ok=False, model=target, error="model_not_vision")
+        return VisionReadiness(ok=True, model=target, error=None)
+
+    async def ensure_vision_ready(self, model: str | None = None) -> None:
+        """Raise a structured AI exception when the vision setup is not ready."""
+        readiness = await self.vision_readiness(model)
+        if readiness.ok:
+            return
+        raise _readiness_exception(readiness.error, readiness.model)
 
 
 # ---------------------------------------------------------------------- #

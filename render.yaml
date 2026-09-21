@@ -68,6 +68,10 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
+      - key: VISION_PROVIDER
+        value: groq
+      - key: VISION_MODEL
+        value: qwen/qwen3.8-27b
       # ------------------------------------------------------------------ #
       # S3-compatible object storage (persists BEFORE/AFTER evidence images).
       # On Render, the container filesystem is EPHEMERAL, so keep

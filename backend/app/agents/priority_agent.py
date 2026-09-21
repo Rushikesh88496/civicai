@@ -138,8 +138,15 @@ async def _compute_node(state: PriorityState) -> dict[str, Any]:
     complaint_count = 0
     historical_recurrence: int | None = None
     ward_resolved = False
+    # Null-vs-0 for the location factor: a "0" facilities count is only scored
+    # when the GIS lookup genuinely resolved the area ("available"/"empty").
+    # When it could not be performed at all (no context run, or the GIS lookup
+    # reported DATA_UNAVAILABLE ⇒ context infra status "unavailable"), the
+    # location factor is excluded — an unknown is never "no infrastructure".
+    location_available = False
     if context is not None:
         infra = context.infrastructure_context
+        location_available = infra.status != "unavailable"
         hospitals = infra.hospitals
         schools = infra.schools
         bus_stops = infra.bus_stops
@@ -173,6 +180,7 @@ async def _compute_node(state: PriorityState) -> dict[str, Any]:
         historical_recurrence=historical_recurrence if historical_recurrence is not None else 0,
         ward_resolved=ward_resolved,
         time_unresolved_hours=time_hours,
+        location_available=location_available,
     )
 
     score, bucket, factor_dicts = score_priority(
@@ -188,6 +196,7 @@ async def _compute_node(state: PriorityState) -> dict[str, Any]:
         historical_recurrence=historical_recurrence,
         ward_resolved=ward_resolved,
         time_unresolved_hours=time_hours,
+        location_available=location_available,
         weights=_weights(settings),
         threshold_p1=float(settings.PRIORITY_THRESHOLD_P1),
         threshold_p2=float(settings.PRIORITY_THRESHOLD_P2),

@@ -32,6 +32,11 @@ class PrioritySignalInputs(BaseModel):
     hospitals: int = 0
     schools: int = 0
     bus_stops: int = 0
+    # True when the location factor's "zero" is a verified absence (e.g. the GIS
+    # lookup resolved with no facilities in range). When False the lookup could
+    # not be performed at all (DATA_UNAVAILABLE) and the location factor is
+    # EXCLUDED entirely — an unknown nearby never scores as "no infrastructure".
+    location_available: bool = True
     # Weather risk (from the context agent / Open-Meteo).
     weather_condition: str | None = None
     rain_mm: float | None = None

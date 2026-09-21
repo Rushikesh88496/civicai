@@ -1,5 +1,7 @@
 // Human-friendly labels and date formatting for the citizen dashboard.
 
+// Canonical category labels mirroring the backend ComplaintCategory enum
+// (backend/app/models/enums.py) so every category renders its proper name.
 export const CATEGORY_LABELS: Record<string, string> = {
   ROAD: "Roads",
   SANITATION: "Sanitation",
@@ -9,6 +11,11 @@ export const CATEGORY_LABELS: Record<string, string> = {
   PARKS: "Parks & Recreation",
   STREET_LIGHTING: "Street Lighting",
   OTHER: "Other",
+  WATER_LEAK: "Water Leak",
+  FLOODING: "Flooding",
+  GARBAGE: "Garbage",
+  DRAINAGE: "Drainage",
+  FALLEN_TREE: "Fallen Tree",
 };
 
 export const STATUS_LABELS: Record<string, string> = {

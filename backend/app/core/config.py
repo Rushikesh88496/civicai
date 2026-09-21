@@ -67,11 +67,12 @@ class Settings(BaseSettings):
     # supported today and it reuses GROQ_API_KEY. If another provider is ever
     # required, set this accordingly and supply its own API key env var.
     VISION_PROVIDER: str = "groq"
-    # Default vision model. Verified against Groq's live multimodal model list
-    # (qwen/qwen3.6-27b and qwen/qwen3.8-27b accept image inputs). The legacy
-    # "Qwen2.5-VL" model is NOT served by Groq, so we use a currently-available
-    # multimodal model here.
-    VISION_MODEL: str = "qwen/qwen3.6-27b"
+    # Default vision model. Verified against Groq's live model list: the account
+    # that owns GROQ_API_KEY exposes ``qwen/qwen3.8-27b`` as the accessible
+    # multimodal model (the older ``qwen/qwen3.6-27b`` is NOT served by Groq and
+    # returns ``model_not_found``). ALWAYS confirm the model id against
+    # ``client.models.list()`` for the actual key before changing it.
+    VISION_MODEL: str = "qwen/qwen3.8-27b"
     # Max image payload (MB) we will forward to the vision provider.
     VISION_MAX_IMAGE_MB: int = 10
     # Longer per-request timeout for image analysis.
@@ -178,6 +179,26 @@ class Settings(BaseSettings):
     # radius, matching the context cache namespace.
     GIS_CACHE_ENABLED: bool = True
     GIS_CACHE_TTL_SECONDS: int = 3600
+
+    # ===== Real Nearby Infrastructure Data System (Part 35) =====
+    # Default search radius (metres) used by the verified-facility nearby
+    # pipeline (GET /infrastructure/nearby, geo_lookup, context/priority). The
+    # ops spec is 500 m, so this mirrors GIS_CRITICAL_RADIUS_M by default.
+    INFRASTRUCTURE_SEARCH_RADIUS_METERS: float = 500.0
+    # Optional Overpass endpoint override for the registry ingestion; when empty
+    # the existing GIS_OVERPASS_URL (plus mirrors) is used.
+    OVERPASS_URL: str = ""
+    # TTL (seconds) for the cached registry-aware nearby answers. A cache hit
+    # always reflects a genuine resolved answer — never a failure.
+    INFRASTRUCTURE_CACHE_TTL_SECONDS: int = 3600
+    # Max real records fetched per category per ward during a registry sync.
+    INFRASTRUCTURE_IMPORT_LIMIT_PER_CATEGORY: int = 150
+    # Bulk-sync overrides (the live per-request nearby lookups keep the lighter
+    # GIS_OVERPASS_* budget). Ward-bbox ingestion is much heavier, so it gets an
+    # explicit timeout, retry budget and bounded concurrency across mirrors.
+    INFRASTRUCTURE_IMPORT_TIMEOUT_SECONDS: float = 60.0
+    INFRASTRUCTURE_IMPORT_MAX_RETRIES: int = 2
+    INFRASTRUCTURE_IMPORT_CONCURRENCY: int = 3
 
     # ===== Context Enrichment Agent (Part 11) =====
     # Weather comes from Open-Meteo's public forecast API. It is free and

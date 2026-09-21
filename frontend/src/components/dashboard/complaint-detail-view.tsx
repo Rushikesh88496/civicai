@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { useAuth } from "@/components/auth/auth-provider";
 import {
   ArrowLeft,
   CalendarDays,
@@ -110,6 +111,7 @@ function workActionLabel(action: string): string {
 
 export function ComplaintDetailView({ id }: { id: string }) {
   const router = useRouter();
+  const { user } = useAuth();
   const [detail, setDetail] = useState<ComplaintDetail | null>(null);
   const [timeline, setTimeline] = useState<ComplaintTimeline | null>(null);
   const [loading, setLoading] = useState(true);
@@ -219,6 +221,9 @@ export function ComplaintDetailView({ id }: { id: string }) {
   const location = detail.complaint_location;
   const imageMedia = detail.media.filter((m) => m.media_type === "IMAGE");
   const videoMedia = detail.media.filter((m) => m.media_type === "VIDEO");
+  const registeredWardName = user?.ward?.name ?? user?.ward?.code ?? null;
+  const registeredDiffers =
+    registeredWardName != null && detail.ward?.name != null && registeredWardName !== detail.ward.name;
 
   return (
     <div className="space-y-6">
@@ -226,26 +231,32 @@ export function ComplaintDetailView({ id }: { id: string }) {
         <Button variant="ghost" onClick={() => router.push("/dashboard/complaints")}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Back to Complaints
         </Button>
-        <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
-              {detail.title}
-            </h1>
-            <p className="mt-1 text-sm text-slate-500">
-              {formatDate(detail.created_at)} ·{" "}
-              {timeAgo(detail.created_at)}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link href={`/messages?complaint=${id}`}>
-              <Button variant="outline" className="gap-1.5">
-                <MessageSquare className="h-4 w-4" />
-                Message
-              </Button>
-            </Link>
-            <StatusBadge value={detail.status} />
-            <PriorityBadge value={detail.priority} />
-            <CategoryBadge value={detail.category} />
+        <div className="relative mt-3 overflow-hidden rounded-3xl border border-border-soft bg-gradient-to-br from-white to-slate-50 p-5 shadow-card sm:p-6">
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-primary-50 blur-3xl"
+          />
+          <div className="relative flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">
+                {detail.title}
+              </h1>
+              <p className="mt-1 text-sm text-slate-500">
+                {formatDate(detail.created_at)} ·{" "}
+                {timeAgo(detail.created_at)}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link href={`/messages?complaint=${id}`}>
+                <Button variant="outline" className="gap-1.5">
+                  <MessageSquare className="h-4 w-4" />
+                  Message
+                </Button>
+              </Link>
+              <StatusBadge value={detail.status} />
+              <PriorityBadge value={detail.priority} />
+              <CategoryBadge value={detail.category} />
+            </div>
           </div>
         </div>
       </motion.div>
@@ -380,9 +391,17 @@ export function ComplaintDetailView({ id }: { id: string }) {
               <div className="flex items-start gap-3">
                 <MapPin className="mt-0.5 h-4 w-4 text-slate-400" />
                 <div>
-                  <p className="font-medium text-slate-900">Ward</p>
+                  <p className="font-medium text-slate-900">Located in (geographic ward)</p>
                   <p className="text-slate-500">
-                    {detail.ward?.name || "Not assigned"}
+                    {detail.ward?.name || "Not yet detected"}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    Detected from the location you reported.
+                    {registeredDiffers
+                      ? ` Registered ward: ${registeredWardName}.`
+                      : registeredWardName
+                        ? ` Matches your registered ward (${registeredWardName}).`
+                        : ""}
                   </p>
                 </div>
               </div>

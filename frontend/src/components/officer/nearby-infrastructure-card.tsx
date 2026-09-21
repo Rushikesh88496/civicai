@@ -35,6 +35,8 @@ interface Props {
   longitude: number;
 }
 
+const RADIUS_PRESETS_M = [500, 1000, 2000];
+
 const NEARBY_CATEGORIES: RegisteredCategory[] = [
   "HOSPITAL",
   "SCHOOL",
@@ -130,10 +132,11 @@ export function NearbyInfrastructureCard({ latitude, longitude }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [radiusM, setRadiusM] = useState(RADIUS_PRESETS_M[0]);
 
   useEffect(() => {
     let cancelled = false;
-    fetchNearbyInfrastructure({ latitude, longitude })
+    fetchNearbyInfrastructure({ latitude, longitude, radius_m: radiusM })
       .then((d) => {
         if (!cancelled) {
           setData(d);
@@ -151,11 +154,13 @@ export function NearbyInfrastructureCard({ latitude, longitude }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [latitude, longitude, reloadKey]);
+  }, [latitude, longitude, radiusM, reloadKey]);
 
-  const retry = useCallback(() => {
-    setLoading(true);
+  const resetRuntimeState = useCallback(() => {
+    setData(null);
     setError(null);
+    setLoading(true);
+    setRadiusM(RADIUS_PRESETS_M[0]);
     setReloadKey((k) => k + 1);
   }, []);
 
@@ -192,7 +197,7 @@ export function NearbyInfrastructureCard({ latitude, longitude }: Props) {
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{error || "Could not load nearby infrastructure."}</span>
             </div>
-            <Button variant="outline" size="sm" onClick={retry}>
+            <Button variant="outline" size="sm" onClick={resetRuntimeState}>
               <RefreshCw className="mr-1.5 h-4 w-4" /> Retry
             </Button>
           </div>
@@ -211,10 +216,25 @@ export function NearbyInfrastructureCard({ latitude, longitude }: Props) {
         <CardTitle className="flex items-center gap-2">
           <Building2 className="h-4 w-4 text-primary-600" /> Nearby Infrastructure
         </CardTitle>
-        <CardDescription>
-          Verified facility registry answer for this location, honest about data
-          quality. <span className="font-medium">Within {Math.round(data.radius_m)} m</span>.
-        </CardDescription>
+        <div className="flex items-center gap-1.5">
+          <MapPinned className="h-3.5 w-3.5 text-slate-400" />
+          <span className="text-xs font-medium text-slate-500">Search radius:</span>
+          {RADIUS_PRESETS_M.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setRadiusM(r)}
+              className={cn(
+                "rounded-full px-2.5 py-1 text-xs font-medium ring-1 transition",
+                radiusM === r
+                  ? "bg-primary-600 text-white ring-primary-600"
+                  : "bg-slate-50 text-slate-600 ring-slate-200 hover:bg-slate-100"
+              )}
+            >
+              {r >= 1000 ? `${r / 1000} km` : `${r} m`}
+            </button>
+          ))}
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">

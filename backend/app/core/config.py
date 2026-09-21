@@ -185,6 +185,10 @@ class Settings(BaseSettings):
     # pipeline (GET /infrastructure/nearby, geo_lookup, context/priority). The
     # ops spec is 500 m, so this mirrors GIS_CRITICAL_RADIUS_M by default.
     INFRASTRUCTURE_SEARCH_RADIUS_METERS: float = 500.0
+    # Radius presets exposed to the officer UI / API (metres): 500 m default,
+    # plus the configurable 1000 m and 2000 m tiers required by the ops spec.
+    # Every entry must be >= INFRASTRUCTURE_SEARCH_RADIUS_METERS.
+    INFRASTRUCTURE_RADIUS_PRESETS_METERS: tuple[int, ...] = (500, 1000, 2000)
     # Optional Overpass endpoint override for the registry ingestion; when empty
     # the existing GIS_OVERPASS_URL (plus mirrors) is used.
     OVERPASS_URL: str = ""
@@ -192,7 +196,10 @@ class Settings(BaseSettings):
     # always reflects a genuine resolved answer — never a failure.
     INFRASTRUCTURE_CACHE_TTL_SECONDS: int = 3600
     # Max real records fetched per category per ward during a registry sync.
-    INFRASTRUCTURE_IMPORT_LIMIT_PER_CATEGORY: int = 150
+    # Pune's real facility surface is far larger than 150 per category per
+    # ward, so this is the FULL dataset budget, not a demo cap. (School
+    # lookups still get their own OSM tag breadth; see geo_service.)
+    INFRASTRUCTURE_IMPORT_LIMIT_PER_CATEGORY: int = 600
     # Bulk-sync overrides (the live per-request nearby lookups keep the lighter
     # GIS_OVERPASS_* budget). Ward-bbox ingestion is much heavier, so it gets an
     # explicit timeout, retry budget and bounded concurrency across mirrors.

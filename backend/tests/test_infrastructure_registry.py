@@ -145,7 +145,7 @@ async def _insert_verified(
             source_id=f"test/{name}",
             verification_status=status,
             last_verified_at=datetime.now(),
-is_active=True,
+            is_active=True,
             ward_id=ward.id if ward else None,
             geom=func.ST_SetSRID(func.ST_MakePoint(lon, lat), 4326),
         )
@@ -223,12 +223,16 @@ async def test_ingest_overpass_persists_real_candidates_with_provenance(monkeypa
 
         async with async_session_factory() as db:
             rows = (
-                await db.execute(
-                    select(CriticalLocation).where(
-                        CriticalLocation.name.in_(["Sync Test Hospital", "Sync Test School"])
+                (
+                    await db.execute(
+                        select(CriticalLocation).where(
+                            CriticalLocation.name.in_(["Sync Test Hospital", "Sync Test School"])
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         assert len(rows) == 2
         row = next(r for r in rows if r.name == "Sync Test Hospital")
         assert row.verification_status == InfrastructureDataStatus.FOUND
@@ -373,8 +377,7 @@ async def test_find_nearby_found_with_verified_records(monkeypatch):
         assert mine.verification_status == InfrastructureDataStatus.FOUND
         assert mine.distance_m is not None
         assert (
-            by_cat[CriticalLocationCategory.POLICE_STATION].status
-            == InfrastructureDataStatus.FOUND
+            by_cat[CriticalLocationCategory.POLICE_STATION].status == InfrastructureDataStatus.FOUND
         )
         assert "Sync Test Police Post" in {
             p.name for p in by_cat[CriticalLocationCategory.POLICE_STATION].places

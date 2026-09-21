@@ -1,5 +1,7 @@
 import asyncio
+
 from sqlalchemy import text
+
 from app.db.session import async_session_factory
 
 CHECKS = [
@@ -50,54 +52,69 @@ POINT = "ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)"
 async def main():
     async with async_session_factory() as db:
         print("== wards ==")
-        rows = (await db.execute(text(
-            "SELECT code, name, city, state, country, is_active "
-            "FROM wards WHERE code LIKE 'WARD-%' ORDER BY code"
-        ))).fetchall()
+        rows = (
+            await db.execute(
+                text(
+                    "SELECT code, name, city, state, country, is_active "
+                    "FROM wards WHERE code LIKE 'WARD-%' ORDER BY code"
+                )
+            )
+        ).fetchall()
         for r in rows:
             print(r)
 
         print("\n== boundaries ==")
-        rows = (await db.execute(text(
-            "SELECT w.code, b.is_demo, ST_IsValid(b.geom) AS valid, "
-            "round(ST_X(ST_Centroid(b.geom))::numeric,4) AS cx, "
-            "round(ST_Y(ST_Centroid(b.geom))::numeric,4) AS cy, "
-            "ST_Contains(b.geom, b.centroid) AS centroid_inside, "
-            "round((ST_Area(b.geom::geography)/1e6)::numeric,2) AS km2 "
-            "FROM ward_boundaries b JOIN wards w ON w.id=b.ward_id "
-            "WHERE w.code LIKE 'WARD-%' ORDER BY w.code"
-        ))).fetchall()
+        rows = (
+            await db.execute(
+                text(
+                    "SELECT w.code, b.is_demo, ST_IsValid(b.geom) AS valid, "
+                    "round(ST_X(ST_Centroid(b.geom))::numeric,4) AS cx, "
+                    "round(ST_Y(ST_Centroid(b.geom))::numeric,4) AS cy, "
+                    "ST_Contains(b.geom, b.centroid) AS centroid_inside, "
+                    "round((ST_Area(b.geom::geography)/1e6)::numeric,2) AS km2 "
+                    "FROM ward_boundaries b JOIN wards w ON w.id=b.ward_id "
+                    "WHERE w.code LIKE 'WARD-%' ORDER BY w.code"
+                )
+            )
+        ).fetchall()
         for r in rows:
             print(r)
 
         print("\n== demo critical locations (expect 0) ==")
-        n = (await db.execute(text(
-            "SELECT count(*) FROM critical_locations WHERE is_demo = true"
-        ))).scalar_one()
+        n = (
+            await db.execute(text("SELECT count(*) FROM critical_locations WHERE is_demo = true"))
+        ).scalar_one()
         print("demo critical_locations:", n)
-        total = (await db.execute(text(
-            "SELECT count(*) FROM critical_locations"
-        ))).scalar_one()
+        total = (await db.execute(text("SELECT count(*) FROM critical_locations"))).scalar_one()
         print("total critical_locations:", total)
 
         print("\n== overlaps between reference ward polygons ==")
-        overlaps = (await db.execute(text(
-            "SELECT wa.code AS w1, wb.code AS w2, "
-            "round((ST_Area(ST_Intersection(a.geom,b.geom))/2)::numeric,6) AS km2 "
-            "FROM ward_boundaries a CROSS JOIN ward_boundaries b "
-            "JOIN wards wa ON wa.id=a.ward_id JOIN wards wb ON wb.id=b.ward_id "
-            "WHERE wa.code LIKE 'WARD-%' AND wb.code LIKE 'WARD-%' "
-            "AND wa.code < wb.code AND ST_Intersects(a.geom, b.geom)"
-        ))).fetchall()
+        overlaps = (
+            await db.execute(
+                text(
+                    "SELECT wa.code AS w1, wb.code AS w2, "
+                    "round((ST_Area(ST_Intersection(a.geom,b.geom))/2)::numeric,6) AS km2 "
+                    "FROM ward_boundaries a CROSS JOIN ward_boundaries b "
+                    "JOIN wards wa ON wa.id=a.ward_id JOIN wards wb ON wb.id=b.ward_id "
+                    "WHERE wa.code LIKE 'WARD-%' AND wb.code LIKE 'WARD-%' "
+                    "AND wa.code < wb.code AND ST_Intersects(a.geom, b.geom)"
+                )
+            )
+        ).fetchall()
         print(overlaps if overlaps else "none")
 
         print("\n== point-in-polygon checks ==")
         fails = 0
         for label, expected, lat, lon in CHECKS:
-            row = (await db.execute(text(
-                f"SELECT w.code FROM ward_boundaries b JOIN wards w ON w.id=b.ward_id "
-                f"WHERE ST_Contains(b.geom, {POINT}) LIMIT 1"
-            ), {"lon": lon, "lat": lat})).first()
+            row = (
+                await db.execute(
+                    text(
+                        f"SELECT w.code FROM ward_boundaries b JOIN wards w ON w.id=b.ward_id "
+                        f"WHERE ST_Contains(b.geom, {POINT}) LIMIT 1"
+                    ),
+                    {"lon": lon, "lat": lat},
+                )
+            ).first()
             got = row[0] if row else None
             status = "OK " if got == expected else "FAIL"
             if got != expected:
@@ -107,19 +124,28 @@ async def main():
 
         print("\n== field workers: count by ward + home-base containment ==")
         fw_fails = 0
-        fw_rows = (await db.execute(text(
-            "SELECT fw.home_latitude, fw.home_longitude, w.code "
-            "FROM field_workers fw JOIN users u ON u.id = fw.user_id "
-            "JOIN wards w ON w.id = u.ward_id "
-            "WHERE w.code LIKE 'WARD-%' ORDER BY u.email"
-        ))).fetchall()
+        fw_rows = (
+            await db.execute(
+                text(
+                    "SELECT fw.home_latitude, fw.home_longitude, w.code "
+                    "FROM field_workers fw JOIN users u ON u.id = fw.user_id "
+                    "JOIN wards w ON w.id = u.ward_id "
+                    "WHERE w.code LIKE 'WARD-%' ORDER BY u.email"
+                )
+            )
+        ).fetchall()
         counts: dict[str, int] = {}
         for lat, lon, code in fw_rows:
             counts[code] = counts.get(code, 0) + 1
-            row = (await db.execute(text(
-                f"SELECT w.code FROM ward_boundaries b JOIN wards w ON w.id=b.ward_id "
-                f"WHERE ST_Contains(b.geom, {POINT}) LIMIT 1"
-            ), {"lon": lon, "lat": lat})).first()
+            row = (
+                await db.execute(
+                    text(
+                        f"SELECT w.code FROM ward_boundaries b JOIN wards w ON w.id=b.ward_id "
+                        f"WHERE ST_Contains(b.geom, {POINT}) LIMIT 1"
+                    ),
+                    {"lon": lon, "lat": lat},
+                )
+            ).first()
             in_ward = row[0] if row else None
             if in_ward != code:
                 fw_fails += 1

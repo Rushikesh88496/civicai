@@ -357,9 +357,7 @@ def _collect_infrastructure(lookup: Any) -> InfrastructureContext:
         cat = getattr(p, "category", "infrastructure")
         return InfrastructureEntry(
             name=p.name,
-            category=(
-                cat.value if isinstance(cat, str) and hasattr(cat, "value") else str(cat)
-            ),
+            category=(cat.value if isinstance(cat, str) and hasattr(cat, "value") else str(cat)),
             distance_m=float(p.distance_m) if p.distance_m is not None else None,
         )
 

@@ -417,9 +417,7 @@ async def test_translate_error_model_not_found():
     async def handler(**kw):
         raise NotFoundError(
             message="model_not_found",
-            response=types.SimpleNamespace(
-                status_code=404, request=_req(), headers={}
-            ),
+            response=types.SimpleNamespace(status_code=404, request=_req(), headers={}),
             body={"error": {"code": "model_not_found", "message": "Model not found"}},
         )
 
@@ -436,9 +434,7 @@ async def test_translate_error_model_access_denied():
     async def handler(**kw):
         raise PermissionDeniedError(
             message="access denied",
-            response=types.SimpleNamespace(
-                status_code=403, request=_req(), headers={}
-            ),
+            response=types.SimpleNamespace(status_code=403, request=_req(), headers={}),
             body={"error": {"code": "model_access_denied"}},
         )
 
@@ -455,9 +451,7 @@ async def test_translate_error_invalid_api_key():
     async def handler(**kw):
         raise AuthenticationError(
             message="invalid api key",
-            response=types.SimpleNamespace(
-                status_code=401, request=_req(), headers={}
-            ),
+            response=types.SimpleNamespace(status_code=401, request=_req(), headers={}),
             body={"error": {"code": "invalid_api_key"}},
         )
 
@@ -475,9 +469,7 @@ class _FakeModels:
         self._retrieve_error = retrieve_error
 
     async def list(self):  # type: ignore[override]
-        return types.SimpleNamespace(
-            data=[types.SimpleNamespace(id=m) for m in self._models]
-        )
+        return types.SimpleNamespace(data=[types.SimpleNamespace(id=m) for m in self._models])
 
     async def retrieve(self, model_id: str):  # type: ignore[override]
         if self._retrieve_error:

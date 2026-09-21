@@ -198,11 +198,17 @@ async def test_find_nearby_places_returns_created_facilities():
             "Pune Civic Hospital", CriticalLocationCategory.HOSPITAL, _SEED_LAT, _SEED_LON, True
         ),
         await _add_critical_location(
-            "Kondhwa Vidyalaya", CriticalLocationCategory.SCHOOL, _SEED_LAT + 0.002, _SEED_LON,
+            "Kondhwa Vidyalaya",
+            CriticalLocationCategory.SCHOOL,
+            _SEED_LAT + 0.002,
+            _SEED_LON,
             True,
         ),
         await _add_critical_location(
-            "Kondhwa Bus Stop", CriticalLocationCategory.BUS_STOP, _SEED_LAT, _SEED_LON + 0.003,
+            "Kondhwa Bus Stop",
+            CriticalLocationCategory.BUS_STOP,
+            _SEED_LAT,
+            _SEED_LON + 0.003,
             False,
         ),
     ]
@@ -431,9 +437,7 @@ def test_osm_category_rules_resolve_combined_fetch():
 
 def test_infra_cache_key_rounds_coordinates_and_namespaces():
     svc = get_geo_service()
-    key = svc._cache_key_for(
-        CriticalLocationCategory.HOSPITAL, 18.4633599, 73.8912401, 500.0
-    )
+    key = svc._cache_key_for(CriticalLocationCategory.HOSPITAL, 18.4633599, 73.8912401, 500.0)
     assert ":nearby:hospital:" in key
     assert "18.46336,73.89124:500" in key
     key_all = svc._cache_key_for(None, 18.4633599, 73.8912401, 500.0)

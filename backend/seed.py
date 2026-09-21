@@ -37,7 +37,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.core.security import hash_password
 from app.db.session import async_session_factory, engine

@@ -250,9 +250,7 @@ async def registry_sync(
     service = get_infrastructure_registry()
     try:
         if payload.source == "openstreetmap":
-            out = await service.ingest_from_overpass(
-                db, force=payload.force
-            )
+            out = await service.ingest_from_overpass(db, force=payload.force)
         else:
             if not payload.file_path:
                 raise HTTPException(

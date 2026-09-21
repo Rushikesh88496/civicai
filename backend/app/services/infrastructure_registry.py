@@ -155,14 +155,10 @@ class InfrastructureRegistry:
     ) -> str:
         south, west, north, east = bbox
         blocks = "".join(
-            f"node{t}({south},{west},{north},{east});"
-            f"way{t}({south},{west},{north},{east});"
+            f"node{t}({south},{west},{north},{east});way{t}({south},{west},{north},{east});"
             for t in tags
         )
-        return (
-            "[out:json][timeout:30];"
-            f"({blocks});out center tags {int(limit)};"
-        )
+        return f"[out:json][timeout:30];({blocks});out center tags {int(limit)};"
 
     async def _overpass_bbox_get(
         self,
@@ -203,22 +199,14 @@ class InfrastructureRegistry:
                 continue
             etype = el.get("type") or "node"
             source_id = f"{etype}/{el.get('id')}"
-            name = (
-                el_tags.get("name")
-                or el_tags.get("operator")
-                or _fallback_name(cat)
-            )
+            name = el_tags.get("name") or el_tags.get("operator") or _fallback_name(cat)
             candidates.append(
                 {
                     "name": name,
                     "category": cat,
                     "latitude": lat,
                     "longitude": lon,
-                    "address": (
-                        el_tags.get("addr:full")
-                        or el_tags.get("addr:street")
-                        or None
-                    ),
+                    "address": (el_tags.get("addr:full") or el_tags.get("addr:street") or None),
                     "source_id": source_id,
                     "source_url": f"https://www.openstreetmap.org/{etype}/{el.get('id')}",
                     "tags": el_tags,
@@ -351,14 +339,17 @@ class InfrastructureRegistry:
         now = datetime.now(UTC)
         source_ids = [c["source_id"] for c in candidates]
         existing_rows = (
-            await db.execute(
-                select(CriticalLocation)
-                .where(
-                    CriticalLocation.source == source,
-                    CriticalLocation.source_id.in_(source_ids),
+            (
+                await db.execute(
+                    select(CriticalLocation).where(
+                        CriticalLocation.source == source,
+                        CriticalLocation.source_id.in_(source_ids),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         existing = {row.source_id: row for row in existing_rows}
 
         for cand in candidates:
@@ -747,7 +738,7 @@ class InfrastructureRegistry:
         latitude: float,
         longitude: float,
         radius_m: float,
-category: CriticalLocationCategory,
+        category: CriticalLocationCategory,
         limit: int = 20,
         client: httpx.AsyncClient | None = None,
         registry_has: dict[CriticalLocationCategory, int] | None = None,
@@ -766,18 +757,14 @@ category: CriticalLocationCategory,
         )
         rows = nearby.get(category, [])
         if rows:
-            places = [
-                _to_nearby_place(row, latitude, longitude)
-                for row in rows
-            ]
+            places = [_to_nearby_place(row, latitude, longitude) for row in rows]
             return NearbyCategorySummary(
                 category=category,
                 status=InfrastructureDataStatus.FOUND,
                 count=len(places),
                 places=places,
                 note=(
-                    f"{len(places)} verified {_label(category).lower()}(s) "
-                    f"within {int(radius)} m."
+                    f"{len(places)} verified {_label(category).lower()}(s) within {int(radius)} m."
                 ),
             )
 
@@ -842,9 +829,7 @@ category: CriticalLocationCategory,
         geosvc = GeoService(settings=self._settings)
         geosvc.validate_coordinates(latitude, longitude)
         radius = float(
-            radius_m
-            if radius_m is not None
-            else self._settings.INFRASTRUCTURE_SEARCH_RADIUS_METERS
+            radius_m if radius_m is not None else self._settings.INFRASTRUCTURE_SEARCH_RADIUS_METERS
         )
         cats = categories or list(_NEARBY_CATEGORIES)
 
@@ -891,9 +876,7 @@ category: CriticalLocationCategory,
             categories=summaries,
             search_status=search_status,
             registry_total=sum(registry_has.values()),
-            registry_categories={
-                cat.value: count for cat, count in registry_has.items() if count
-            },
+            registry_categories={cat.value: count for cat, count in registry_has.items() if count},
             live_fallback_used=live_used,
             query_id=uuid.uuid4().hex[:12],
             cached=False,
@@ -907,25 +890,26 @@ category: CriticalLocationCategory,
     # Registry administration
     # ------------------------------------------------------------------ #
     async def registry_summary(self, db: AsyncSession) -> RegistrySummaryOut:
-        total = int(
-            await db.scalar(select(func.count(CriticalLocation.id))) or 0
-        )
+        total = int(await db.scalar(select(func.count(CriticalLocation.id))) or 0)
         by_source_rows = (
             await db.execute(
-                select(CriticalLocation.source, func.count(CriticalLocation.id))
-                .group_by(CriticalLocation.source)
+                select(CriticalLocation.source, func.count(CriticalLocation.id)).group_by(
+                    CriticalLocation.source
+                )
             )
         ).all()
         by_status_rows = (
             await db.execute(
-                select(CriticalLocation.verification_status, func.count(CriticalLocation.id))
-                .group_by(CriticalLocation.verification_status)
+                select(
+                    CriticalLocation.verification_status, func.count(CriticalLocation.id)
+                ).group_by(CriticalLocation.verification_status)
             )
         ).all()
         by_category_rows = (
             await db.execute(
-                select(CriticalLocation.category, func.count(CriticalLocation.id))
-                .group_by(CriticalLocation.category)
+                select(CriticalLocation.category, func.count(CriticalLocation.id)).group_by(
+                    CriticalLocation.category
+                )
             )
         ).all()
         unlocated = int(
@@ -954,9 +938,7 @@ category: CriticalLocationCategory,
             )
             or 0
         )
-        last = await db.scalar(
-            select(func.max(CriticalLocation.last_verified_at))
-        )
+        last = await db.scalar(select(func.max(CriticalLocation.last_verified_at)))
         return RegistrySummaryOut(
             total=total,
             verified=verified,
@@ -971,8 +953,7 @@ category: CriticalLocationCategory,
                 for r in by_status_rows
             },
             by_source={
-                (str(r[0]) if r[0] is not None else "legacy"): int(r[1])
-                for r in by_source_rows
+                (str(r[0]) if r[0] is not None else "legacy"): int(r[1]) for r in by_source_rows
             },
             last_verified_at=last,
         )
@@ -1099,9 +1080,7 @@ def _kind_from_tags(tags: dict[str, str], category: CriticalLocationCategory) ->
 def _to_nearby_place(row: CriticalLocation, latitude: float, longitude: float) -> NearbyPlace:
     distance = None
     if row.latitude is not None and row.longitude is not None:
-        distance = GeoService.calculate_distance(
-            latitude, longitude, row.latitude, row.longitude
-        )
+        distance = GeoService.calculate_distance(latitude, longitude, row.latitude, row.longitude)
     metadata = row.asset_metadata or {}
     return NearbyPlace(
         id=str(row.id),

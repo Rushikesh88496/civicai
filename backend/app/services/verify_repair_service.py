@@ -182,11 +182,7 @@ def _failure_meta(run: Any) -> tuple[AiVerificationStatus, str, float | None]:
             reason = payload.get("reason") or reason
             retry_after = payload.get("retry_after_seconds") or retry_after
 
-    key = (
-        reason
-        if reason in _AI_STATUS_BY_REASON
-        else FATAL_REASON_ANALYSIS
-    )
+    key = reason if reason in _AI_STATUS_BY_REASON else FATAL_REASON_ANALYSIS
     return (
         _AI_STATUS_BY_REASON[key],
         _AI_MESSAGES[key],

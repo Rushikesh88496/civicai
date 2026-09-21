@@ -62,12 +62,8 @@ class CriticalLocation(Base, UUIDMixin, TimestampMixin):
         default=InfrastructureDataStatus.FOUND,
         index=True,
     )
-    last_verified_at: Mapped[object | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    asset_metadata: Mapped[dict | None] = mapped_column(
-        JSONB, name="metadata", nullable=True
-    )
+    last_verified_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    asset_metadata: Mapped[dict | None] = mapped_column(JSONB, name="metadata", nullable=True)
     ward_id: Mapped[object | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("wards.id", ondelete="RESTRICT"), nullable=True, index=True
     )

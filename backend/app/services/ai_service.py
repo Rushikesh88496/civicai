@@ -212,9 +212,7 @@ def _readiness_exception(token: str | None, model: str | None) -> AIError:
         return AIMultimodalUnsupportedError(
             f"{name!r} does not accept image input; choose a multimodal (VL) model."
         )
-    return AIConfigurationError(
-        "Groq vision is not configured. Set GROQ_API_KEY and VISION_MODEL."
-    )
+    return AIConfigurationError("Groq vision is not configured. Set GROQ_API_KEY and VISION_MODEL.")
 
 
 class AIService:
@@ -293,9 +291,7 @@ class AIService:
                 f"(request {request_id})."
             )
         if code in ("invalid_api_key", "authentication_error") or status == 401:
-            return AIConfigurationError(
-                "Groq rejected the configured API key. Check GROQ_API_KEY."
-            )
+            return AIConfigurationError("Groq rejected the configured API key. Check GROQ_API_KEY.")
         return AIAPIError(f"Groq API error (request {request_id}): {detail!r}", code=code)
 
     async def _run_with_retry(
@@ -609,10 +605,7 @@ class AIService:
             if cached:
                 return cached[1]
             raise
-        models = [
-            getattr(model, "id", None)
-            for model in (getattr(listing, "data", None) or [])
-        ]
+        models = [getattr(model, "id", None) for model in (getattr(listing, "data", None) or [])]
         snapshot = [model for model in models if model]
         self._model_list_cache = (now, snapshot)
         return snapshot

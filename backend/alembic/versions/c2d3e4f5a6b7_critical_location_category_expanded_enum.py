@@ -33,13 +33,9 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
+    op.execute("ALTER TYPE critical_location_category ADD VALUE IF NOT EXISTS 'PUBLIC_FACILITY'")
     op.execute(
-        "ALTER TYPE critical_location_category "
-        "ADD VALUE IF NOT EXISTS 'PUBLIC_FACILITY'"
-    )
-    op.execute(
-        "ALTER TYPE critical_location_category "
-        "ADD VALUE IF NOT EXISTS 'GOVERNMENT_BUILDING'"
+        "ALTER TYPE critical_location_category ADD VALUE IF NOT EXISTS 'GOVERNMENT_BUILDING'"
     )
 
 

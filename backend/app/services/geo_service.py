@@ -112,9 +112,7 @@ _OVERPASS_TAGS: dict[CriticalLocationCategory, tuple[str, ...]] = {
         '["amenity"="townhall"]',
     ),
     # Major roads (as POI-style centre points from way centres).
-    CriticalLocationCategory.ROAD: (
-        '["highway"~"^(motorway|trunk|primary|secondary|tertiary)$"]',
-    ),
+    CriticalLocationCategory.ROAD: ('["highway"~"^(motorway|trunk|primary|secondary|tertiary)$"]',),
 }
 # OSM key/value rules used to resolve the correct category for each element of a
 # combined query (a category=None Overpass fetch returns every bucket at once).
@@ -568,14 +566,10 @@ class GeoService:
                     id=None,
                     name=name,
                     category=resolved_category,
-                    address=el_tags.get("addr:full")
-                    or el_tags.get("addr:street")
-                    or None,
+                    address=el_tags.get("addr:full") or el_tags.get("addr:street") or None,
                     latitude=lat,
                     longitude=lon,
-                    distance_m=GeoService.calculate_distance(
-                        latitude, longitude, lat, lon
-                    ),
+                    distance_m=GeoService.calculate_distance(latitude, longitude, lat, lon),
                     is_demo=False,
                 )
             )
@@ -592,10 +586,7 @@ class GeoService:
             f"way{t}(around:{radius_m},{latitude},{longitude});"
             for t in tags
         )
-        return (
-            "[out:json][timeout:15];"
-            f"({blocks});out center tags {limit};"
-        )
+        return f"[out:json][timeout:15];({blocks});out center tags {limit};"
 
     @staticmethod
     def _osm_fallback_name(category: CriticalLocationCategory | None) -> str:
@@ -631,9 +622,7 @@ class GeoService:
         """
         headers = {"User-Agent": "curl/8.4.0"}
         if client is not None:
-            return await client.get(
-                url, params={"data": query}, timeout=timeout, headers=headers
-            )
+            return await client.get(url, params={"data": query}, timeout=timeout, headers=headers)
         async with httpx.AsyncClient(timeout=timeout, headers=headers) as c:
             return await c.get(url, params={"data": query})
 
@@ -694,9 +683,7 @@ class GeoService:
             return
         try:
             client = await get_redis()
-            await client.set(
-                key, json.dumps(payload), ex=int(self._settings.GIS_CACHE_TTL_SECONDS)
-            )
+            await client.set(key, json.dumps(payload), ex=int(self._settings.GIS_CACHE_TTL_SECONDS))
         except Exception as exc:
             logger.warning("Infrastructure cache SET failed (%s): %s", key, exc)
 
@@ -767,9 +754,7 @@ class GeoService:
         found_any = any(by_category[c] for c in poi)
         if found_any:
             nearby_status = "available"
-        elif any(
-            statuses.get(c) == InfrastructureDataStatus.DATA_UNAVAILABLE for c in poi
-        ):
+        elif any(statuses.get(c) == InfrastructureDataStatus.DATA_UNAVAILABLE for c in poi):
             nearby_status = "unavailable"
         else:
             nearby_status = "empty"
@@ -789,9 +774,7 @@ class GeoService:
             police_stations=by_category[CriticalLocationCategory.POLICE_STATION],
             fire_stations=by_category[CriticalLocationCategory.FIRE_STATION],
             public_facilities=by_category[CriticalLocationCategory.PUBLIC_FACILITY],
-            government_buildings=by_category[
-                CriticalLocationCategory.GOVERNMENT_BUILDING
-            ],
+            government_buildings=by_category[CriticalLocationCategory.GOVERNMENT_BUILDING],
             critical_infrastructure=critical,
             nearby_status=nearby_status,
             radius_m=radius,

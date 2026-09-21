@@ -314,29 +314,21 @@ async def _verify_node(state: VerifyState) -> dict[str, Any]:
     images: list[tuple[str, bytes]] = []
     for label, key in (("BEFORE", input_data.before_key), ("AFTER", input_data.after_key)):
         if not key:
-            return _fatal(
-                state, attempt, _MSG_MISSING_IMAGES, reason=FATAL_REASON_EVIDENCE
-            )
+            return _fatal(state, attempt, _MSG_MISSING_IMAGES, reason=FATAL_REASON_EVIDENCE)
         try:
             media = await db.scalar(select(WorkOrderPhoto).where(WorkOrderPhoto.storage_key == key))
         except Exception:  # noqa: BLE001 - unexpected DB error
             media = None
         if media is None:
-            return _fatal(
-                state, attempt, _MSG_MISSING_IMAGES, reason=FATAL_REASON_EVIDENCE
-            )
+            return _fatal(state, attempt, _MSG_MISSING_IMAGES, reason=FATAL_REASON_EVIDENCE)
         try:
             data = get_storage().read(media.storage_key)
         except Exception as exc:  # noqa: BLE001 - storage read failure
             logger.error("Verify photo read failed for %s: %s", key, exc)
-            return _fatal(
-                state, attempt, _MSG_INVALID_IMAGE, reason=FATAL_REASON_EVIDENCE
-            )
+            return _fatal(state, attempt, _MSG_INVALID_IMAGE, reason=FATAL_REASON_EVIDENCE)
         problem = _validate_image_payload(data)
         if problem is not None:
-            return _fatal(
-                state, attempt, problem, reason=FATAL_REASON_EVIDENCE
-            )
+            return _fatal(state, attempt, problem, reason=FATAL_REASON_EVIDENCE)
         images.append((media.content_type, data))
         # First image loaded is BEFORE; use it for the unchanged guard.
         if label == "BEFORE":
@@ -437,9 +429,7 @@ async def _verify_node(state: VerifyState) -> dict[str, Any]:
         # Groq 429: a transient provider condition, NOT a verdict on the repair.
         # No verification row is persisted and no fake result is produced; the
         # caller surfaces a retryable state using the provider's Retry-After.
-        logger.warning(
-            "Verify rate limited (attempt %s): %s", attempt, exc
-        )
+        logger.warning("Verify rate limited (attempt %s): %s", attempt, exc)
         return _fatal(
             state,
             attempt,
@@ -474,9 +464,7 @@ def _validate_node(state: VerifyState) -> dict[str, Any]:
                 "validate.provider_failed",
                 {
                     "error": state.get("error"),
-                    "reason": state.get(
-                        "fatal_reason", FATAL_REASON_ANALYSIS
-                    ),
+                    "reason": state.get("fatal_reason", FATAL_REASON_ANALYSIS),
                     **(
                         {"retry_after_seconds": state.get("retry_after_seconds")}
                         if state.get("retry_after_seconds") is not None

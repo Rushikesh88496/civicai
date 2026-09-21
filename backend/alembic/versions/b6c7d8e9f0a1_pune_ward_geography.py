@@ -83,8 +83,7 @@ _PUNE_REFERENCE_WARDS: list[tuple[str, str, str, str]] = [
     (
         "WARD-3",
         "Ward 3 — Hadapsar",
-        "Hadapsar ward — Hadapsar, Mundhwa and the Magarpatta side "
-        "(east-south Pune).",
+        "Hadapsar ward — Hadapsar, Mundhwa and the Magarpatta side (east-south Pune).",
         (
             "POLYGON(("
             "73.8960 18.4870,73.9520 18.4880,73.9520 18.5420,73.9100 18.5440,"

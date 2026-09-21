@@ -83,20 +83,31 @@ def upgrade() -> None:
     op.execute(
         "ALTER TABLE critical_locations ADD COLUMN ward_id UUID REFERENCES wards(id) ON DELETE RESTRICT"
     )
-    op.execute(
-        "ALTER TABLE critical_locations ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"
-    )
+    op.execute("ALTER TABLE critical_locations ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE")
     # Existing records that predate the real registry are unverified until a real
     # source re-imports them; none are claimed as verified facts.
     op.execute(
         "UPDATE critical_locations SET verification_status = 'PENDING_VERIFICATION' WHERE is_demo = TRUE"
     )
-    op.execute("UPDATE critical_locations SET last_verified_at = updated_at WHERE last_verified_at IS NULL")
+    op.execute(
+        "UPDATE critical_locations SET last_verified_at = updated_at WHERE last_verified_at IS NULL"
+    )
 
-    op.create_index("ix_critical_locations_verification_status", "critical_locations", ["verification_status"], unique=False)
-    op.create_index("ix_critical_locations_ward_id", "critical_locations", ["ward_id"], unique=False)
-    op.create_index("ix_critical_locations_is_active", "critical_locations", ["is_active"], unique=False)
-    op.create_index("ix_critical_locations_source_id", "critical_locations", ["source_id"], unique=False)
+    op.create_index(
+        "ix_critical_locations_verification_status",
+        "critical_locations",
+        ["verification_status"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_critical_locations_ward_id", "critical_locations", ["ward_id"], unique=False
+    )
+    op.create_index(
+        "ix_critical_locations_is_active", "critical_locations", ["is_active"], unique=False
+    )
+    op.create_index(
+        "ix_critical_locations_source_id", "critical_locations", ["source_id"], unique=False
+    )
     op.create_index("ix_critical_locations_source", "critical_locations", ["source"], unique=False)
     op.create_index(
         "uix_critical_locations_source_source_id",

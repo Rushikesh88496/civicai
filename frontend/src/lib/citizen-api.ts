@@ -592,6 +592,7 @@ export interface PrioritySignalInputs {
   hospitals: number;
   schools: number;
   bus_stops: number;
+  location_available: boolean;
   weather_condition: string | null;
   rain_mm: number | null;
   weather_available: boolean;
@@ -611,10 +612,63 @@ export interface PriorityFactor {
   description: string;
 }
 
+export type PriorityReadiness = "READY" | "PARTIAL" | "INSUFFICIENT_DATA";
+
+export interface PriorityComponent {
+  key: string;
+  label: string;
+  score: number | null;
+  max_score: number;
+  unit: number;
+  status: string;
+  input_value: string;
+  explanation: string;
+  source: string;
+  calculated_at: string | null;
+  details?: Record<string, unknown> | null;
+}
+
+export interface RiskAmplifier {
+  key: string;
+  label: string;
+  points: number;
+  applied: boolean;
+  trigger_conditions: string[];
+  evidence: string[];
+  explanation: string;
+}
+
+export interface ComplaintSlaStatus {
+  state: "ON_TRACK" | "AT_RISK" | "BREACHED" | "NO_POLICY";
+  sla_hours: number | null;
+  due_at: string | null;
+  remaining_seconds: number | null;
+  remaining_human: string | null;
+  at_risk_percent: number | null;
+  breached: boolean;
+  escalation_level: number;
+  policy_id: string | null;
+  policy_name: string | null;
+}
+
+export interface DataSource {
+  name: string;
+  source_type: string;
+  retrieved_at: string | null;
+  params: Record<string, unknown>;
+}
+
 export interface PriorityResult {
   score: number;
   priority: DynamicPriority;
   factors: PriorityFactor[];
+  components: PriorityComponent[];
+  sources: DataSource[];
+  risk_amplifiers: RiskAmplifier[];
+  sla: ComplaintSlaStatus | null;
+  data_status: PriorityReadiness;
+  calculated_at: string;
+  reason: string;
   inputs: PrioritySignalInputs;
   previous_score: number | null;
   previous_priority: DynamicPriority | null;

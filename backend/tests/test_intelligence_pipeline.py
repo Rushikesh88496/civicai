@@ -437,35 +437,86 @@ async def test_auto_intelligence_disabled_flag_skips_pipeline(client):
 @pytest.mark.asyncio
 async def test_deterministic_priority_engine_freezes_score_for_identical_inputs():
     """Same inputs ⇒ same score/bucket — reproducibility, zero randomness."""
-    from app.services.priority_engine import Weights, score_priority
+    from app.services.priority_engine import (
+        EvidenceInput,
+        FacilityInput,
+        HistoricalInput,
+        InfrastructureInput,
+        PopulationInput,
+        SeverityInput,
+        WeatherInput,
+        score_priority,
+    )
 
     kwargs = dict(
-        severity="HIGH",
-        population=240,
-        hospitals=1,
-        schools=1,
-        bus_stops=1,
-        weather_condition="Light rain",
-        rain_mm=3.2,
-        weather_available=True,
-        complaint_count=4,
-        historical_recurrence=6,
-        ward_resolved=True,
-        time_unresolved_hours=48.0,
-        weights=Weights(),
-        threshold_p1=80.0,
-        threshold_p2=60.0,
-        threshold_p3=40.0,
-        weather_rain_mm=5.0,
-        population_band=1000.0,
-        complaint_band=10.0,
-        history_band=15.0,
-        time_band_hours=168.0,
+        category="ROAD",
+        severity=SeverityInput(severity="HIGH"),
+        infrastructure=InfrastructureInput(
+            facilities=[
+                FacilityInput(
+                    name="City Hospital",
+                    category="HOSPITAL",
+                    distance_m=80.0,
+                    verification="VERIFIED",
+                )
+            ],
+            status="FOUND",
+            radius_m=1000.0,
+        ),
+        weather=WeatherInput(
+            condition="Light rain",
+            rain_mm=3.2,
+            precipitation_mm=None,
+            forecast_precip_mm=6.0,
+            threshold_mm=5.0,
+            status="AVAILABLE",
+        ),
+        historical=HistoricalInput(
+            same_category_nearby_7d=2,
+            same_category_nearby_30d=3,
+            nearby_7d=4,
+            nearby_30d=6,
+            cluster_250m_30d=1,
+            ward_30d=4,
+            unresolved_similar_nearby=1,
+            duplicates_excluded=0,
+            status="AVAILABLE",
+        ),
+        population=PopulationInput(
+            reports_7d={500: 3},
+            reports_30d={500: 5},
+            unique_reporters_7d=3,
+            unique_reporters_30d=4,
+            unresolved_reports_7d=1,
+            unresolved_reports_30d=1,
+            population=None,
+            population_status="DATA_UNAVAILABLE",
+            status="AVAILABLE",
+        ),
+        evidence=EvidenceInput(
+            has_gps=True,
+            description_chars=180,
+            media_count=2,
+            category_structured=True,
+            triage_available=True,
+            triage_confidence=0.8,
+            vision_available=False,
+            corroborating_reports_30d=6,
+            status="AVAILABLE",
+        ),
     )
-    s1, b1, f1 = score_priority(**kwargs)
-    s2, b2, f2 = score_priority(**kwargs)
+    s1, b1, f1, r1, a1 = score_priority(**kwargs)
+    s2, b2, f2, r2, a2 = score_priority(**kwargs)
     assert s1 == s2
     assert b1 == b2
-    assert f1 == f2
+    assert r1 == r2
     assert 0 <= s1 <= 100
-    assert sum(1 for f in f1 if f["present"]) >= 1
+    # Component CONTENT is byte-for-byte identical for identical inputs; only
+    # the retrieval timestamps (calculated_at) legitimately differ per call.
+    def _without_stamps(components):
+        return [
+            {k: v for k, v in c.items() if k != "calculated_at"} for c in components
+        ]
+
+    assert _without_stamps(f1) == _without_stamps(f2)
+    assert sum(1 for c in f1 if c["score"] is not None) >= 1

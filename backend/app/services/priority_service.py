@@ -71,10 +71,12 @@ async def run_priority(
     db: AsyncSession,
     user: User,
     complaint_id: uuid.UUID,
+    *,
+    reason: str = "manual",
 ) -> PriorityRunResponse:
     """Run the priority engine for a complaint and return the run state."""
     await _assert_can_view(db, user, complaint_id)
-    run: AgentRun = await _agent().run(db, complaint_id=complaint_id)
+    run: AgentRun = await _agent().run(db, complaint_id=complaint_id, reason=reason)
     await db.refresh(run)
     result = (
         PriorityOutput.model_validate(run.structured_result)

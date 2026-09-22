@@ -465,7 +465,7 @@ async def test_priority_weight_update_reverts(client, super_admin):
     # update an existing seeded row and revert it.
     lst = await client.get(f"{_BASE}/priority-weights", headers=_auth(super_admin))
     assert lst.status_code == 200
-    row = next(w for w in lst.json() if w["key"] == "time")
+    row = next(w for w in lst.json() if w["key"] == "infrastructure")
     wid = row["id"]
     original = row["weight"]
 

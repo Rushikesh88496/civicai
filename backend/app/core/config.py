@@ -243,22 +243,37 @@ class Settings(BaseSettings):
     # cross external weather/geocoding services.
     COMPLAINTS_AUTO_INTELLIGENCE: bool = True
 
-    # ===== Dynamic Priority & Risk Engine (Part 12) =====
-    # Deterministic, weighted scoring — the priority engine NEVER lets an LLM
-    # determine the numeric score. These weights map the 7 priority inputs onto a
-    # 0..100 score. The defaults sum to 1.0 (severity .30 + weather .10 +
-    # location .15 + crowd .20 + history .10 + time .15). Each input is first
-    # normalized to a 0..1 unit, then contribution = unit * weight * 100.
-    PRIORITY_WEIGHT_SEVERITY: float = 0.30
-    PRIORITY_WEIGHT_WEATHER: float = 0.10
-    # "location" = proximity to critical infrastructure (hospitals/schools/bus).
-    PRIORITY_WEIGHT_LOCATION: float = 0.15
-    # "crowd" = population impact + complaint count (both crowd-pressure signals).
-    PRIORITY_WEIGHT_CROWD: float = 0.20
-    # Historical recurrence in the same ward.
-    PRIORITY_WEIGHT_HISTORY: float = 0.10
-    # Time the complaint has been unresolved (age in the pipeline).
-    PRIORITY_WEIGHT_TIME: float = 0.15
+    # ===== Dynamic Priority & Risk Engine (Part 12, rebuilt) =====
+    # Deterministic, component-maxima scoring — the priority engine NEVER lets an
+    # LLM determine the numeric score. The six components have FIXED MAXIMUM
+    # points (configurable here, defaults sum to 100):
+    #   severity 25 · infrastructure 20 · affected population 20 ·
+    #   recurrence 15 · weather 10 · evidence confidence 10.
+    # Time-to-resolve is NOT a factor: the score expresses risk only, while SLA
+    # tracking runs as a SEPARATE engine against the ``sla_policies`` rulebook —
+    # a breached SLA never raises the risk score.
+    # Each component is scored against real data as points = unit(0..1) * max,
+    # and the FINAL score is the plain sum of the scored components (clamped
+    # 0..100, plus any real-evidence risk amplifiers, still clamped 0..100).
+    # Components whose data is unavailable contribute 0 and are reported with
+    # their honest status — the engine NEVER re-normalizes over present factors,
+    # so missing data never inflates a score.
+    PRIORITY_WEIGHT_SEVERITY: float = 25.0
+    # "infrastructure" = verified critical-facility proximity (PostGIS registry,
+    # distance-decayed, TYPE x DISTANCE x RELEVANCE).
+    PRIORITY_WEIGHT_INFRASTRUCTURE: float = 20.0
+    # "population" = affected population & report pressure (real complaint
+    # density 250/500/1000 m x 7d/30d, unique reporters, unresolved nearby,
+    # geographic spread, sensitive facilities).
+    PRIORITY_WEIGHT_POPULATION: float = 20.0
+    # Historical recurrence / incident pattern (same category + area, 7d/30d).
+    PRIORITY_WEIGHT_HISTORY: float = 15.0
+    # Weather / environmental risk (live current + forecast precipitation,
+    # category-aware: drainage/flooding strong, garbage/streetlighting weak).
+    PRIORITY_WEIGHT_WEATHER: float = 10.0
+    # Evidence confidence (verified GPS, description, photos, AI agreement,
+    # structured category, corroborating reports) — never an invented AI score.
+    PRIORITY_WEIGHT_EVIDENCE: float = 10.0
     # Bucket boundaries for the 0..100 score (inclusive upper cutoff):
     #   [80, 100] -> P1_CRITICAL, [60, 80) -> P2_HIGH,
     #   [40, 60)  -> P3_MEDIUM,   [0, 40)   -> P4_LOW.
@@ -269,17 +284,86 @@ class Settings(BaseSettings):
     # at least this many points versus the previous computed score. Recalculation
     # therefore happens whenever significant context changes.
     PRIORITY_CHANGE_THRESHOLD: float = 15.0
-    # Severe-weather triggers used to derive the weather risk unit.
+    # Severe-weather thresholds used to derive the weather risk unit.
     PRIORITY_WEATHER_RAIN_MM: float = 5.0
-    # Resident-count thresholds used to derive the population-impact unit (the
-    # number of users linked to the complaint's ward serving as a population proxy).
-    PRIORITY_POPULATION_BAND: float = 1000.0
-    # Complaint-count thresholds used to normalize crowd pressure.
-    PRIORITY_COMPLAINT_BAND: float = 10.0
-    # Historical-cadence threshold (same-ward complaints) for the recurrence unit.
-    PRIORITY_HISTORY_BAND: float = 15.0
-    # Unresolved-time target (hours) at which the time unit reaches 1.0.
-    PRIORITY_TIME_BAND_HOURS: float = 168.0
+    # Forecast precipitation (mm) in the next-days window that counts as risk.
+    PRIORITY_WEATHER_FORECAST_RAIN_MM: float = 5.0
+    # Distance-decay bands (metres) for the infrastructure component (calibration
+    # v4): 0-50 / 50-100 / 100-250 / 250-500 m. A verified facility counts at its
+    # full inside-band weight, progressively less further out, and nothing beyond
+    # the last band.
+    PRIORITY_INFRA_DECAY_BANDS_M: tuple[float, float, float, float] = (
+        50.0,
+        100.0,
+        250.0,
+        500.0,
+    )
+    # Weighting inside each decay band. Tighter than the old (1.0, 0.7, 0.4) so a
+    # facility at ~80 m still scores strongly and the 0-50 m band is exclusive
+    # (calibration, never inflation: totals still decay with distance and
+    # saturate).
+    PRIORITY_INFRA_DISTANCE_FACTORS: tuple[float, float, float, float] = (
+        1.0,
+        0.9,
+        0.6,
+        0.35,
+    )
+    # Saturation scale for the summed facility contributions (diminishing
+    # returns): infra unit cluster = 1 - exp(-sum / saturation).
+    PRIORITY_INFRA_SATURATION: float = 2.2
+    # Infrastructure-exposure blend weights: the unit is
+    #   peak_weight * strongest_single + cluster_weight * saturated_cluster + bonus
+    # where the access bonus is added ONLY for an access-affecting category with
+    # an emergency facility genuinely ≤50 m / ≤100 m away.
+    PRIORITY_INFRA_PEAK_WEIGHT: float = 0.60
+    PRIORITY_INFRA_CLUSTER_WEIGHT: float = 0.25
+    PRIORITY_INFRA_ACCESS_BONUS_50_M: float = 0.28
+    PRIORITY_INFRA_ACCESS_BONUS_100_M: float = 0.18
+    # Optional overrides for the infrastructure relevance rulebook (engine
+    # defaults apply when unset):
+    #   PRIORITY_FACILITY_BASE_RELEVANCE: {"HOSPITAL": 0.9, ...}  base per type
+    #   PRIORITY_CATEGORY_FACILITY_FACTORS: {"ROAD": {"HOSPITAL": 1.1, ...}}
+    # Per-type relevance = base * category factor; both are merged over the
+    # engine's documented defaults so a partial override keeps the rest.
+    PRIORITY_FACILITY_BASE_RELEVANCE: dict[str, float] | None = None
+    PRIORITY_CATEGORY_FACILITY_FACTORS: dict[str, dict[str, float]] | None = None
+    # Deterministic multi-dimension severity: the stored triage severity label
+    # is the HARM base; real context signals (emergency-access proximity —
+    # dominant, with 0.90/0.70 floors at ≤50 m/≤100 m — public safety,
+    # corroborating reports, weather) may add at most this much 0..1 unit on
+    # top. The boost is bounded so context alone can never over-state severity.
+    PRIORITY_SEVERITY_MAX_BOOST: float = 0.30
+    # Band (metres) that counts as "emergency facility impacted" for both the
+    # Infrastructure Access Impact detail and the EMERGENCY_ACCESS_RISK
+    # amplifier (category + proximity evidence required; never fired blindly).
+    PRIORITY_AMPLIFIER_EMERGENCY_ACCESS_BAND_M: float = 250.0
+    # Complaint-density radii (metres) for the affected-population component.
+    PRIORITY_DENSITY_RADII_M: tuple[float, float, float] = (250.0, 500.0, 1000.0)
+    # Sensitive-facility adjacency band (metres) for the population component.
+    PRIORITY_SENSITIVE_FACILITY_BAND_M: float = 300.0
+    # Only a REAL resident/population grid is ever scored; when no government
+    # density dataset is wired the population sub-signal stays DATA_UNAVAILABLE.
+    PRIORITY_POPULATION_DENSITY_AVAILABLE: bool = False
+    # Optional weights dict for the affected-population component's four
+    # sub-signals (defaults: population_exposure .30, report_pressure .25,
+    # geographic_spread .10, sensitive_facility_exposure .35). Available
+    # sub-signals are re-normalized to the component maximum so an unavailable
+    # population grid is never treated as "no population".
+    PRIORITY_POPULATION_SUBWEIGHTS: dict[str, float] | None = None
+    # Deterministic risk amplifiers (points each; applied only on real evidence).
+    PRIORITY_AMPLIFIER_FLOODING_POINTS: float = 6.0
+    PRIORITY_AMPLIFIER_EMERGENCY_ACCESS_POINTS: float = 5.0
+    PRIORITY_AMPLIFIER_PUBLIC_SAFETY_POINTS: float = 5.0
+    PRIORITY_AMPLIFIER_RECURRING_HOTSPOT_POINTS: float = 4.0
+    # Same-category complaints within radius over 30 days that marks a recurring
+    # hotspot (used by the RECURRING_HOTSPOT risk amplifier).
+    PRIORITY_HOTSPOT_REPEAT_COUNT: int = 5
+    # Historical / report-pressure windows and radius (real DB counts; a missing
+    # ward + location degrades the component to INSUFFICIENT_DATA, never guessed).
+    PRIORITY_HISTORICAL_WINDOW_HOURS: float = 168.0
+    PRIORITY_HISTORICAL_WINDOW_30D_HOURS: float = 720.0
+    PRIORITY_REPORT_WINDOW_HOURS: float = 168.0
+    PRIORITY_REPORT_RADIUS_M: float = 500.0
 
     # ===== Department Routing Agent (Part 13) =====
     # Deterministic, rule-based department assignment — the routing engine NEVER

@@ -376,5 +376,82 @@ async def latest_run(db: AsyncSession, *, ward_id: uuid.UUID | None = None) -> d
     ).model_dump(mode="json")
 
 
+def complaint_sla_status(
+    *,
+    priority: str,
+    department: str | None,
+    category: str | None,
+    submitted_at: datetime,
+    now: datetime | None = None,
+    policy: SlaPolicy | None,
+) -> dict:
+    """SLA/Escalation snapshot for a *complaint* (score-independent, Part 12).
+
+    The priority engine tracks SLA separately from the numeric risk score: the
+    clock starts at submission (``submitted_at``) and runs toward the deadline of
+    the resolved ``sla_policies`` rule. A breach NEVER raises the priority score —
+    it only raises the ``state``/``escalation_level`` reported here.
+
+    Returns:
+        state (NO_POLICY / ON_TRACK / AT_RISK / BREACHED), sla_hours, due_at,
+        remaining_seconds, remaining_human, at_risk_percent, breached,
+        escalation_level (0 none / 1 at-risk / 2 breached / 3 breach+warn), and
+        the applied policy provenance.
+    """
+    now = now or datetime.now(UTC)
+    base: dict = {
+        "state": "NO_POLICY",
+        "sla_hours": None,
+        "due_at": None,
+        "remaining_seconds": None,
+        "remaining_human": None,
+        "at_risk_percent": None,
+        "breached": False,
+        "escalation_level": 0,
+        "policy_id": None,
+        "policy_name": None,
+    }
+    if policy is None or policy.sla_hours is None or policy.sla_hours <= 0:
+        return base
+
+    sla_hours = int(policy.sla_hours)
+    due_at = submitted_at + timedelta(hours=sla_hours)
+    remaining = (due_at - now).total_seconds()
+    total = sla_hours * 3600
+    breached = remaining < 0
+
+    attrs = {
+        "sla_hours": sla_hours,
+        "due_at": due_at,
+        "remaining_seconds": remaining,
+        "remaining_human": human_remaining(remaining),
+        "at_risk_percent": float(policy.at_risk_percent),
+        "breached": breached,
+        "policy_id": policy.id,
+        "policy_name": policy.name,
+    }
+    if breached:
+        attrs["state"] = "BREACHED"
+        attrs["escalation_level"] = 3 if bool(policy.escalate_on_breach) else 2
+        return attrs
+
+    if total > 0:
+        progress = max(0.0, (total - remaining) / total)
+        attrs["progress"] = round(progress, 4)
+        if progress >= float(policy.at_risk_percent):
+            attrs["state"] = "AT_RISK"
+            attrs["escalation_level"] = 1
+            return attrs
+    attrs["state"] = "ON_TRACK"
+    return attrs
+
+
 # Re-exported for the agent / API layer.
-__all__ = ["compute_snapshot", "human_remaining", "latest_run", "list_sla_orders", "scan"]
+__all__ = [
+    "complaint_sla_status",
+    "compute_snapshot",
+    "human_remaining",
+    "latest_run",
+    "list_sla_orders",
+    "scan",
+]

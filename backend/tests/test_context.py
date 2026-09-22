@@ -26,7 +26,6 @@ from sqlalchemy import select
 from app.agents.context_agent import (
     ContextAgent,
     _collect_infrastructure,
-    _parse_weather_payload,
 )
 from app.core.config import get_settings
 from app.core.security import create_access_token
@@ -41,6 +40,7 @@ from app.schemas.geo import (
     WardDetected,
 )
 from app.services import auth_service
+from app.services.weather_service import _parse_weather_payload
 from tests.helpers import any_active_ward_id, any_officer_token
 
 _PASSWORD = "TestPass#2026"
@@ -398,8 +398,8 @@ async def test_run_context_cache_miss_does_live_fetch_and_stores(client, monkeyp
     async def fake_set(settings, key, value, ttl):
         stored.append((key, value, ttl))
 
-    monkeypatch.setattr("app.agents.context_agent.cache_get_json", fake_get)
-    monkeypatch.setattr("app.agents.context_agent.cache_set_json", fake_set)
+    monkeypatch.setattr("app.services.weather_service.cache_get_json", fake_get)
+    monkeypatch.setattr("app.services.weather_service.cache_set_json", fake_set)
 
     async with async_session_factory() as db:
         run = await _agent(weather_client=_weather_client()).run(
@@ -440,7 +440,7 @@ async def test_run_context_cache_hit_skips_network(client, monkeypatch):
         calls.append(request.url)
         return httpx.Response(200, json=_SAMPLE_WEATHER)
 
-    monkeypatch.setattr("app.agents.context_agent.cache_get_json", fake_get)
+    monkeypatch.setattr("app.services.weather_service.cache_get_json", fake_get)
 
     weather_client = httpx.AsyncClient(transport=httpx.MockTransport(fake_getter))
     async with async_session_factory() as db:

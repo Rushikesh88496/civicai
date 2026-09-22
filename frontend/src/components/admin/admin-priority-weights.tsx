@@ -64,8 +64,8 @@ export function AdminPriorityWeights() {
       weight: form.get("weight") !== null && form.get("weight") !== undefined && form.get("weight") !== "" ? Number(form.get("weight")) : null,
       is_active: form.get("is_active") === "true",
     };
-    if (payload.weight !== null && payload.weight !== undefined && (payload.weight < 0 || payload.weight > 1)) {
-      setFormError("Weight must be between 0 and 1.");
+    if (payload.weight !== null && payload.weight !== undefined && (payload.weight < 0 || payload.weight > 100)) {
+      setFormError("Max points must be between 0 and 100.");
       setMutating(false);
       return;
     }
@@ -96,7 +96,10 @@ export function AdminPriorityWeights() {
           <CardTitle className="flex items-center gap-2">
             <Scale className="h-5 w-5 text-ai-600" /> Priority Factors
           </CardTitle>
-          <CardDescription>Weighted factors (0.0–1.0) used in complaint scoring.</CardDescription>
+          <CardDescription>
+            Component maxima (0–100 points each, default sum 100) used by the
+            deterministic priority engine.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {error && <ErrorState title="Failed to load priority weights" description={error} />}
@@ -149,8 +152,8 @@ export function AdminPriorityWeights() {
               <Input id="pw-label" name="label" defaultValue={editWeight.label} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="pw-weight">Weight (0.0 – 1.0)</Label>
-              <Input id="pw-weight" name="weight" type="number" step="0.01" min="0" max="1" defaultValue={editWeight.weight} />
+              <Label htmlFor="pw-weight">Max points (0 – 100)</Label>
+              <Input id="pw-weight" name="weight" type="number" step="0.01" min="0" max="100" defaultValue={editWeight.weight} />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="pw-active">Status</Label>

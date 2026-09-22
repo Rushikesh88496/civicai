@@ -140,6 +140,25 @@ class DynamicPriority(enum.StrEnum):
     P4_LOW = "P4_LOW"
 
 
+class PriorityReadiness(enum.StrEnum):
+    """Honest data-readiness of a deterministic priority computation (Part 12).
+
+    The engine NEVER hides missing data: each component carries its own
+    availability status, and the computation as a whole reports how ready it was:
+
+    * ``READY`` — most components were scored against real data.
+    * ``PARTIAL`` — some components scored, some degraded to unavailable.
+    * ``INSUFFICIENT_DATA`` — too few signals could be resolved to trust the
+      score (e.g. no ward and no coordinates).
+    * ``FAILED`` — the engine errored and produced no score.
+    """
+
+    READY = "READY"
+    PARTIAL = "PARTIAL"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+    FAILED = "FAILED"
+
+
 class WorkOrderStatus(enum.StrEnum):
     """Lifecycle of a work order (Part 14).
 

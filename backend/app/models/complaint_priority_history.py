@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,6 +20,9 @@ class ComplaintPriorityHistory(Base, UUIDMixin):
     ``inputs`` stores the exact input values that produced the score and
     ``factors`` the explainable factor breakdown (factor / input value / weight /
     contribution) — both as JSON so history is fully reconstructable.
+    ``risk_amplifiers`` records the deterministic risk amplifiers fired on real
+    evidence (+points each) and ``sla`` the separate SLA/Escalation snapshot so
+    the score history also explains why an amplifier was applied.
     """
 
     __tablename__ = "complaint_priority_history"
@@ -42,10 +45,22 @@ class ComplaintPriorityHistory(Base, UUIDMixin):
     previous_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # True when this score moved by >= the configured change threshold.
     changed: Mapped[bool] = mapped_column(nullable=False, default=False)
-    # The exact input values that produced this score (the 7 priority inputs).
+    # The exact input values that produced this score (the 6 priority inputs).
     inputs: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     # Explainable factor breakdown (factor / input value / weight / contribution).
     factors: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # Honest data-readiness of the computation (READY/PARTIAL/INSUFFICIENT_DATA).
+    data_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Rich per-component breakdown (score / max / unit / status / source / time).
+    components: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Provenance of every source actually queried for this computation.
+    sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Deterministic risk amplifiers fired on real evidence (+points each, capped).
+    risk_amplifiers: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Separate SLA/Escalation snapshot (score-independent; never raises the score).
+    sla: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Why it ran ("manual", "auto-context", ...).
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # One-line summary for the timeline / UI.
     summary: Mapped[str | None] = mapped_column(nullable=True)
     # Set at insert / recomputation time; history is append-only.

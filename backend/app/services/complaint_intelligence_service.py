@@ -117,7 +117,7 @@ async def ensure_intelligence_pipeline(
     if stale:
         outcome["priority"] = "ran"
         try:
-            await priority_service.run_priority(db, user, complaint_id)
+            await priority_service.run_priority(db, user, complaint_id, reason="auto-context")
         except Exception as exc:  # noqa: BLE001 - auto-run must never break a read
             outcome["priority"] = "failed"
             logger.warning("Auto-priority scoring failed for %s: %s", complaint_id, exc)

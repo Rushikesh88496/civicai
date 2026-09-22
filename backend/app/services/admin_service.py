@@ -50,7 +50,9 @@ from app.schemas.admin import (
 from app.services.geo_service import GeoService, InvalidCoordinatesError
 
 # The Priority Engine's six factor keys (mirrors Weights in priority_engine.py).
-PRIORITY_WEIGHT_KEYS = frozenset({"severity", "weather", "location", "crowd", "history", "time"})
+PRIORITY_WEIGHT_KEYS = frozenset(
+    {"severity", "infrastructure", "population", "history", "weather", "evidence"}
+)
 
 _PAGE_CAP = 100
 

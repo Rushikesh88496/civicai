@@ -62,6 +62,8 @@ def _registry() -> InfrastructureRegistry:
         INFRASTRUCTURE_IMPORT_TIMEOUT_SECONDS=5.0,
         INFRASTRUCTURE_IMPORT_MAX_RETRIES=0,
         INFRASTRUCTURE_IMPORT_CONCURRENCY=4,
+        INFRASTRUCTURE_IMPORT_BACKFILL_ROUNDS=2,
+        INFRASTRUCTURE_IMPORT_BACKFILL_DELAY_SECONDS=0.0,
     )
     return get_infrastructure_registry(settings)
 
@@ -297,6 +299,90 @@ async def test_ingest_overpass_is_idempotent_across_runs(monkeypatch):
                 )
             )
         assert count == 1  # upsert never duplicates
+    finally:
+        await _delete_by_name_like("Sync Test%")
+
+
+# --------------------------------------------------------------------------- #
+# Ingestion — failed (ward x category) buckets are backfilled within one sync
+# --------------------------------------------------------------------------- #
+async def test_ingest_overpass_backfills_transient_ward_category_failures(monkeypatch):
+    """A transiently failing ward x category fetch is retried (backfilled)
+    within the SAME sync instead of being dropped forever.
+
+    The historical root cause of "same GPS, different categories" between
+    installations: the one-shot ingest dropped a busy provider's 429/504 for
+    individual buckets (e.g. WARD-1 x SCHOOL), so the region's category was
+    never covered — while a category covered ANYWHERE else blocked the live
+    fallback at query time. A bucket that fails every round is still counted
+    (never fabricated).
+    """
+    svc = _registry()
+    async with async_session_factory() as db:
+        ward1 = next(w for w in await svc._ward_bboxes(db) if w[1] == "WARD-1")
+
+    async def fake_bboxes(db):
+        return [ward1]
+
+    attempts = {"HOSPITAL": 0}
+
+    async def fake_fetch(bbox, category, client=None):
+        if category == CriticalLocationCategory.HOSPITAL:
+            attempts["HOSPITAL"] += 1
+            if attempts["HOSPITAL"] == 1:
+                return [], False, None  # transient failure on the first try
+            return (
+                [
+                    {
+                        "name": "Sync Test Backfilled Hospital",
+                        "category": category,
+                        "latitude": _SEED_LAT,
+                        "longitude": _SEED_LON,
+                        "address": "Kondhwa Rd",
+                        "source_id": "node/99200001",
+                        "source_url": "https://www.openstreetmap.org/node/99200001",
+                        "tags": {"amenity": "hospital"},
+                        "kind": "amenity=hospital",
+                    }
+                ],
+                True,
+                "overpass:test",
+            )
+        if category == CriticalLocationCategory.SCHOOL:
+            return [], False, None  # fails every round — must be counted, not faked
+        return [], True, "overpass:test"
+
+    monkeypatch.setattr(svc, "_ward_bboxes", fake_bboxes)
+    monkeypatch.setattr(svc, "_fetch_bbox_candidates", fake_fetch)
+
+    try:
+        async with async_session_factory() as db:
+            out = await svc.ingest_from_overpass(db)
+
+        # Transient failure recovered by a backfill round within the same sync.
+        assert attempts["HOSPITAL"] >= 2
+        assert out.inserted == 1
+        assert out.failed_total >= 1  # SCHOOL never recovered
+        counts = {c.category: c for c in out.by_category}
+        assert counts["HOSPITAL"].failed == 0
+        assert counts["HOSPITAL"].fetched == 1
+
+        async with async_session_factory() as db:
+            rows = (
+                (
+                    await db.execute(
+                        select(CriticalLocation).where(
+                            CriticalLocation.name == "Sync Test Backfilled Hospital"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].verification_status == InfrastructureDataStatus.FOUND
+        assert rows[0].geom is not None
+        assert rows[0].is_demo is False
     finally:
         await _delete_by_name_like("Sync Test%")
 

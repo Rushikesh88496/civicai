@@ -421,13 +421,19 @@ class InfrastructureRegistry:
 
         Ward x category fetches run under a bounded concurrency across the
         configured mirrors with the dedicated import timeout/retry budget, so a
-        busy provider degrades gracefully (transient failures are counted and
-        the affected category simply isn't claimed) instead of stalling the run.
+        busy provider degrades gracefully instead of stalling the run. The main
+        pass is followed by up to ``INFRASTRUCTURE_IMPORT_BACKFILL_ROUNDS``
+        backfill rounds (with a short delay between rounds) that retry only the
+        (ward x category) buckets which failed transiently — a region's category
+        is never left permanently uncovered by a one-off provider hiccup (the
+        historical root cause of "same GPS, different categories" between
+        installations). A bucket that still fails every round is counted as
+        failed; no record is ever fabricated.
 
         ``progress(ward_code, category, ok, fetched)`` is invoked after every
-        ward x category outcome so long-running imports stay observable; each
-        completed task is committed immediately so an interrupted run never
-        discards already-verified facilities.
+        completed ward x category outcome so long-running imports stay
+        observable; each completed task is committed immediately so an
+        interrupted run never discards already-verified facilities.
         """
         started_at = datetime.now(UTC)
         started_mono = time.monotonic()
@@ -443,6 +449,10 @@ class InfrastructureRegistry:
             for category in _NEARBY_CATEGORIES
         ]
         concurrency = max(1, int(self._settings.INFRASTRUCTURE_IMPORT_CONCURRENCY))
+        backfill_rounds = max(0, int(self._settings.INFRASTRUCTURE_IMPORT_BACKFILL_ROUNDS))
+        backfill_delay = max(
+            0.0, float(self._settings.INFRASTRUCTURE_IMPORT_BACKFILL_DELAY_SECONDS)
+        )
         transient_errors = 0
 
         async def run(
@@ -459,42 +469,53 @@ class InfrastructureRegistry:
                 return ward_code, category, [], False
             return ward_code, category, candidates, ok
 
-        for chunk_start in range(0, len(tasks), max(1, concurrency)):
-            chunk = tasks[chunk_start : chunk_start + concurrency]
-            outcomes = await asyncio.gather(
-                *[run(code, bbox, category) for _, code, _name, bbox, category in chunk]
-            )
-            for (ward_id, code, _name, _bbox, category), (c_code, c_cat, candidates, ok) in zip(
-                chunk, outcomes
-            ):
-                counts = by_category[category]
-                if not ok:
-                    transient_errors += 1
-                    counts.failed += 1
+        pending = tasks
+        for round_index in range(backfill_rounds + 1):
+            is_final = round_index >= backfill_rounds
+            still_failed: list[Any] = []
+            for chunk_start in range(0, len(pending), max(1, concurrency)):
+                chunk = pending[chunk_start : chunk_start + max(1, concurrency)]
+                outcomes = await asyncio.gather(
+                    *[run(code, bbox, category) for _, code, _name, bbox, category in chunk]
+                )
+                for task, (c_code, c_cat, candidates, ok) in zip(chunk, outcomes):
+                    _ward_id, code, _name, _bbox, category = task
+                    counts = by_category[category]
+                    if not ok:
+                        if is_final:
+                            transient_errors += 1
+                            counts.failed += 1
+                            if progress is not None:
+                                progress(c_code, c_cat.value, False, 0)
+                        else:
+                            still_failed.append(task)
+                        continue
+                    counts.fetched += len(candidates)
+                    unique, dropped = self._dedupe_candidates(candidates)
+                    counts.skipped_duplicate += dropped
+                    for cand in unique:
+                        cand["_key"] = f"{code}:{cand['source_id']}"
+                    ward_map = await self._resolve_wards(
+                        db, [(c["_key"], c["latitude"], c["longitude"]) for c in unique]
+                    )
+                    await self._upsert_candidates(
+                        db,
+                        unique,
+                        source="openstreetmap",
+                        source_dataset=_OSM_DATASET,
+                        source_url=_OSM_URL,
+                        ward_map=ward_map,
+                        batch_id=batch_id,
+                        counts=counts,
+                    )
+                    await db.commit()
                     if progress is not None:
-                        progress(c_code, c_cat.value, False, 0)
-                    continue
-                counts.fetched += len(candidates)
-                unique, dropped = self._dedupe_candidates(candidates)
-                counts.skipped_duplicate += dropped
-                for cand in unique:
-                    cand["_key"] = f"{code}:{cand['source_id']}"
-                ward_map = await self._resolve_wards(
-                    db, [(c["_key"], c["latitude"], c["longitude"]) for c in unique]
-                )
-                await self._upsert_candidates(
-                    db,
-                    unique,
-                    source="openstreetmap",
-                    source_dataset=_OSM_DATASET,
-                    source_url=_OSM_URL,
-                    ward_map=ward_map,
-                    batch_id=batch_id,
-                    counts=counts,
-                )
-                await db.commit()
-                if progress is not None:
-                    progress(code, category.value, True, len(unique))
+                        progress(code, category.value, True, len(unique))
+            if not still_failed:
+                break
+            if backfill_delay > 0 and not is_final:
+                await asyncio.sleep(backfill_delay)
+            pending = still_failed
 
         finished_at = datetime.now(UTC)
         fetched_total = sum(c.fetched for c in by_category.values())
@@ -504,7 +525,8 @@ class InfrastructureRegistry:
         failed = sum(c.failed for c in by_category.values())
         message = (
             f"Imported {inserted} new + updated {updated} real Pune facilities "
-            f"(skipped {skipped} unchanged, {failed} transient failures). "
+            f"(skipped {skipped} unchanged, {failed} ward/category buckets still failed "
+            f"after {backfill_rounds} backfill round(s)). "
             f"Source: {_OSM_DATASET}."
         )
         return RegistrySyncOut(

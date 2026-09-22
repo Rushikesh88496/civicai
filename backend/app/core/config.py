@@ -206,6 +206,15 @@ class Settings(BaseSettings):
     INFRASTRUCTURE_IMPORT_TIMEOUT_SECONDS: float = 60.0
     INFRASTRUCTURE_IMPORT_MAX_RETRIES: int = 2
     INFRASTRUCTURE_IMPORT_CONCURRENCY: int = 3
+    # A single ward-bbox Overpass run can hit a transiently busy provider
+    # (429/502/503/504) on individual (ward x category) queries. Failed buckets
+    # are retried for these extra rounds within the SAME sync (with a short
+    # delay between rounds) so a region's category is never left permanently
+    # uncovered — the historical root cause of "same GPS, different categories"
+    # between installations. Records are only ever REAL Overpass data; a bucket
+    # that still fails every round is counted (never fabricated).
+    INFRASTRUCTURE_IMPORT_BACKFILL_ROUNDS: int = 2
+    INFRASTRUCTURE_IMPORT_BACKFILL_DELAY_SECONDS: float = 4.0
 
     # ===== Context Enrichment Agent (Part 11) =====
     # Weather comes from Open-Meteo's public forecast API. It is free and

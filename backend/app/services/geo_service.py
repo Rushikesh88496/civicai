@@ -497,7 +497,8 @@ class GeoService:
         timeout = float(self._settings.GIS_OVERPASS_TIMEOUT_SECONDS)
         endpoints = self._overpass_endpoints()
         attempts = max(1, int(self._settings.GIS_OVERPASS_MAX_RETRIES) + 1)
-        for endpoint in endpoints:
+
+        async def try_endpoint(endpoint: str) -> tuple[str, dict[str, Any] | None]:
             for _ in range(attempts):
                 try:
                     r = await self._overpass_get(endpoint, query, timeout, client)
@@ -513,20 +514,62 @@ class GeoService:
                     )
                     continue
                 try:
-                    data = r.json()
+                    return endpoint, r.json()
                 except Exception as exc:
                     logger.warning("Overpass %s returned unparseable JSON: %s", endpoint, exc)
                     continue
-                places = self._parse_overpass_elements(data, category, latitude, longitude)
-                places = places[:limit]
-                places.sort(key=lambda p: p.distance_m or math.inf)
-                # Cache genuine live successes only (an empty result is real
-                # "no facilities", a failure is never cached).
-                await self._store_infra_cache(
-                    cache_key, [p.model_dump(mode="json") for p in places]
-                )
-                return places, True, f"overpass:{_host(endpoint)}", False
-        return [], False, None, False
+            return endpoint, None
+
+        # Query every mirror concurrently. Endpoints are ranked in configured order
+        # (primary first). We settle on a successful job only once every
+        # higher-priority endpoint has finished -- otherwise the reporter would
+        # be non-deterministic (a slower mirror might beat the primary). A
+        # lower-priority mirror that finishes later can never displace a
+        # higher-ranked success, so the wall-clock stays that of the worst
+        # endpoint instead of the SUM of every endpoint timeout (the old
+        # sequential path cost minutes per lookup).
+        endpoint: str | None = None
+        data: dict[str, Any] | None = None
+        if endpoints:
+            tasks = {asyncio.create_task(try_endpoint(e)): rank for rank, e in enumerate(endpoints)}
+            pending = set(tasks)
+            results: dict[int, dict[str, Any] | None] = {}
+            try:
+                while pending:
+                    done, pending = await asyncio.wait(
+                        pending, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in done:
+                        rank = tasks[task]
+                        try:
+                            _job_ep, payload = task.result()
+                        except Exception as exc:  # noqa: BLE001 - never fail the lookup
+                            logger.warning("Overpass concurrent fetch failed: %s", exc)
+                            payload = None
+                        results[rank] = payload
+                    best = min((r for r, p in results.items() if p is not None), default=None)
+                    if best is None:
+                        continue
+                    higher_done = all(r in results for r in range(best))
+                    if higher_done:
+                        endpoint, data = endpoints[best], results[best]
+                        break
+            finally:
+                for task in pending:
+                    task.cancel()
+
+        if data is None:
+            return [], False, None, False
+
+        places = self._parse_overpass_elements(data, category, latitude, longitude)
+        places = places[:limit]
+        places.sort(key=lambda p: p.distance_m or math.inf)
+        # Cache genuine live successes only (an empty result is real
+        # "no facilities", a failure is never cached).
+        await self._store_infra_cache(
+            cache_key, [p.model_dump(mode="json") for p in places]
+        )
+        return places, True, f"overpass:{_host(endpoint)}", False
 
     @classmethod
     def _parse_overpass_elements(
@@ -719,7 +762,12 @@ class GeoService:
         registry_has = await registry._registry_counts(db, categories)
         by_category: dict[CriticalLocationCategory, list[GeoPlace]] = {}
         statuses: dict[CriticalLocationCategory, InfrastructureDataStatus] = {}
-        for category in categories:
+
+        async def resolve(category: CriticalLocationCategory) -> tuple[
+            CriticalLocationCategory,
+            InfrastructureDataStatus,
+            list[GeoPlace],
+        ]:
             summary = await registry.resolve_category(
                 db,
                 latitude=latitude,
@@ -731,7 +779,6 @@ class GeoService:
                 registry_has=registry_has,
                 geo_service=self,
             )
-            statuses[category] = summary.status
             places: list[GeoPlace] = []
             for place in summary.places:
                 if place.latitude is None or place.longitude is None:
@@ -748,6 +795,13 @@ class GeoService:
                         is_demo=place.is_demo,
                     )
                 )
+            return category, summary.status, places
+
+        # Resolve categories concurrently (each may live-fallback to Overpass);
+        # sequential resolution multiplied every mirror timeout by category count.
+        resolved = await asyncio.gather(*(resolve(c) for c in categories))
+        for category, status, places in resolved:
+            statuses[category] = status
             by_category[category] = places
 
         poi = list(_POI_CATEGORIES)

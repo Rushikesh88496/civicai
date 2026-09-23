@@ -183,6 +183,7 @@ async def get_priority_result(
 ) -> PriorityRunOut | None:
     """Return the most recent priority engine run for a complaint, if any."""
     await _assert_can_view(db, user, complaint_id)
+    await agent_run_service.reap_stale_runs(db, complaint_id=complaint_id, agent=AGENT_NAME)
     run = await agent_run_service.get_latest_run_for_agent(db, complaint_id, AGENT_NAME)
     if run is None:
         return None

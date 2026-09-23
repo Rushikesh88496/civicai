@@ -1,7 +1,19 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,6 +36,17 @@ class InfrastructureAsset(Base, UUIDMixin, TimestampMixin):
     """
 
     __tablename__ = "infrastructure_assets"
+    __table_args__ = (
+        # Provenance-level uniqueness for real assets synced from the verified
+        # facility registry — one record can never be registered twice.
+        Index(
+            "uix_infrastructure_assets_source_source_id",
+            "source",
+            "source_id",
+            unique=True,
+            postgresql_where=text("source_id IS NOT NULL"),
+        ),
+    )
 
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     category: Mapped[InfrastructureCategory] = mapped_column(
@@ -41,6 +64,11 @@ class InfrastructureAsset(Base, UUIDMixin, TimestampMixin):
     # Thin, human-readable operational context (not a prediction).
     condition_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    # Real provenance for assets synced from the verified facility registry.
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_dataset: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     ward = relationship("Ward", back_populates="infrastructure_assets")
     predictions = relationship(

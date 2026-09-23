@@ -13,6 +13,17 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 const REFRESH_KEY = "ca_refresh";
 
+// Hard per-request ceiling so a slow/no response can never leave a page
+// section stuck in a perpetual spinner or skeleton. Every request below is
+// aborted after this budget and surfaces a clear "timed out" error instead.
+// Must exceed the worst-case synchronous first computation (~56s: priority
+// pipeline with live GEO fallbacks capped at the GIS timeouts below).
+const API_TIMEOUT_MS = 90000;
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
 export interface AuthUser {
   id: string;
   email: string;
@@ -86,13 +97,29 @@ export function clearSession() {
 }
 
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  if (init?.signal) {
+    // Combine a caller-provided signal with the timeout so either can abort.
+    if (init.signal.aborted) controller.abort();
+    else init.signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  const timedInit: RequestInit = init ? { ...init, signal: controller.signal } : { signal: controller.signal };
   try {
-    return await fetch(`${API_BASE_URL}${path}`, init);
-  } catch {
+    return await fetch(`${API_BASE_URL}${path}`, timedInit);
+  } catch (err) {
+    if (isAbortError(err)) {
+      throw new ApiError(
+        0,
+        `Request timed out after ${API_TIMEOUT_MS / 1000}s — the backend was too slow to respond. Please retry.`
+      );
+    }
     throw new ApiError(
       0,
       `Cannot reach the CivicAgent API at ${API_BASE_URL}. Is the backend server running?`
     );
+  } finally {
+    clearTimeout(timer);
   }
 }
 

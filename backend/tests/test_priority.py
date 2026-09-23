@@ -389,10 +389,11 @@ def test_data_unavailable_infra_is_not_scored_and_never_inflates():
     )
     infra = next(c for c in components if c["key"] == "infrastructure")
     assert infra["score"] is None
-    # Only severity scores (0.35 * 25 ≈ 9); everything else honestly unknown.
+    # Only severity scores: MEDIUM base 6/10 + ROAD inherent hazard 1/5 = 7;
+    # everything else honestly unknown.
     scored = [c for c in components if c["score"] is not None]
     assert [c["key"] for c in scored] == ["severity"]
-    assert score == 9
+    assert score == 7
     assert bucket == DynamicPriority.P4_LOW
     assert not amplifiers
     assert readiness == PriorityReadiness.INSUFFICIENT_DATA
@@ -609,7 +610,7 @@ def test_sla_breach_never_raises_engine_score():
     )
     first = score_priority(**bundle)[0]
     second = score_priority(**bundle)[0]
-    assert first == second == 16  # 0.65 * 25 = 16, nothing else scores
+    assert first == second == 10  # HIGH base 9/10 + WATER hazard 1/5, nothing else
 
 
 def test_sla_status_reporting_states():
@@ -987,11 +988,11 @@ async def test_get_priority_history_access_enforced(client):
 def test_settings_weights_are_configurable():
     # Config exposes the six new weights + thresholds + change threshold.
     assert _SETTINGS.PRIORITY_WEIGHT_SEVERITY == 25.0
-    assert _SETTINGS.PRIORITY_WEIGHT_INFRASTRUCTURE == 20.0
-    assert _SETTINGS.PRIORITY_WEIGHT_POPULATION == 20.0
-    assert _SETTINGS.PRIORITY_WEIGHT_HISTORY == 15.0
+    assert _SETTINGS.PRIORITY_WEIGHT_INFRASTRUCTURE == 30.0
+    assert _SETTINGS.PRIORITY_WEIGHT_POPULATION == 10.0
+    assert _SETTINGS.PRIORITY_WEIGHT_HISTORY == 5.0
     assert _SETTINGS.PRIORITY_WEIGHT_WEATHER == 10.0
-    assert _SETTINGS.PRIORITY_WEIGHT_EVIDENCE == 10.0
+    assert _SETTINGS.PRIORITY_WEIGHT_EVIDENCE == 20.0
     assert _SETTINGS.PRIORITY_WEATHER_RAIN_MM > 0
     assert _SETTINGS.PRIORITY_AMPLIFIER_FLOODING_POINTS > 0
     assert _SETTINGS.PRIORITY_THRESHOLD_P1 == 80.0
@@ -1110,9 +1111,12 @@ def test_calibration_scenario_reports_honest_detailed_parts():
     infra = _comp(comps, "infrastructure")
     pop = _comp(comps, "population")
     sev = _comp(comps, "severity")
-    assert infra["score"] is not None and 16 <= infra["score"] <= 19
-    assert pop["score"] is not None and 4 <= pop["score"] <= 8
-    assert sev["score"] is not None and 11 <= sev["score"] <= 14
+    assert infra["score"] is not None and 24 <= infra["score"] <= 29
+    assert pop["score"] is not None and 2 <= pop["score"] <= 8
+    # Five-part severity now (base 10 + safety 5 + accessibility 3 + critical
+    # infra 4 + environmental 3): a MEDIUM road with a verified hospital ≤100 m
+    # escalates HARD (policy: MEDIUM can genuinely become high severity).
+    assert sev["score"] is not None and 16 <= sev["score"] <= 20
     assert _comp(comps, "weather")["score"] <= 2
     assert readiness.value == "READY"
     assert bucket.value in {"P2_HIGH", "P3_MEDIUM"}
@@ -1128,7 +1132,8 @@ def test_calibration_scenario_reports_honest_detailed_parts():
 
     sev_dims = sev["details"]["dimensions"]
     assert sev_dims["accessibility"] > 0
-    assert sev["details"]["base_unit"] == 0.35
+    assert sev_dims["critical_infrastructure"] > 0
+    assert sev["details"]["base_unit"] == 0.6
 
     pops = pop["details"]["subcomponents"]
     assert pops["population_exposure"]["status"] == "DATA_UNAVAILABLE"
@@ -1210,11 +1215,16 @@ def test_calibration_population_unavailable_grid_is_not_zero():
         severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
         population=_calib_population(sensitive=False),
     )[2]
-    assert _comp(with_sensitive, "population")["score"] >= 4
+    assert _comp(with_sensitive, "population")["score"] >= 2
     assert _comp(no_sensitive, "population")["score"] <= 1
 
 
-def test_calibration_severity_context_boost_is_bounded():
+def test_calibration_severity_medium_can_escalate_to_high_with_real_context():
+    # Recalibration contract: MEDIUM (AI triage) is the BASE, never a cap.
+    # A MEDIUM drainage complaint with a verified hospital ≤100 m, heavy real
+    # rain AND heavy report pressure must leave the bare-MEDIUM 7/25 and climb
+    # far into the high range (old model capped the +boost at 15/25). A bare
+    # MEDIUM with no context stays low (base + inherent hazard only).
     heavy = PopulationInput(
         reports_7d={250: 3, 500: 2, 1000: 5},
         reports_30d={250: 0, 500: 0, 1000: 0},
@@ -1239,20 +1249,24 @@ def test_calibration_severity_context_boost_is_bounded():
         weather=storm,
     )
     sev = _comp(comps, "severity")
-    assert 12 <= sev["score"] <= 15
+    assert 18 <= sev["score"] <= 25  # MEDIUM genuinely reaches near-max severity
+    subs = sev["details"]["subcomponents"]
+    assert subs["base"]["score"] == 6        # AI base unchanged (6/10)
+    assert subs["safety"]["score"] == 5      # real rain + emergency access
+    assert subs["environmental"]["score"] == 3
     bare = score_priority(
         category="DRAINAGE",
         severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
     )[2]
-    assert _comp(bare, "severity")["score"] == 9
+    assert _comp(bare, "severity")["score"] == 7  # 6/10 base + 1/5 drainage hazard
 
 
 def test_calibration_weather_resaturates_to_40mm_and_is_category_aware():
     sev = SeverityInput(severity="MEDIUM", status="AVAILABLE")
     for cond, mm, cat, expected in (
-        ("dry", 0.0, "ROAD", 1),
-        ("clear", 0.0, "ROAD", 1),
-        ("light rain", 8.0, "ROAD", 6),  # rainy floor 0.6, NOT 10
+        ("dry", 0.0, "ROAD", 0),  # truly none — NO auto 1/10 any more
+        ("clear", 0.0, "ROAD", 0),
+        ("light rain", 8.0, "ROAD", 6),  # 0.6 signal, NOT 10
         ("heavy rain", 40.0, "ROAD", 10),
         ("heavy rain", 40.0, "DRAINAGE", 10),
         ("light rain", 8.0, "STREET_LIGHTING", 1),  # 0.6*0.15 → ~1 (was 10/10)
@@ -1267,9 +1281,9 @@ def test_calibration_weather_resaturates_to_40mm_and_is_category_aware():
 
 
 def test_calibration_evidence_ai_confidence_maps_one_to_one():
-    # Real AI verification confidence drives the evidence score 1:1 (98 % ~ 10/10,
-    # 90 % ~ 9, 80 % ~ 8, 70 % ~ 7), with vision preferred over triage and a
-    # vision mismatch voiding the vision signal entirely.
+    # Real AI verification confidence drives the evidence score 1:1 on 20 points
+    # (98 % ~ 20/20, 90 % ~ 18, 80 % ~ 16, 70 % ~ 14), with vision preferred
+    # over triage and a vision mismatch voiding the vision signal entirely.
     def ev(conf=None, vision=0.95, mismatch=False, triage=None):
         return EvidenceInput(
             has_gps=False,
@@ -1295,7 +1309,7 @@ def test_calibration_evidence_ai_confidence_maps_one_to_one():
     assert ai_evidence_confidence(ev(0.5, vision=0.95, mismatch=True))[1] == "triage"
     assert ai_evidence_confidence(ev(None, vision=None)) == (None, None)
 
-    for conf, expected in ((0.98, 10), (0.90, 9), (0.80, 8), (0.70, 7)):
+    for conf, expected in ((0.98, 20), (0.90, 18), (0.80, 16), (0.70, 14)):
         got = score_priority(
             category="ROAD",
             severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
@@ -1313,7 +1327,7 @@ def test_calibration_evidence_ai_confidence_maps_one_to_one():
         evidence=ev(None, vision=None, triage=None),
     )[2]
     ev_comp = _comp(partial, "evidence")
-    assert ev_comp["score"] <= 5  # non-AI signals capped at 0.85, honest low score
+    assert ev_comp["score"] <= 17  # non-AI signals capped at 0.85 → ≤17/20, honest low score
     assert ev_comp["details"]["ai_verification_source"] is None
 
 
@@ -1340,7 +1354,7 @@ def test_calibration_infrastructure_saturates_only_with_real_verified_proximity(
         severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
         infrastructure=blocked,
     )[2]
-    assert 18 <= _comp(road, "infrastructure")["score"] <= 20  # police 10 m → near-max
+    assert 27 <= _comp(road, "infrastructure")["score"] <= 30  # police 10 m → max (30/30 max now)
 
     street = score_priority(
         category="STREET_LIGHTING",
@@ -1374,9 +1388,10 @@ def test_calibration_infrastructure_saturates_only_with_real_verified_proximity(
 
 def test_calibration_severity_escalates_toward_high_not_to_max():
     # The documented CASE-1-like condition (access-affecting category, verified
-    # emergency facility ≤100 m, MEDIUM triage) must push severity UP toward HIGH
-    # — it must exceed the bare-MEDIUM 9 but never be forced to 25 (25 only for a
-    # real HIGH with verified critical infrastructure inside the access floor).
+    # emergency facility ≤100 m, MEDIUM triage) must push severity UP past the
+    # bare-MEDIUM 7 — the five-part model has NO shared boost cap, so a MEDIUM
+    # with real critical context can genuinely reach the upper range, but stays
+    # below 25 unless the triage label itself is CRITICAL.
     sev = SeverityInput(severity="MEDIUM", status="AVAILABLE")
     comps = score_priority(
         category="ROAD",
@@ -1385,8 +1400,8 @@ def test_calibration_severity_escalates_toward_high_not_to_max():
     )[2]
     sev_comp = _comp(comps, "severity")
     assert sev_comp["score"] > 9
-    assert sev_comp["score"] <= 15
-    assert sev_comp["details"]["escalation_formula"].startswith("unit = base_unit")
+    assert sev_comp["score"] <= 25
+    assert sev_comp["details"]["escalation_formula"].startswith("severity(0..max)")
 
     extreme = score_priority(
         category="ROAD",
@@ -1401,8 +1416,9 @@ def test_calibration_severity_escalates_toward_high_not_to_max():
             status="FOUND",
         ),
     )[2]
-    assert 16 <= _comp(extreme, "severity")["score"] <= 25
-    assert _comp(extreme, "severity")["score"] < 25  # even HIGH + access floor stays bounded
+    sev_extreme = _comp(extreme, "severity")
+    assert 16 <= sev_extreme["score"] <= 25
+    assert sev_extreme["score"] < 25  # HIGH + access floor still < the CRITICAL ceiling
 
 
 def test_calibration_scenario_a_through_e():
@@ -1455,3 +1471,528 @@ def test_calibration_scenario_a_through_e():
         assert 0 <= score <= 100
         for c in comps:
             assert c["score"] is None or c["score"] <= c["max_score"]
+
+
+# --------------------------------------------------------------------------- #
+# Recalibration TESTS 1-7 — new 30/30 infrastructure + banded weather model
+# --------------------------------------------------------------------------- #
+def _severity(level: str = "MEDIUM") -> SeverityInput:
+    return SeverityInput(severity=level, status="AVAILABLE")
+
+
+def _infra(facilities: list[FacilityInput]) -> InfrastructureInput:
+    return InfrastructureInput(facilities=facilities, status="FOUND", radius_m=1000.0)
+
+
+def test_recalibration_t1_explicit_verified_hospital_gets_full_30():
+    # "Road is broken near hospital" + a VERIFIED hospital 85 m away + ROAD
+    # (access-affecting) -> infrastructure hits its full 30/30 with the matched
+    # record, distance and relationship reported. No fabrication anywhere.
+    infra = _infra(
+        [
+            FacilityInput(
+                name="General Hospital",
+                category="HOSPITAL",
+                distance_m=85.0,
+                verification="VERIFIED",
+                record_id="loc-hospital-1",
+            ),
+            FacilityInput(
+                name="Bus Stop",
+                category="BUS_STOP",
+                distance_m=200.0,
+                verification="VERIFIED",
+                record_id="loc-bus-2",
+            ),
+        ]
+    )
+    comps = score_priority(
+        category="ROAD",
+        severity=_severity(),
+        complaint_description="Road is broken near hospital",
+        infrastructure=infra,
+    )[2]
+    c = _comp(comps, "infrastructure")
+    assert c["score"] == 30
+    assert c["max_score"] == 30
+    det = c["details"]
+    assert det["explicit_facility_mentioned"] == "HOSPITAL"
+    assert det["explicit_rule_applied"] is True
+    assert det["matched_facility_id"] == "loc-hospital-1"
+    assert det["matched_facility_type"] == "HOSPITAL"
+    assert det["matched_distance_m"] == 85.0
+    assert det["relationship_confidence"] is not None and det["relationship_confidence"] > 0.5
+    assert "hospital" in (det["relationship"] or "").lower()
+
+
+def test_recalibration_t2_no_explicit_mention_never_auto_30():
+    # Same verified hospital nearby, but the text names NO facility: high
+    # contextual exposure is fine, the 30/30 explicit rule must NOT fire.
+    infra = _infra(
+        [
+            FacilityInput(
+                name="General Hospital",
+                category="HOSPITAL",
+                distance_m=85.0,
+                verification="VERIFIED",
+                record_id="loc-hospital-1",
+            ),
+            FacilityInput(
+                name="Police Station",
+                category="POLICE_STATION",
+                distance_m=10.0,
+                verification="VERIFIED",
+                record_id="loc-police-1",
+            ),
+        ]
+    )
+    comps = score_priority(
+        category="ROAD",
+        severity=_severity(),
+        complaint_description="There is a large pothole on the main road",
+        infrastructure=infra,
+    )[2]
+    c = _comp(comps, "infrastructure")
+    assert c["details"]["explicit_facility_mentioned"] is None
+    assert c["details"]["explicit_rule_applied"] is False
+    assert c["details"]["matched_facility_id"] is None
+    assert c["score"] is not None and c["score"] < 30
+
+
+def test_recalibration_t3_explicit_mention_no_verified_match_is_not_30():
+    # Text says "near hospital" but the registry has NO verified hospital in
+    # range (only a bus stop and an unverified live hospital): the rule must NOT
+    # fire and the details must say why honestly.
+    infra = _infra(
+        [
+            FacilityInput(
+                name="Bus Stop",
+                category="BUS_STOP",
+                distance_m=150.0,
+                verification="VERIFIED",
+                record_id="loc-bus-2",
+            ),
+            FacilityInput(
+                name="Live Hospital (awaiting verification)",
+                category="HOSPITAL",
+                distance_m=70.0,
+                verification="PENDING_VERIFICATION",
+                record_id=None,
+            ),
+        ]
+    )
+    comps = score_priority(
+        category="ROAD",
+        severity=_severity(),
+        complaint_description="Water logging near hospital",
+        infrastructure=infra,
+    )[2]
+    c = _comp(comps, "infrastructure")
+    det = c["details"]
+    assert det["explicit_facility_mentioned"] == "HOSPITAL"
+    assert det["explicit_rule_applied"] is False
+    assert det["matched_facility_id"] is None  # PENDING must never be claimed
+    assert det["matched_facility_type"] is None
+    assert "no verified facility" in (det["relationship"] or "").lower()
+    assert c["score"] is not None and c["score"] < 30
+
+
+def test_recalibration_t3b_explicit_mention_irrelevant_pair_not_30():
+    # A park named explicitly for a STREET_LIGHTING complaint is not a relevant
+    # facility pairing — contextual scoring, no 30/30.
+    infra = _infra(
+        [
+            FacilityInput(
+                name="Martyrs Park",
+                category="PARKS",
+                distance_m=40.0,
+                verification="VERIFIED",
+                record_id="loc-park-1",
+            )
+        ]
+    )
+    comps = score_priority(
+        category="STREET_LIGHTING",
+        severity=_severity("LOW"),
+        complaint_description="Street light still off near the park",
+        infrastructure=infra,
+    )[2]
+    c = _comp(comps, "infrastructure")
+    assert c["details"]["explicit_rule_applied"] is False
+    assert c["score"] is not None and c["score"] < 30
+
+
+def test_recalibration_t4_forecast_precip_lifts_drainage_above_default():
+    # Drainage, nothing falling now, but a meaningful forecast: the weather
+    # component must RISE above the old auto-1/10, more as the forecast
+    # precipitation-probability rises. A bare probability with NO forecast rain
+    # must NOT invent risk.
+    def weather(prob: float | None) -> WeatherInput:
+        return WeatherInput(
+            condition="dry",
+            rain_mm=0.0,
+            forecast_precip_mm=12.0,
+            recent_precip_mm=0.0,
+            precip_probability_pct=prob,
+            status="AVAILABLE",
+            threshold_mm=5.0,
+        )
+
+    low = score_priority(
+        category="DRAINAGE", severity=_severity(), weather=weather(30.0)
+    )[2]
+    high = score_priority(
+        category="DRAINAGE", severity=_severity(), weather=weather(90.0)
+    )[2]
+    ld = _comp(low, "weather")
+    hd = _comp(high, "weather")
+    assert ld["score"] >= 4  # clearly above the old auto-1
+    assert hd["score"] > ld["score"]  # higher probability -> higher trust
+    assert hd["details"]["forecast_precip_max_mm"] == 12.0
+    assert hd["details"]["band"] in {"moderate", "strong", "severe"}
+
+    # Same forecast on an unexposed category stays low (category-aware).
+    street = score_priority(
+        category="STREET_LIGHTING", severity=_severity(), weather=weather(90.0)
+    )[2]
+    assert _comp(street, "weather")["score"] <= 2
+
+    # A "probabilistic guess" with an empty forecast is not rain.
+    prob_only = score_priority(
+        category="DRAINAGE",
+        severity=_severity(),
+        weather=WeatherInput(
+            condition="dry",
+            rain_mm=0.0,
+            forecast_precip_mm=0.0,
+            recent_precip_mm=0.0,
+            precip_probability_pct=95.0,
+            status="AVAILABLE",
+            threshold_mm=5.0,
+        ),
+    )[2]
+    assert _comp(prob_only, "weather")["score"] == 0
+
+
+def test_recalibration_t5_heavy_actual_rain_hits_full_weather_risk():
+    # Real measured rain is the strongest signal: drainage at 40 mm -> 10/10.
+    for cat in ("DRAINAGE", "ROAD"):
+        comps = score_priority(
+            category=cat,
+            severity=_severity(),
+            weather=WeatherInput(
+                condition="heavy rain",
+                rain_mm=40.0,
+                forecast_precip_mm=0.0,
+                recent_precip_mm=0.0,
+                precip_probability_pct=None,
+                status="AVAILABLE",
+                threshold_mm=5.0,
+            ),
+        )[2]
+        c = _comp(comps, "weather")
+        assert c["score"] == 10, cat
+        assert c["details"]["band"] == "severe"
+
+
+def test_recalibration_t6_normal_weather_streetlight_is_zero():
+    # Clear, dry, no recent rain, no forecast: weather is 0 for a streetlight —
+    # the old "condition present -> auto 1/10" is gone.
+    comps = score_priority(
+        category="STREET_LIGHTING",
+        severity=_severity("LOW"),
+        weather=WeatherInput(
+            condition="clear",
+            rain_mm=0.0,
+            forecast_precip_mm=0.0,
+            recent_precip_mm=0.0,
+            precip_probability_pct=0.0,
+            status="AVAILABLE",
+            threshold_mm=5.0,
+        ),
+    )[2]
+    c = _comp(comps, "weather")
+    assert c["score"] == 0
+    assert c["details"]["band"] == "none"
+
+
+def test_recalibration_t7_ai_confidence_98_percent_maps_to_evidence_20():
+    # T7 target: AI verification confidence 98 % -> evidence 20/20 on the
+    # recalibrated 20-point evidence weight (backing the officer UI against
+    # weak manual input to the contrary).
+    ev = EvidenceInput(
+        has_gps=True,
+        gps_source="device",
+        gps_accuracy_m=5.0,
+        description_chars=100,
+        media_count=0,
+        category_structured=True,
+        triage_available=False,
+        triage_confidence=None,
+        vision_available=True,
+        vision_confidence=0.98,
+        vision_mismatch=False,
+        corroborating_reports_30d=0,
+        status="AVAILABLE",
+    )
+    comps = score_priority(
+        category="ROAD", severity=_severity(), evidence=ev
+    )[2]
+    c = _comp(comps, "evidence")
+    assert c["score"] == 20
+    assert c["max_score"] == 20
+    assert c["details"]["ai_verification_source"] == "vision"
+    assert c["details"]["ai_verification_confidence_pct"] == 98
+
+
+# --------------------------------------------------------------------------- #
+# Recalibration section 17 — the fifteen severity scenarios (deterministic)
+# Severity model: base 10 (AI triage) + safety 5 + accessibility 3 +
+# critical-infrastructure 4 + environmental 3 = 25. AI triage is the BASE,
+# never a cap; every escalator needs verified evidence.
+# --------------------------------------------------------------------------- #
+def _sev(comps: list[dict]) -> dict:
+    return _comp(comps, "severity")
+
+
+def _subs(comps: list[dict]) -> dict[str, int]:
+    return {k: v["score"] for k, v in _sev(comps)["details"]["subcomponents"].items()}
+
+
+def _hospital(distance_m: float, name: str = "General Hospital") -> FacilityInput:
+    return FacilityInput(
+        name=name, category="HOSPITAL", distance_m=distance_m,
+        verification="VERIFIED", record_id=f"loc-h-{distance_m}",
+    )
+
+
+def test_sev17_1_minor_potholes_stay_low_without_claiming_proximity():
+    # MINOR POTHOLES: LOW triage, a hospital 85 m away in the registry, but the
+    # text never names it -> accessibility/critical-infra must NOT fire (no
+    # fabrication: proximity beside a LOW complaint is not claimed).
+    comps = score_priority(
+        category="ROAD",
+        severity=SeverityInput(severity="LOW", status="AVAILABLE"),
+        infrastructure=_infra([_hospital(85.0)]),
+        complaint_description="There is a small pothole on the road",
+    )[2]
+    assert _sev(comps)["score"] == 4  # 3/10 base + 1/5 road hazard only
+    subs = _subs(comps)
+    assert subs["base"] == 3
+    assert subs["accessibility"] == 0
+    assert subs["critical_infrastructure"] == 0
+
+
+def test_sev17_2_medium_road_damage_base_comes_from_triage():
+    comps = score_priority(
+        category="ROAD", severity=SeverityInput(severity="MEDIUM", status="AVAILABLE")
+    )[2]
+    subs = _subs(comps)
+    assert subs["base"] == 6  # MEDIUM -> 6/10
+    assert subs["accessibility"] == 0
+    assert subs["critical_infrastructure"] == 0
+    assert _sev(comps)["score"] == 7  # + 1/5 inherent road hazard
+
+
+def test_sev17_3_road_near_hospital_verified_escalates():
+    # ROAD NEAR HOSPITAL — verified 60 m, text names it: Safety 4/5,
+    # Accessibility 3/3, Critical Infra 4/4 (the documented numbers).
+    comps = score_priority(
+        category="ROAD",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+        infrastructure=_infra([_hospital(60.0)]),
+        complaint_description="Road is broken near hospital",
+    )[2]
+    subs = _subs(comps)
+    assert subs == {"base": 6, "safety": 4, "accessibility": 3,
+                    "critical_infrastructure": 4, "environmental": 0}
+    assert _sev(comps)["score"] == 17
+
+
+def test_sev17_4_road_obstruction_near_hospital_police_safety_topped():
+    # ROAD OBSTRUCTION near hospital/police: a police station ten metres away
+    # pushes Safety to the full 5/5 (the ≤50 m tier), critical infra full.
+    comps = score_priority(
+        category="ROAD",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+        infrastructure=_infra([
+            FacilityInput(name="Police", category="POLICE_STATION", distance_m=10.0,
+                          verification="VERIFIED", record_id="loc-p-1"),
+            _hospital(220.0),
+        ]),
+        complaint_description="Road obstruction near police station and hospital",
+    )[2]
+    subs = _subs(comps)
+    assert subs["safety"] == 5
+    assert subs["accessibility"] == 3
+    assert subs["critical_infrastructure"] == 4
+    assert _sev(comps)["score"] == 18
+
+
+def test_sev17_5_road_blocked_near_fire_station_infra_30_no_double_count():
+    # ROAD BLOCKED near fire station: Safety 5/5, Critical Infra 4/4 — and the
+    # SEPARATE infrastructure component hits 30/30 via the explicit rule. The
+    # severity 4-point slice and the infrastructure 30 are distinct components
+    # (never double-counted).
+    comps = score_priority(
+        category="ROAD",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+        infrastructure=_infra([
+            FacilityInput(name="Fire Station", category="FIRE_STATION", distance_m=50.0,
+                          verification="VERIFIED", record_id="loc-f-1")
+        ]),
+        complaint_description="Road fully blocked near the fire station",
+    )[2]
+    subs = _subs(comps)
+    assert subs["safety"] == 5
+    assert subs["critical_infrastructure"] == 4
+    assert _sev(comps)["score"] == 18
+    assert _comp(comps, "infrastructure")["score"] == 30
+    assert _sev(comps)["key"] != _comp(comps, "infrastructure")["key"]
+
+
+def test_sev17_6_drainage_heavy_rain_environmental_full():
+    comps = score_priority(
+        category="DRAINAGE",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+        weather=WeatherInput(condition="heavy rain", rain_mm=40.0, status="AVAILABLE"),
+    )[2]
+    subs = _subs(comps)
+    assert subs["environmental"] == 3  # heavy real rain on drainage -> 3/3
+    assert subs["safety"] == 5         # wet hazard escalator to the top
+    assert _sev(comps)["score"] == 14
+
+
+def test_sev17_7_drainage_no_rain_environmental_zero():
+    comps = score_priority(
+        category="DRAINAGE",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+        weather=WeatherInput(condition="dry", rain_mm=0.0, status="AVAILABLE"),
+    )[2]
+    subs = _subs(comps)
+    assert subs["environmental"] == 0  # no rain anywhere -> 0/3 (never auto-scored)
+    assert subs["base"] == 6
+
+
+def test_sev17_8_garbage_near_hospital_450m_lower_impact():
+    # GARBAGE with a hospital 450 m away: real impact but LOWER — Safety 2/5,
+    # Accessibility 2/3, Critical Infra 2/4 (decayed, not maxed).
+    comps = score_priority(
+        category="GARBAGE",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+        infrastructure=_infra([_hospital(450.0)]),
+        complaint_description="Lots of garbage dumped near hospital",
+    )[2]
+    subs = _subs(comps)
+    assert subs["safety"] == 2
+    assert subs["accessibility"] == 2
+    assert subs["critical_infrastructure"] == 2
+    assert _sev(comps)["score"] == 12
+
+
+def test_sev17_9_streetlight_near_school_stays_low():
+    # STREETLIGHT near SCHOOL (LOW triage, text names it): base 3/10 and only a
+    # small safety bump — schools are NOT critical infrastructure, and
+    # streetlighting is not access-affecting, so accessibility/critical-infra
+    # must be 0.
+    comps = score_priority(
+        category="STREET_LIGHTING",
+        severity=SeverityInput(severity="LOW", status="AVAILABLE"),
+        infrastructure=_infra([
+            FacilityInput(name="School", category="SCHOOL", distance_m=90.0,
+                          verification="VERIFIED", record_id="loc-s-1")
+        ]),
+        complaint_description="Streetlight not working near school",
+    )[2]
+    subs = _subs(comps)
+    assert subs["base"] == 3
+    assert subs["safety"] == 1
+    assert subs["accessibility"] == 0
+    assert subs["critical_infrastructure"] == 0
+    assert _sev(comps)["score"] <= 5
+
+
+def test_sev17_10_no_infrastructure_no_proximity_claims():
+    comps = score_priority(
+        category="ROAD",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+        infrastructure=InfrastructureInput(status="NO_VERIFIED_RECORDS"),
+    )[2]
+    subs = _subs(comps)
+    assert subs["accessibility"] == 0
+    assert subs["critical_infrastructure"] == 0
+    assert _sev(comps)["score"] == 7
+
+
+def test_sev17_11_medium_triage_no_context_is_just_base():
+    comps = score_priority(
+        category="WATER", severity=SeverityInput(severity="MEDIUM", status="AVAILABLE")
+    )[2]
+    assert _subs(comps)["base"] == 6
+    assert _sev(comps)["details"]["base_unit"] == 0.6
+
+
+def test_sev17_12_medium_strong_context_exceeds_old_medium_ceiling():
+    # MEDIUM + strong verified context must ESCALATE out of the "MEDIUM stays
+    # ~10/25" trap — a MEDIUM road beside a verified hospital is not capped.
+    bare = score_priority(
+        category="ROAD", severity=SeverityInput(severity="MEDIUM", status="AVAILABLE")
+    )[2]
+    strong = score_priority(
+        category="ROAD",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+        infrastructure=_infra([_hospital(60.0)]),
+        complaint_description="Road is broken near hospital",
+    )[2]
+    assert _subs(bare)["base"] == _subs(strong)["base"] == 6
+    assert _sev(strong)["score"] > _sev(bare)["score"]
+    assert _sev(strong)["score"] > 10  # well past the old "MEDIUM ≈ base" region
+    assert _sev(strong)["score"] <= 25
+
+
+def test_sev17_13_high_strong_context_stays_below_25():
+    # HIGH + fire station 50 m: escalates to the upper range, but the 25 ceiling
+    # is reserved for genuine CRITICAL triage (base 10 + all four escalators).
+    comps = score_priority(
+        category="ROAD",
+        severity=SeverityInput(severity="HIGH", status="AVAILABLE"),
+        infrastructure=_infra([
+            FacilityInput(name="Fire Station", category="FIRE_STATION", distance_m=50.0,
+                          verification="VERIFIED", record_id="loc-f-1")
+        ]),
+        complaint_description="Road blocked near the fire station",
+    )[2]
+    assert _subs(comps)["base"] == 9
+    assert 20 <= _sev(comps)["score"] < 25
+
+
+def test_sev17_14_critical_triage_with_context_nears_25():
+    # CRITICAL triage + verified fire infrastructure + heavy real rain: the full
+    # five-part model saturates toward (or at) the 25 ceiling.
+    comps = score_priority(
+        category="ROAD",
+        severity=SeverityInput(severity="CRITICAL", status="AVAILABLE"),
+        infrastructure=_infra([
+            FacilityInput(name="Fire Station", category="FIRE_STATION", distance_m=50.0,
+                          verification="VERIFIED", record_id="loc-f-1")
+        ]),
+        weather=WeatherInput(condition="heavy rain", rain_mm=40.0, status="AVAILABLE"),
+        complaint_description="Road fully blocked near the fire station",
+    )[2]
+    subs = _subs(comps)
+    assert subs["base"] == 10
+    assert subs["safety"] == 5 and subs["accessibility"] == 3
+    assert subs["critical_infrastructure"] == 4 and subs["environmental"] == 3
+    assert _sev(comps)["score"] == 25
+
+
+def test_sev17_15_normal_complaint_no_special_factors():
+    comps = score_priority(
+        category="WATER",
+        severity=SeverityInput(severity="MEDIUM", status="AVAILABLE"),
+    )[2]
+    subs = _subs(comps)
+    assert subs["base"] == 6
+    assert subs["safety"] == 1
+    assert subs["environmental"] == 0
+    assert _sev(comps)["score"] == 7

@@ -7,9 +7,9 @@ The engine maps *real* context data onto a single 0..100 score and a
 Component maxima (configurable via ``PRIORITY_WEIGHT_*``, defaults sum to 100)::
 
     Severity / potential harm         25
-    Infrastructure exposure           20
-    Affected population & area        20
-    Recurrence / incident pattern     15
+    Infrastructure exposure           30
+    Affected population & area        15
+    Recurrence / incident pattern     10
     Weather / environmental risk      10
     Evidence confidence               10
                                      ----
@@ -37,23 +37,35 @@ API/UI can always explain where a number (or the lack of one) came from.
 
 Component internals (calibration v3 + evidence/infra/severity recalibration):
 
-* **Severity / harm** — the stored triage severity label (``complaint.priority``)
-  is the HARM base; deterministic *dimensions* (emergency-access proximity,
-  public safety, corroborating reports, weather) may add at most
-  ``PRIORITY_SEVERITY_MAX_BOOST`` (0.30) unit on top. Accessibility is the
-  dominant harm dimension for access-affecting categories: a verified emergency
-  facility within 50 m/100 m floors that dimension at 0.90/0.70, so a MEDIUM
-  incident that genuinely blocks a police station 10 m away escalates *toward*
-  HIGH — but the boost stays bounded, proximity alone can never reclassify
-  severity out of reach, and an empty context adds nothing.
-* **Infrastructure exposure** — per facility ``base relevance * complaint-category
-  factor * distance-decay`` with four decay bands 0-50 / 50-100 / 100-250 /
-  250-500 m (inside-band weights 1.0 / 0.9 / 0.6 / 0.35). The unit blends the
-  strongest single facility (``peak``), the saturated cluster of ALL nearby
-  facilities (``cluster``) and — only for access-affecting categories an
+* **Severity / harm** — a five-part 25-point model. The stored triage severity
+  label (``complaint.priority``) supplies ONLY the BASE sub-score (LOW 3/10,
+  MEDIUM 6/10, HIGH 9/10, CRITICAL 10/10 of its 10). The other four sub-scores
+  are deterministic and evidence-backed escalators, each capped at ITS OWN max:
+  Safety/Harm 5 (inherent category hazard + verified emergency-access and
+  people-exposure + real rain for wet categories + corroborating reports),
+  Public Accessibility 3 (access-affecting category with a verified
+  emergency/people facility in range), Critical Infrastructure Impact 4 (text-
+  names-a-facility or category-relevant registry facility, distance-decayed) and
+  Environmental/Weather 3 (real current/recent/forecast precipitation scaled by
+  the category). The AI triage is therefore the BASE, never a cap: a MEDIUM with
+  verified critical context CAN reach the top of the 25 points, and an empty
+  context adds nothing (bare MEDIUM stays 6/10 + inherent hazard only).
+* **Infrastructure exposure** — scored two ways, never fabricated. When the
+  complaint text EXPLICITLY names a facility (hospital / school / police / fire /
+  transit / …) AND the registry VERIFIES a facility of that type within the
+  configured search radius AND the complaint category is relevant to that
+  facility, the component scores its FULL 30/30 (with the matched record,
+  distance, relationship, relationship confidence and access impact reported).
+  Otherwise it scores contextually: per facility ``base relevance * complaint-
+  category factor * distance-decay`` with four decay bands 0-50 / 50-100 /
+  100-250 / 250-500 m (inside-band weights 1.0 / 0.9 / 0.6 / 0.35). The unit
+  blends the strongest single facility (``peak``), the saturated cluster of ALL
+  nearby facilities (``cluster``) and — only for access-affecting categories an
   emergency facility genuinely ≤50 m/≤100 m away — a real access-impact bonus
   (0.28/0.18). The relevance rulebook is *category-aware*: a hospital matters
-  more for a road-obstruction complaint than a park does for a streetlight.
+  more for a road-obstruction complaint than a park does for a streetlight. An
+  explicit mention with NO verified match is reported honestly
+  (``matched_facility_id = null``) and never earns the 30/30 rule.
 * **Affected population & area** — four real sub-signals:
   ``population_exposure`` (always ``DATA_UNAVAILABLE`` unless a real density grid
   is wired), ``report_pressure`` (real complaint counts 250/500/1000 m x 7d/30d,
@@ -62,9 +74,12 @@ Component internals (calibration v3 + evidence/infra/severity recalibration):
   Sub-signals are re-normalized over what is genuinely AVAILABLE: an unavailable
   population grid is reported honestly and NEVER treated as "low population".
 * **Recurrence** — real same-category 7d/30d counts (deduped).
-* **Weather** — real Open-Meteo current + forecast precipitation; a rainy
-  condition floors 0.6 but full risk needs substantial measured/forecast rain
-  (saturates near 40 mm), then scaled by the complaint category.
+* **Weather** — real Open-Meteo current + RECENT (trailing days) + forecast
+  precipitation plus the forecast precipitation-probability, combined into a
+  banded 0..1 unit (band /10 = ``round(unit*10)``: 0-2 none, 3-4 minor, 5-7
+  moderate, 8-9 strong, 10 severe) and scaled by the complaint category. A dry
+  streetlight complaint is ~0; a drainage complaint with a meaningful forecast
+  RISES above the old "auto 1/10"; full risk needs real measured/forecast rain.
 * **Evidence confidence** — the strongest *validated AI* verification confidence
   (vision/triage ``structured_result.confidence``, 0..1) maps 1:1 onto the unit
   (98 % → 0.98 → 10/10, 90 % → 9, 80 % → 8, 70 % → 7); the non-AI signals (GPS,
@@ -99,14 +114,18 @@ from typing import Any
 
 from app.models.enums import DynamicPriority, PriorityReadiness
 
-# Severity label -> numeric unit (the complaint's stored severity, set by the
-# triage agent as an input). Scaled against the severity component's max points.
-_SEVERITY_UNITS: dict[str, float] = {
-    "LOW": 0.10,
-    "MEDIUM": 0.35,
-    "HIGH": 0.65,
-    "CRITICAL": 0.90,
+# Severity label -> numeric base unit (the complaint's stored severity, set by
+# the triage agent). This is ONLY the BASE of the five-part severity model: it is
+# the HARM baseline (0..1, scaled against the 10 base points), never a ceiling —
+# the other four parts (safety / accessibility / critical-infrastructure /
+# environmental) escalate from it with their own capped maxima.
+_SEVERITY_BASE_UNITS: dict[str, float] = {
+    "LOW": 0.30,
+    "MEDIUM": 0.60,
+    "HIGH": 0.90,
+    "CRITICAL": 1.00,
 }
+_DEFAULT_SEVERITY_BASE: float = 0.30
 
 # Weather conditions treated as risk-raising (rain / thunder / fog / snow).
 _RAINY_CONDITIONS = frozenset(
@@ -151,6 +170,148 @@ _WEATHER_CATEGORY_MULTIPLIERS: dict[str, float] = {
     "PARKS": 0.4,
     "OTHER": 0.4,
     "STREET_LIGHTING": 0.15,
+}
+
+# Rainfall -> weighted "weather severity" signal curve (mm -> 0..1, applied to
+# current / recent / forecast precipitation before the category multiplier).
+# Calibrated so the component's /10 bands land sensibly: 0 mm -> 0 (truly none),
+# ~1 mm light rain -> ~2/10 pre-category, 5 mm (the configured threshold) is the
+# 0.5 midpoint, 8 mm light rain -> 0.6, 40 mm heavy rain -> 1.0 (saturates).
+_RAIN_MM_SIGNAL: tuple[tuple[float, float], ...] = (
+    (0.0, 0.0),
+    (1.0, 0.25),
+    (5.0, 0.5),
+    (8.0, 0.6),
+    (20.0, 0.85),
+    (40.0, 1.0),
+)
+
+# Weather-risk bands for the /10 component score (band = round(unit * 10)).
+_WEATHER_BANDS: tuple[tuple[int, str], ...] = (
+    (2, "none"),
+    (4, "minor"),
+    (7, "moderate"),
+    (9, "strong"),
+    (10, "severe"),
+)
+
+# --------------------------------------------------------------------------- #
+# Explicit-facility detection (complaint text -> normalized facility category)
+# --------------------------------------------------------------------------- #
+# Deterministic phrase aliases -> facility category, so "near hospital",
+# "near a medical college hospital", "near a health centre" and "clinic" all
+# normalize to HOSPITAL. Detection is keyword-shape matching on the lowercased
+# complaint text — never an LLM, never a fabricated facility.
+_EXPLICIT_FACILITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "HOSPITAL": (
+        "hospital",
+        "hospitals",
+        "medical college hospital",
+        "medical centre",
+        "medical center",
+        "health centre",
+        "health center",
+        "healthcare centre",
+        "healthcare center",
+        "clinic",
+        "clinics",
+        "nursing home",
+        "dispensary",
+        "primary health",
+        "phc ",
+    ),
+    "SCHOOL": (
+        "school",
+        "schools",
+        "college",
+        "colleges",
+        "university",
+        "vidyalaya",
+        "gram vidyalaya",
+        "madrasa",
+        "playschool",
+        "play school",
+        "kindergarten",
+        " tuition",
+    ),
+    "POLICE_STATION": (
+        "police station",
+        "police chowky",
+        "police chowki",
+        "police thana",
+        "thana",
+    ),
+    "FIRE_STATION": (
+        "fire station",
+        "fire brigade",
+        "fire department",
+        "fire service",
+    ),
+    "BUS_STOP": (
+        "bus stop",
+        "bus stops",
+        "bus stand",
+        "bus depot",
+        "bus terminal",
+        "bus bay",
+    ),
+    "TRANSPORT": (
+        "railway station",
+        "train station",
+        "metro station",
+        "rail station",
+        "subway station",
+    ),
+    "GOVERNMENT_BUILDING": (
+        "municipal office",
+        "collectorate",
+        "gram panchayat",
+        "sarkari office",
+        "government office",
+        "govt office",
+        "talathi office",
+        "zilla parishad",
+        "tehsildar office",
+    ),
+    "PUBLIC_FACILITY": (
+        "community hall",
+        "public library",
+        "library",
+        "market",
+        "gymnasium",
+        "stadium",
+        "auditorium",
+        "park",
+        "garden",
+        "playground",
+        "temple",
+        "masjid",
+        "church",
+    ),
+}
+
+# Complaint categories for which a matched facility type is "relevant" for the
+# 30/30 explicit-mention rule. Relevance = the facility genuinely matters for the
+# category (either the category is access-affecting, or the category-aware
+# rulebook raises that facility's factor >= 1.0 for the category, or the pair is
+# explicitly listed). Anything else scores contextually, never auto-30.
+_SCORE30_RELEVANT_FACILITIES: dict[str, frozenset[str]] = {
+    "ROAD": frozenset(
+        {"HOSPITAL", "SCHOOL", "FIRE_STATION", "POLICE_STATION", "TRANSPORT", "BUS_STOP"}
+    ),
+    "FLOODING": frozenset(
+        {"HOSPITAL", "FIRE_STATION", "SCHOOL", "POLICE_STATION", "TRANSPORT", "BUS_STOP"}
+    ),
+    "DRAINAGE": frozenset({"HOSPITAL", "FIRE_STATION", "SCHOOL", "POLICE_STATION"}),
+    "SANITATION": frozenset({"HOSPITAL", "SCHOOL", "BUS_STOP", "TRANSPORT"}),
+    "GARBAGE": frozenset({"HOSPITAL", "SCHOOL", "BUS_STOP", "TRANSPORT"}),
+    "WATER_LEAK": frozenset({"HOSPITAL", "SCHOOL", "FIRE_STATION"}),
+    "WATER": frozenset({"HOSPITAL", "SCHOOL"}),
+    "PUBLIC_SAFETY": frozenset({"HOSPITAL", "SCHOOL", "POLICE_STATION", "TRANSPORT", "BUS_STOP"}),
+    "STREET_LIGHTING": frozenset({"SCHOOL", "HOSPITAL", "TRANSPORT", "BUS_STOP", "POLICE_STATION"}),
+    "ELECTRICITY": frozenset({"HOSPITAL", "FIRE_STATION", "SCHOOL"}),
+    "FALLEN_TREE": frozenset({"HOSPITAL", "FIRE_STATION", "POLICE_STATION", "SCHOOL"}),
+    "PARKS": frozenset({"SCHOOL", "BUS_STOP", "HOSPITAL"}),
 }
 
 # --------------------------------------------------------------------------- #
@@ -330,28 +491,72 @@ _POPULATION_SUBWEIGHTS: dict[str, float] = {
     "sensitive_facility_exposure": 0.35,
 }
 
-# Severity-dimension weights (sum = 1.0) for the deterministic severity report.
-# Accessibility (emergency-access harm) is intentionally the dominant dimension:
-# the documented escalation contract is "MEDIUM + access-affecting hazard beside
-# a critical facility ≤100 m → escalate toward HIGH", so proximity carries real
-# weight — but the total boost stays capped by _SEVERITY_MAX_BOOST.
-_SEVERITY_DIMENSION_WEIGHTS: dict[str, float] = {
-    "accessibility": 0.65,
-    "public_safety": 0.15,
-    "public_impact": 0.10,
-    "environmental": 0.10,
+# Severity is a five-part model: fractions of the severity component's max
+# points (defaults 10 + 5 + 3 + 4 + 3 = 25). The AI triage label feeds ONLY the
+# "base" part; every other part is a deterministic, evidence-gated escalator
+# with ITS OWN ceiling — there is NO shared "+0.30" cap any more, so a MEDIUM
+# with verified critical context can genuinely reach 25 and a bare MEDIUM cannot
+# leave the low range. (Sub-scores are scaled proportionally if the severity
+# weight is reconfigured.)
+_SEVERITY_BASE_FRACTION: float = 0.40        #   10 / 25
+_SEVERITY_SAFETY_FRACTION: float = 0.20      #    5 / 25
+_SEVERITY_ACCESSIBILITY_FRACTION: float = 0.12  #  3 / 25
+_SEVERITY_CRITICAL_INFRA_FRACTION: float = 0.16 # 4 / 25
+_SEVERITY_ENVIRONMENTAL_FRACTION: float = 0.12  # 3 / 25
+_SEVERITY_SUB_FRACTIONS: dict[str, float] = {
+    "base": _SEVERITY_BASE_FRACTION,
+    "safety": _SEVERITY_SAFETY_FRACTION,
+    "accessibility": _SEVERITY_ACCESSIBILITY_FRACTION,
+    "critical_infrastructure": _SEVERITY_CRITICAL_INFRA_FRACTION,
+    "environmental": _SEVERITY_ENVIRONMENTAL_FRACTION,
+}
+_SEVERITY_SUB_LABELS: dict[str, str] = {
+    "base": "Base (AI triage)",
+    "safety": "Safety / harm",
+    "accessibility": "Public accessibility",
+    "critical_infrastructure": "Critical infrastructure impact",
+    "environmental": "Environmental / weather",
 }
 
-# Maximum the multi-dimension severity boost may add to the stored severity unit.
-_SEVERITY_MAX_BOOST: float = 0.30
+# Inherent category hazard baseline (0..1) used to seed the Safety/Harm
+# sub-score. It is multiplied by 0.5 so the category ALONE can never dominate —
+# verified signals (emergency access, people exposure, real rain, corroborating
+# reports) raise it further.
+_CATEGORY_HAZARD: dict[str, float] = {
+    "ELECTRICITY": 0.90,
+    "PUBLIC_SAFETY": 0.80,
+    "FLOODING": 0.85,
+    "FALLEN_TREE": 0.75,
+    "SANITATION": 0.70,
+    "GARBAGE": 0.60,
+    "WATER_LEAK": 0.55,
+    "WATER": 0.50,
+    "DRAINAGE": 0.50,
+    "ROAD": 0.45,
+    "OTHER": 0.25,
+    "STREET_LIGHTING": 0.15,
+    "PARKS": 0.10,
+}
+_CATEGORY_HAZARD_FLOOR: float = 0.20
 
-# Accessibility-dimension floors when a REAL emergency facility is genuinely in
-# the immediate access envelope of an access-affecting hazard: 0.90 for ≤50 m
-# (an active police/fire/hospital entrance metres away) and 0.70 for ≤100 m.
-# Floors are only applied for access-affecting categories (never to e.g. an
-# uncluttered park complaint near a hospital).
-_ACCESSIBILITY_FLOOR_50M: float = 0.90
-_ACCESSIBILITY_FLOOR_100M: float = 0.70
+# Distance tiers (m -> verified emergency-access safety unit) for the Safety
+# escalator: an emergency facility genuinely ≤50 m / ≤100 m / ≤150 m away from
+# an access-affecting hazard. This is what separates "road obstruction beside a
+# police station" (5/5) from "road near hospital" (4/5).
+_SAFETY_EMERGENCY_TIERS: tuple[tuple[float, float], ...] = (
+    (50.0, 1.00),
+    (100.0, 0.80),
+    (150.0, 0.60),
+)
+
+# Wet-affected complaint categories: REAL precipitation raises Safety/Harm
+# (flooding/drainage/water are genuinely more dangerous in rain).
+_WET_AFTER_CATEGORIES = frozenset({"FLOODING", "DRAINAGE", "WATER_LEAK", "WATER"})
+
+# Context-escalation gate: a complaint triaged MEDIUM+ ALWAYS gains context;
+# a LOW-triage complaint only escalates when the TEXT itself names a facility
+# (the reporter is claiming the relationship, the registry must still verify it).
+_SEVERITY_MEDIUM_BASE: float = _SEVERITY_BASE_UNITS.get("MEDIUM", 0.60)
 
 # Infrastructure exposure blend weights. The unit is a weighted mix of the
 # strongest single facility (peak), the saturated cluster of all nearby
@@ -379,11 +584,11 @@ class Weights:
     """
 
     severity: float = 25.0
-    infrastructure: float = 20.0
-    population: float = 20.0
-    history: float = 15.0
+    infrastructure: float = 30.0
+    population: float = 10.0
+    history: float = 5.0
     weather: float = 10.0
-    evidence: float = 10.0
+    evidence: float = 20.0
 
     @property
     def total(self) -> float:
@@ -431,6 +636,10 @@ class FacilityInput:
     category: str
     distance_m: float | None = None
     verification: str = "FOUND"
+    # Registry record id (``CriticalLocation.id``) when the facility came from
+    # the verified registry; ``None`` for live (unverified) candidates. Used as
+    # the explicit-mention component's ``matched_facility_id`` provenance.
+    record_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -507,13 +716,18 @@ class HistoricalInput:
 
 @dataclass(frozen=True)
 class WeatherInput:
-    """Real Open-Meteo current condition + measured/forecast precipitation."""
+    """Real Open-Meteo current + recent + forecast conditions."""
 
     condition: str | None = None
     rain_mm: float | None = None
     precipitation_mm: float | None = None
     # Max precipitation_sum over the next-days forecast window.
     forecast_precip_mm: float | None = None
+    # Max precipitation_sum over the recent (trailing past-days) window.
+    recent_precip_mm: float | None = None
+    # Forecast precipitation-probability (%) — the strongest real-signal driver
+    # that lifts drainage/flooding risk before rain actually falls.
+    precip_probability_pct: float | None = None
     threshold_mm: float = 5.0
     category: str | None = None
     # AVAILABLE / DATA_UNAVAILABLE.
@@ -574,125 +788,290 @@ def _clamp(value: float) -> float:
 
 
 def severity_unit(severity: str | None) -> float:
-    """:return: 0..1 unit for the complaint's stored severity (the HARM base)."""
+    """:return: 0..1 unit for the stored triage severity label — the BASE of the
+    five-part severity model, NEVER a ceiling."""
     if not severity:
         return 0.0
-    return _clamp(_SEVERITY_UNITS.get(severity.upper(), 0.10))
+    return _clamp(_SEVERITY_BASE_UNITS.get(severity.upper(), _DEFAULT_SEVERITY_BASE))
 
 
-def severity_dimensions(
+def _severity_context_open(base_unit: float, description: str | None) -> bool:
+    """:return: True when contextual escalation is authorised.
+
+    A MEDIUM+ triage always opens the context clip (the incident itself is real).
+    A LOW-triage complaint only escalates when the complaint TEXT names a
+    facility — the reporter claims the relationship, the registry must still
+    verify it (``detect_explicit_facility`` -> ``best_facility_match``). This is
+    the guard that keeps a "minor pothole" beside a hospital at its bare LOW
+    base unless the relationship is genuinely claimed.
+    """
+    if base_unit >= _SEVERITY_MEDIUM_BASE:
+        return True
+    return detect_explicit_facility(description) is not None
+
+
+def _weather_precip_signals(weather: WeatherInput | None) -> float:
+    """:return: the strongest REAL precipitation signal (0..1) across current /
+    recent / forecast amounts, plus a modest floor for a meaningful forecast
+    (rain forecast WITH a high precipitation-probability). 0 when nothing is
+    falling/fallen/forecast."""
+    if weather is None or weather.status != "AVAILABLE":
+        return 0.0
+    rain = weather.rain_mm if weather.rain_mm is not None else weather.precipitation_mm
+    values = [
+        v
+        for v in (rain, weather.recent_precip_mm, weather.forecast_precip_mm)
+        if v is not None
+    ]
+    signal = max((_rain_signal_mm(v) for v in values), default=0.0)
+    if (
+        weather.forecast_precip_mm is not None
+        and weather.forecast_precip_mm > 0
+        and weather.precip_probability_pct is not None
+        and weather.precip_probability_pct >= 60.0
+    ):
+        signal = max(signal, 0.45)
+    return _clamp(signal)
+
+
+def safety_unit(
     *,
     category: str | None,
+    base_unit: float,
+    description: str | None,
     infrastructure: InfrastructureInput | None,
     population: PopulationInput | None,
     weather: WeatherInput | None,
-    bands: tuple[float, float, float, float] = (50.0, 100.0, 250.0, 500.0),
-    band_factors: tuple[float, float, float, float] = (1.0, 0.9, 0.6, 0.35),
-    emergency_band_m: float = 250.0,
-) -> dict[str, float]:
-    """Deterministic severity-context dimensions from REAL signals (each 0..1).
+) -> float:
+    """:return: 0..1 Safety/Harm sub-unit (seeded from the category's inherent
+    hazard, raised ONLY by verified signals).
 
-    Dimensions are bounded and evidence-backed; no single one can ever dominate:
-
-    * ``accessibility`` — an access-affecting category (road/flooding/drainage/
-      tree/water-leak/sanitation/public-safety/garbage) with an emergency
-      facility (hospital/fire/police) within ``emergency_band_m``. A verified
-      emergency facility genuinely ≤50 m / ≤100 m away floors the dimension at
-      0.90 / 0.70 — the documented "road beside a police station" escalation.
-    * ``public_safety`` — a public-affecting category with people-exposing
-      facilities (school/hospital/transit/bus/public) nearby.
-    * ``public_impact`` — corroborating real nearby reports (more reporters =
-      more people already affected).
-    * ``environmental`` — measured/forecast precipitation scaled by the
-      complaint-category's weather sensitivity.
-
-    These feed ``severity_unit_context()`` whose boost is capped at
-    ``_SEVERITY_MAX_BOOST``, so proximity alone can never reclassify severity.
+    * inherent category hazard baseline (``0.5 * _CATEGORY_HAZARD``);
+    * verified emergency-access harm — an access-affecting category with an
+      emergency facility ≤50/≤100/≤150 m (police 10 m → 5/5, hospital 85 m → 4/5)
+      — but ONLY when the context clip is open (MEDIUM+ or explicit mention),
+      so a minor pothole beside a hospital is never auto-raised;
+    * modest people-exposure add for public-affecting categories with a
+      school/hospital/transit facility ≤150 m;
+    * REAL rain for wet-affected categories (flooding/drainage/water) —
+      ``0.4 + 0.6 * precip signal``;
+    * corroborating real nearby reports (each adds a small amount).
     """
     cat = (category or "").upper()
+    hazard = _CATEGORY_HAZARD.get(cat, _CATEGORY_HAZARD_FLOOR)
+    unit = _clamp(0.5 * hazard)
+
     facilities = list((infrastructure.facilities or ()) if infrastructure is not None else ())
-    dims: dict[str, float] = {}
+    emergency_unit = 0.0
+    if _severity_context_open(base_unit, description):
+        if cat in _ACCESS_AFFECTING_CATEGORIES:
+            emergency = [
+                f
+                for f in facilities
+                if str(f.category).upper() in _EMERGENCY_CATEGORIES
+                and f.distance_m is not None
+            ]
+            for band, tier_unit in _SAFETY_EMERGENCY_TIERS:
+                if any(f.distance_m is not None and f.distance_m <= band for f in emergency):
+                    emergency_unit = tier_unit
+                    break
+        # People-exposure is the weaker signal and only matters when no verified
+        # emergency-access tier already applies (never stacked on top of it), so
+        # "road near hospital" stays 4/5 and "blocked beside police" is 5/5.
+        if emergency_unit == 0 and cat in _PUBLIC_AFFECTING_CATEGORIES:
+            exposed = any(
+                str(f.category).upper() in _PUBLIC_SAFETY_FACILITY_CATEGORIES
+                and f.distance_m is not None
+                and f.distance_m <= 150.0
+                for f in facilities
+            )
+            if exposed:
+                unit = max(unit, _clamp(unit + 0.15))
+    unit = max(unit, emergency_unit)
 
-    emergency_in_band = [
-        f
-        for f in facilities
-        if str(f.category).upper() in _EMERGENCY_CATEGORIES
-        and f.distance_m is not None
-        and f.distance_m <= emergency_band_m
-    ]
-    access_sum = sum(
-        distance_band_factor(f.distance_m, bands, band_factors)
-        for f in emergency_in_band
-    )
-    if cat in _ACCESS_AFFECTING_CATEGORIES and access_sum > 0:
-        accessibility = _clamp(1.0 - math.exp(-access_sum / 2.0))
-        near_50 = any(f.distance_m is not None and f.distance_m <= 50.0 for f in emergency_in_band)
-        near_100 = any(
-            f.distance_m is not None and f.distance_m <= 100.0 for f in emergency_in_band
-        )
-        if near_50:
-            accessibility = max(accessibility, _ACCESSIBILITY_FLOOR_50M)
-        elif near_100:
-            accessibility = max(accessibility, _ACCESSIBILITY_FLOOR_100M)
-        dims["accessibility"] = accessibility
-    else:
-        dims["accessibility"] = 0.0
-
-    public_sum = sum(
-        distance_band_factor(f.distance_m, bands, band_factors)
-        for f in facilities
-        if str(f.category).upper() in _PUBLIC_SAFETY_FACILITY_CATEGORIES
-        and f.distance_m is not None
-        and f.distance_m <= 150.0
-    )
-    if cat in _PUBLIC_AFFECTING_CATEGORIES and public_sum > 0:
-        dims["public_safety"] = _clamp(1.0 - math.exp(-public_sum / 2.0))
-    else:
-        dims["public_safety"] = 0.0
+    if cat in _WET_AFTER_CATEGORIES:
+        rain_signal = _weather_precip_signals(weather)
+        if rain_signal > 0:
+            unit = max(unit, _clamp(0.4 + 0.6 * rain_signal))
 
     if population is not None and population.status == "AVAILABLE":
         n500 = int(population.reports_7d.get(500, 0)) + int(
             population.reports_7d.get(250, 0)
         )
         unique = int(population.unique_reporters_7d)
-        dims["public_impact"] = _clamp(
-            0.6 * min(1.0, n500 / 6.0) + 0.4 * min(1.0, unique / 4.0)
+        corroboration = _clamp(
+            0.05 * min(1.0, n500 / 6.0) + 0.05 * min(1.0, unique / 4.0)
         )
-    else:
-        dims["public_impact"] = 0.0
-
-    env_rain = 0.0
-    if weather is not None and weather.status == "AVAILABLE":
-        rain = weather.rain_mm if weather.rain_mm is not None else weather.precipitation_mm
-        values = [v for v in (rain, weather.forecast_precip_mm) if v is not None]
-        env_rain = _clamp(max(values) / 40.0) if values else 0.0
-        multiplier = _WEATHER_CATEGORY_MULTIPLIERS.get(cat)
-        if multiplier is not None:
-            env_rain = _clamp(env_rain * multiplier)
-    dims["environmental"] = env_rain
-    return dims
+        unit = _clamp(unit + corroboration)
+    return _clamp(unit)
 
 
-def severity_unit_context(
-    severity: str | None,
-    dimensions: dict[str, float],
+def accessibility_unit(
     *,
-    max_boost: float = _SEVERITY_MAX_BOOST,
-    dimension_weights: dict[str, float] | None = None,
+    category: str | None,
+    base_unit: float,
+    description: str | None,
+    infrastructure: InfrastructureInput | None,
+    bands: tuple[float, float, float, float] = (50.0, 100.0, 250.0, 500.0),
+    band_factors: tuple[float, float, float, float] = (1.0, 0.9, 0.6, 0.35),
 ) -> float:
-    """0..1 severity unit from stored HARM base + bounded real-context boost.
+    """:return: 0..1 Public-Accessibility sub-unit for an access-affecting
+    category with a VERIFIED emergency/people facility in range.
 
-    ``base = severity_unit(label)``; the dimensions are blended with their
-    configured weights into a single 0..1 context score and the base is raised
-    by at most ``max_boost`` unit (clamped 0..1). Missing context adds nothing —
-    a bare LOW/MEDIUM label is never invented into something worse.
+    Accessibility is proximity-strength (``0.35 + 0.65 * distance-decay``) with a
+    0.6 floor when any such facility is within the 500 m band — a road beside a
+    hospital 60 m away floors at ~3/3, a garbage pile 450 m from a hospital still
+    reads ~2/3, and a LOW complaint that does not name the facility stays 0.
     """
-    weights = dimension_weights if dimension_weights is not None else _SEVERITY_DIMENSION_WEIGHTS
+    cat = (category or "").upper()
+    if cat not in _ACCESS_AFFECTING_CATEGORIES:
+        return 0.0
+    if not _severity_context_open(base_unit, description):
+        return 0.0
+    facilities = list((infrastructure.facilities or ()) if infrastructure is not None else ())
+    exposed = [
+        f
+        for f in facilities
+        if str(f.category).upper()
+        in (_EMERGENCY_CATEGORIES | _PUBLIC_SAFETY_FACILITY_CATEGORIES)
+        and f.distance_m is not None
+    ]
+    if not exposed:
+        return 0.0
+    nearest = min(exposed, key=lambda f: f.distance_m)
+    decay = distance_band_factor(nearest.distance_m, bands, band_factors)
+    unit = _clamp(0.35 + 0.65 * decay)
+    if any(f.distance_m is not None and f.distance_m <= bands[-1] for f in exposed):
+        unit = max(unit, 0.60)
+    return _clamp(unit)
+
+
+def critical_infra_unit(
+    *,
+    category: str | None,
+    base_unit: float,
+    description: str | None,
+    infrastructure: InfrastructureInput | None,
+    bands: tuple[float, float, float, float] = (50.0, 100.0, 250.0, 500.0),
+    band_factors: tuple[float, float, float, float] = (1.0, 0.9, 0.6, 0.35),
+) -> float:
+    """:return: 0..1 Critical-Infrastructure-Impact sub-unit.
+
+    This is severity's SMALL 4-point slice and is deliberately STRICTER than the
+    30-point infrastructure component: only truly critical facilities
+    (hospital / fire / police) count. Targets the facility the TEXT explicitly
+    names (when the registry VERIFIES it and the pair is category-relevant) OR
+    the nearest critical facility relevant to the category, distance-decayed
+    (``0.25 + 0.75 * decay``). A road beside a hospital 60 m → 4/4; garbage
+    450 m from a hospital → ~2/4 ("lower impact"); a streetlight beside a SCHOOL
+    → 0/4 (schools are not critical infrastructure, though the 30-point
+    exposure component still reflects them); a LOW complaint that never names
+    the facility stays 0. Critical-facility exposure is never double-counted
+    with the separate infrastructure component.
+    """
+    cat = (category or "").upper()
+    if not _severity_context_open(base_unit, description):
+        return 0.0
+    facilities = list((infrastructure.facilities or ()) if infrastructure is not None else ())
+    if not facilities:
+        return 0.0
+
+    critical = [
+        f
+        for f in facilities
+        if str(f.category).upper() in _EMERGENCY_CATEGORIES
+        and f.distance_m is not None
+    ]
+    explicit = detect_explicit_facility(description)
+    matched = best_facility_match(explicit, facilities) if explicit is not None else None
+    if (
+        matched is not None
+        and str(matched.category).upper() in _EMERGENCY_CATEGORIES
+        and explicit_facility_relevant(cat, matched.category)
+        and distance_band_factor(matched.distance_m, bands, band_factors) > 0
+    ):
+        target = matched
+    else:
+        relevant = [
+            f
+            for f in critical
+            if explicit_facility_relevant(cat, f.category)
+            and distance_band_factor(f.distance_m, bands, band_factors) > 0
+        ]
+        if not relevant:
+            return 0.0
+        target = min(relevant, key=lambda f: f.distance_m)
+    decay = distance_band_factor(target.distance_m, bands, band_factors)
+    return _clamp(0.25 + 0.75 * decay)
+
+
+def environmental_unit(
+    *,
+    category: str | None,
+    weather: WeatherInput | None,
+) -> float:
+    """:return: 0..1 Environmental/Weather sub-unit from REAL precipitation only.
+
+    ``precip signal (current/recent/forecast) * category multiplier`` — drainage
+    in heavy rain → 3/3, a dry drainage complaint → 0/3, a road with 8 mm → ~2/3.
+    """
+    cat = (category or "").upper()
+    signal = _weather_precip_signals(weather)
+    if signal <= 0:
+        return 0.0
+    multiplier = _WEATHER_CATEGORY_MULTIPLIERS.get(cat)
+    if multiplier is None:
+        return 0.0
+    return _clamp(signal * multiplier)
+
+
+def severity_dimensions(
+    *,
+    severity: str | None,
+    category: str | None,
+    infrastructure: InfrastructureInput | None,
+    population: PopulationInput | None,
+    weather: WeatherInput | None,
+    complaint_description: str | None = None,
+    bands: tuple[float, float, float, float] = (50.0, 100.0, 250.0, 500.0),
+    band_factors: tuple[float, float, float, float] = (1.0, 0.9, 0.6, 0.35),
+) -> dict[str, float]:
+    """Deterministic five-part severity sub-units (each 0..1).
+
+    ``base`` is the AI triage label (never a cap); ``safety``, ``accessibility``,
+    ``critical_infrastructure`` and ``environmental`` are evidence-gated
+    escalators with their own maxima. Each is bounded and honest: empty context
+    leaves the base untouched.
+    """
     base = severity_unit(severity)
-    context = 0.0
-    for key, unit in dimensions.items():
-        context += unit * float(weights.get(key, 0.0))
-    return _clamp(base + context * max_boost)
+    return {
+        "base": base,
+        "safety": safety_unit(
+            category=category,
+            base_unit=base,
+            description=complaint_description,
+            infrastructure=infrastructure,
+            population=population,
+            weather=weather,
+        ),
+        "accessibility": accessibility_unit(
+            category=category,
+            base_unit=base,
+            description=complaint_description,
+            infrastructure=infrastructure,
+            bands=bands,
+            band_factors=band_factors,
+        ),
+        "critical_infrastructure": critical_infra_unit(
+            category=category,
+            base_unit=base,
+            description=complaint_description,
+            infrastructure=infrastructure,
+            bands=bands,
+            band_factors=band_factors,
+        ),
+        "environmental": environmental_unit(category=category, weather=weather),
+    }
 
 
 def distance_band_factor(
@@ -715,6 +1094,75 @@ def distance_band_factor(
             factor = band_factors[index] if index < len(band_factors) else 0.0
             return float(factor) if factor is not None else 0.0
     return 0.0
+
+
+def detect_explicit_facility(text: str | None) -> str | None:
+    """Detect an explicitly-named facility category in complaint text.
+
+    Deterministic alias matching over the lowercased text (``_EXPLICIT_FACILITY_ALIASES``):
+    "Road is broken near hospital" -> ``HOSPITAL``. Returns ``None`` when no
+    facility is named — the 30/30 explicit rule then never fires and the
+    component scores contextually. Never invents a facility.
+    """
+    if not text:
+        return None
+    lowered = f" {text.lower()} "
+    found: list[tuple[str, int]] = []
+    for category, aliases in _EXPLICIT_FACILITY_ALIASES.items():
+        for alias in aliases:
+            if alias in lowered:
+                found.append((category, len(alias)))
+    if not found:
+        return None
+    # Longest alias wins ("medical college hospital" beats bare "hospital").
+    found.sort(key=lambda item: item[1], reverse=True)
+    return found[0][0]
+
+
+def best_facility_match(
+    category: str | None, facilities: list[FacilityInput]
+) -> FacilityInput | None:
+    """:return: the nearest VERIFIED facility whose type matches ``category``.
+
+    Only registry-verified facilities (``FOUND``/``VERIFIED``) are eligible —
+    a live PENDING candidate is never claimed as the explicit-mention match.
+    """
+    if not category:
+        return None
+    matches = [
+        f
+        for f in (facilities or ())
+        if str(f.category).upper() == str(category).upper()
+        and str(f.verification).upper() in {"FOUND", "VERIFIED"}
+        and f.distance_m is not None
+    ]
+    if not matches:
+        return None
+    return min(matches, key=lambda f: f.distance_m)
+
+
+def explicit_facility_relevant(category: str | None, facility_category: str | None) -> bool:
+    """:return: True when a matched facility type is relevant for the complaint
+    category under the 30/30 explicit-mention rule (deterministic rulebook).
+
+    Access-affecting categories are relevant for any emergency/people-exposing
+    facility; otherwise the pair must be listed in ``_SCORE30_RELEVANT_FACILITIES``.
+    An unknown category is never auto-relevant.
+    """
+    ftype = str(facility_category or "").upper()
+    cat = (category or "").upper()
+    if not ftype:
+        return False
+    if cat in _ACCESS_AFFECTING_CATEGORIES and ftype in {
+        "HOSPITAL",
+        "FIRE_STATION",
+        "POLICE_STATION",
+        "SCHOOL",
+        "TRANSPORT",
+        "BUS_STOP",
+    }:
+        return True
+    return ftype in _SCORE30_RELEVANT_FACILITIES.get(cat, frozenset())
 
 
 def facility_relevance(
@@ -946,6 +1394,37 @@ def historical_unit(h: HistoricalInput) -> float:
     )
 
 
+def _rain_signal_mm(mm: float | None) -> float:
+    """Map a precipitation amount onto the weather-signal curve (0..1).
+
+    Piecewise-linear over ``_RAIN_MM_SIGNAL`` (0 mm -> 0, 5 mm -> 0.5 midpoint,
+    40 mm -> 1.0 saturation). Amounts beyond the last point saturate at 1.0.
+    """
+    if mm is None or not math.isfinite(mm) or mm <= 0:
+        return 0.0
+    points = _RAIN_MM_SIGNAL
+    if mm >= points[-1][0]:
+        return float(points[-1][1])
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= mm <= x1:
+            frac = (mm - x0) / (x1 - x0) if x1 > x0 else 0.0
+            return float(y0 + frac * (y1 - y0))
+    return 0.0
+
+
+def weather_band_label(score: int | None) -> str | None:
+    """:return: the human band label for a /10 weather score (None when unscored).
+
+    Bands: 0-2 none, 3-4 minor, 5-7 moderate, 8-9 strong, 10 severe.
+    """
+    if score is None:
+        return None
+    for upper, label in _WEATHER_BANDS:
+        if score <= upper:
+            return label
+    return "severe"
+
+
 def weather_unit(
     condition: str | None,
     rain_mm: float | None,
@@ -953,31 +1432,61 @@ def weather_unit(
     threshold_mm: float = 5.0,
     precipitation_mm: float | None = None,
     forecast_precip_mm: float | None = None,
+    recent_precip_mm: float | None = None,
+    precip_probability_pct: float | None = None,
+    probability_threshold_pct: float = 60.0,
     category: str | None = None,
 ) -> float:
-    """:return: 0..1 weather-risk unit, category-aware and forecast-look-ahead.
+    """:return: 0..1 banded weather-risk unit, category-aware and multi-signal.
 
-    A rainy current condition floors the unit at 0.6; measured/forecast
-    precipitation then scales toward 1.0 (saturating near 40 mm — the OLD
-    behaviour maxed the unit at any ≥5 mm, which over-rewarded any light rain).
-    The result is multiplied by the complaint-category multiplier (drainage /
-    flooding weigh rain far more than streetlighting) and clamped. So a road
-    complaint during a genuine 40 mm storm scores full weather risk; a 5 mm
-    shower scores a small fraction.
+    Every signal is a real Open-Meteo number — nothing is guessed:
+
+    * current rain (``rain_mm``/``precipitation_mm``) — strongest live signal;
+    * RECENT rain (``recent_precip_mm``, trailing past days) — counts, slightly
+      discounted, because ground wetness persists for drainage/flooding;
+    * forecast rain (``forecast_precip_mm``) — trusted more as the forecast
+      precipitation-probability (``precip_probability_pct``) rises, so a
+      meaningful forecast lifts a drainage complaint OUT of the old "auto 1/10";
+    * a rainy current condition floors 0.55;
+    * a high probability of rain by itself signals risk for wet-affecting
+      categories (forecast probability ≥ the configured threshold
+      ``probability_threshold_pct`` → 0.45, ≥ threshold+25 → 0.6), but only when
+      rain is actually forecast (never a bare "probabilistic guess" with a dry
+      forecast).
+
+    ``None``/0 mm everywhere yields 0.0 (true "none", never the old automatic
+    0.1 from an arbitrary non-empty condition). The unit is then scaled by the
+    complaint-category multiplier (drainage/flooding weigh rain far more than
+    streetlighting) and clamped; the component's /10 = ``round(unit*10)`` bands
+    as 0-2 none, 3-4 minor, 5-7 moderate, 8-9 strong, 10 severe.
     """
-    unit = 0.0
+    current = rain_mm if rain_mm is not None else precipitation_mm
+    signals: list[float] = []
+
+    if recent_precip_mm is not None and recent_precip_mm > 0:
+        signals.append(_rain_signal_mm(recent_precip_mm) * 0.9)
+    if current is not None and current > 0:
+        signals.append(_rain_signal_mm(current))
+    if forecast_precip_mm is not None and forecast_precip_mm > 0:
+        forecast_signal = _rain_signal_mm(forecast_precip_mm)
+        if precip_probability_pct is not None:
+            forecast_signal *= 0.6 + 0.4 * _clamp(precip_probability_pct / 100.0)
+        signals.append(forecast_signal)
+
     normalized = (condition or "").strip().lower()
     for rainy in _RAINY_CONDITIONS:
         if rainy.lower() in normalized:
-            unit = max(unit, 0.6)
+            signals.append(0.55)
             break
-    rain = rain_mm if rain_mm is not None else precipitation_mm
-    if rain is not None and rain > 0:
-        unit = max(unit, _clamp(rain / 40.0))
-    if forecast_precip_mm is not None and forecast_precip_mm > 0:
-        unit = max(unit, _clamp(forecast_precip_mm / 40.0))
-    if unit == 0.0 and condition:
-        unit = 0.1
+
+    prob = precip_probability_pct if precip_probability_pct is not None else None
+    if prob is not None and forecast_precip_mm is not None and forecast_precip_mm > 0:
+        if prob >= probability_threshold_pct + 25.0:
+            signals.append(0.6)
+        elif prob >= probability_threshold_pct:
+            signals.append(0.45)
+
+    unit = max(signals) if signals else 0.0
     multiplier = _WEATHER_CATEGORY_MULTIPLIERS.get((category or "").upper())
     if multiplier is not None:
         unit = _clamp(unit * multiplier)
@@ -1351,6 +1860,7 @@ def score_priority(
     *,
     category: str,
     severity: SeverityInput,
+    complaint_description: str | None = None,
     infrastructure: InfrastructureInput | None = None,
     population: PopulationInput | None = None,
     weather: WeatherInput | None = None,
@@ -1362,18 +1872,18 @@ def score_priority(
     threshold_p3: float = 40.0,
     infra_decay_bands: tuple[float, ...] = (50.0, 100.0, 250.0, 500.0),
     infra_band_factors: tuple[float, ...] = (1.0, 0.9, 0.6, 0.35),
-    infra_saturation: float = 2.2,
+infra_saturation: float = 2.2,
     infra_peak_weight: float = _INFRA_PEAK_WEIGHT,
     infra_cluster_weight: float = _INFRA_CLUSTER_WEIGHT,
     infra_access_bonus_50m: float = _INFRA_ACCESS_BONUS_50M,
     infra_access_bonus_100m: float = _INFRA_ACCESS_BONUS_100M,
+    weather_probability_threshold_pct: float = 60.0,
     facility_base_relevance: dict[str, float] | None = None,
-    category_facility_factors: dict[str, dict[str, float]] | None = None,
-    population_subweights: dict[str, float] | None = None,
-    severity_max_boost: float = _SEVERITY_MAX_BOOST,
-    emergency_access_band_m: float = 250.0,
-    amplifier_points: dict[str, float] | None = None,
-    hotspot_repeat_count: int = 5,
+        category_facility_factors: dict[str, dict[str, float]] | None = None,
+        population_subweights: dict[str, float] | None = None,
+        emergency_access_band_m: float = 250.0,
+        amplifier_points: dict[str, float] | None = None,
+        hotspot_repeat_count: int = 5,
 ) -> tuple[int, DynamicPriority, list[dict[str, Any]], PriorityReadiness, list[dict[str, Any]]]:
     """Score a complaint against the six real-data components (pure).
 
@@ -1382,6 +1892,14 @@ def score_priority(
     risk amplifiers may add further points (still clamped 0..100). A component
     whose data could not be resolved has ``score=None`` and contributes 0, with
     its ``status``/``source`` still reported so the UI can show it honestly.
+
+    ``complaint_description`` (optional) is the raw complaint text. When it
+    EXPLICITLY names a facility and the infrastructure registry VERIFIES a
+    facility of that type in range, the infrastructure component scores its full
+    ``max_points`` (30/30 by default) — reported with the matched record id,
+    matched facility type, real distance, relationship and relationship
+    confidence. An explicit mention with NO verified match never triggers the
+    rule and falls back to contextual scoring.
 
     :returns: (amplified score 0..100, bucket, component dicts, readiness,
         applied risk amplifiers)
@@ -1421,20 +1939,23 @@ def score_priority(
         }
 
     dims = severity_dimensions(
+        severity=severity.severity,
         category=category,
         infrastructure=infrastructure,
         population=population,
         weather=weather,
+        complaint_description=complaint_description,
         bands=infra_decay_bands,
         band_factors=infra_band_factors,
-        emergency_band_m=emergency_access_band_m,
     )
-    severity_unit_value = severity_unit_context(
-        severity.severity, dims, max_boost=severity_max_boost
-    )
-    severity_context_unit = sum(
-        dims[key] * float(_SEVERITY_DIMENSION_WEIGHTS.get(key, 0.0)) for key in dims
-    )
+    sub_maxima = {
+        sub: round(w.severity * frac)
+        for sub, frac in _SEVERITY_SUB_FRACTIONS.items()
+    }
+    sub_scores = {
+        sub: int(round(dims[sub] * sub_maxima[sub])) for sub in dims
+    }
+    severity_unit_value = sum(sub_scores.values()) / w.severity
     components.append(
         _emit(
             "severity",
@@ -1446,23 +1967,36 @@ def score_priority(
             (severity.severity or "LOW").upper(),
             severity.explanation
             or (
-                "Stored triage severity (HARM base) escalated by real context: "
-                "emergency-access proximity (dominant), public safety, corroborating "
-                f"reports, weather — capped at +{severity_max_boost:g} unit so "
-                "context alone can never over-state severity."
+                "Five-part severity: the AI triage label sets ONLY the base "
+                f"({severity_unit(severity.severity) * sub_maxima['base']:g}/"
+                f"{sub_maxima['base']:g}); Safety/Harm, Public accessibility, "
+                "Critical infrastructure impact and Environmental/weather are "
+                "deterministic escalators from verified evidence — the AI label "
+                "is the base, not a cap, and empty context adds nothing."
             ),
             details={
                 "triage_input": severity.severity or "LOW",
+                "model": "5-part (sum = severity max points): base + safety + "
+                "accessibility + critical_infrastructure + environmental",
                 "dimensions": dims,
                 "base_unit": round(severity_unit(severity.severity), 3),
-                "context_unit": round(severity_context_unit, 3),
-                "context_max_boost": severity_max_boost,
+                "subcomponents": {
+                    sub: {
+                        "label": _SEVERITY_SUB_LABELS[sub],
+                        "max": sub_maxima[sub],
+                        "score": sub_scores[sub],
+                        "unit": round(dims[sub], 3),
+                    }
+                    for sub in _SEVERITY_SUB_FRACTIONS
+                },
                 "escalation_formula": (
-                    "unit = base_unit + clamp(dimensions · weights) * "
-                    f"{severity_max_boost:g}; weights = "
-                    + ", ".join(
-                        f"{k}={v:g}" for k, v in sorted(_SEVERITY_DIMENSION_WEIGHTS.items())
-                    )
+                    "severity(0..max) = base(unit*"
+                    f"{sub_maxima['base']:g}) + safety(x"
+                    f"{sub_maxima['safety']:g}) + accessibility(x"
+                    f"{sub_maxima['accessibility']:g}) + "
+                    f"critical_infrastructure(x{sub_maxima['critical_infrastructure']:g}) "
+                    f"+ environmental(x{sub_maxima['environmental']:g}); "
+                    "AI triage supplies ONLY the base sub-score"
                 ),
             },
         )
@@ -1484,6 +2018,51 @@ def score_priority(
             access_bonus_50m=infra_access_bonus_50m,
             access_bonus_100m=infra_access_bonus_100m,
         )
+        # ---- Explicit-facility rule: text names a facility AND the registry
+        # ---- VERIFIES it in range AND the pair is relevant -> full max_points.
+        explicit_facility = detect_explicit_facility(
+            complaint_description or infrastructure.explanation or None
+        )
+        explicit_match = (
+            best_facility_match(explicit_facility, infra_facilities)
+            if explicit_facility is not None
+            else None
+        )
+        explicit_relevant = (
+            explicit_facility_relevant(
+                category, explicit_match.category if explicit_match is not None else None
+            )
+            if explicit_facility is not None
+            else False
+        )
+        relationship_confidence: float | None = None
+        if explicit_match is not None:
+            relationship_confidence = round(
+                min(
+                    0.9,
+                    0.5
+                    + 0.4
+                    * distance_band_factor(
+                        explicit_match.distance_m, infra_decay_bands, infra_band_factors
+                    ),
+                ),
+                3,
+            )
+        infra30 = bool(
+            explicit_facility is not None
+            and explicit_match is not None
+            and explicit_relevant
+            and infrastructure.status != "DATA_UNAVAILABLE"
+        )
+        if infra30:
+            unit = 1.0
+        access_impact = _access_impact_detail(
+            infra_facilities,
+            category,
+            bands=infra_decay_bands,
+            band_factors=infra_band_factors,
+            emergency_band_m=emergency_access_band_m,
+        )
         labels = {
             "FOUND": "Verified nearby facilities found",
             "NO_VERIFIED_RECORDS": (
@@ -1494,16 +2073,16 @@ def score_priority(
             ),
             "PARTIAL_DATA": "Some categories resolved, others degraded",
         }
+        summary_parts = []
+        if explicit_facility is not None:
+            summary_parts.append(
+                f"explicit mention: {explicit_facility.lower()}"
+            )
         summary = ", ".join(
             f"{f.category.lower()}: {f.distance_m:.0f} m" for f in infra_facilities[:5]
         ) or "none in range"
-        access_impact = _access_impact_detail(
-            infra_facilities,
-            category,
-            bands=infra_decay_bands,
-            band_factors=infra_band_factors,
-            emergency_band_m=emergency_access_band_m,
-        )
+        if summary_parts:
+            summary = f"{summary_parts[0]}; {summary}"
         comp = _emit(
             "infrastructure",
             "Infrastructure exposure",
@@ -1515,6 +2094,34 @@ def score_priority(
             labels.get(infrastructure.status) or infrastructure.explanation,
             details={
                 "radius_m": infrastructure.radius_m,
+                "explicit_facility_mentioned": explicit_facility,
+                "matched_facility_id": (
+                    explicit_match.record_id if explicit_match is not None else None
+                ),
+                "matched_facility_type": (
+                    explicit_match.category if explicit_match is not None else None
+                ),
+                "matched_facility_name": (
+                    explicit_match.name if explicit_match is not None else None
+                ),
+                "matched_distance_m": (
+                    explicit_match.distance_m if explicit_match is not None else None
+                ),
+                "relationship": (
+                    f"Complaint text explicitly names a {explicit_facility.lower()}; "
+                    f"verified {explicit_match.category.lower()} {explicit_match.name!r} is "
+                    f"{explicit_match.distance_m:.0f} m away."
+                    if explicit_match is not None
+                    else (
+                        f"Complaint text explicitly names a {explicit_facility.lower()} "
+                        "but no verified facility of that type was found in range; "
+                        "the 30/30 rule is NOT applied (contextual score only)."
+                        if explicit_facility is not None
+                        else "No explicit facility mentioned; contextual scoring."
+                    )
+                ),
+                "relationship_confidence": relationship_confidence,
+                "explicit_rule_applied": infra30,
                 "access_impact": access_impact,
                 "contributing_facilities": [
                     {
@@ -1522,6 +2129,7 @@ def score_priority(
                         "category": f.category,
                         "distance_m": f.distance_m,
                         "verification": f.verification,
+                        "record_id": f.record_id,
                         "relevance": round(
                             facility_relevance(
                                 f,
@@ -1622,6 +2230,9 @@ def score_priority(
             threshold_mm=weather.threshold_mm or 5.0,
             precipitation_mm=weather.precipitation_mm,
             forecast_precip_mm=weather.forecast_precip_mm,
+            recent_precip_mm=weather.recent_precip_mm,
+            precip_probability_pct=weather.precip_probability_pct,
+            probability_threshold_pct=weather_probability_threshold_pct,
             category=category,
         )
         state_available = weather.status == "AVAILABLE"
@@ -1632,6 +2243,11 @@ def score_priority(
             if weather.rain_mm is not None
             else weather.precipitation_mm or 0.0
         )
+        band_label = weather_band_label(
+            int(round(unit * w.weather)) if state_available else None
+        )
+        # A raw unit < 0.05 can still round to a 10-scale 0 (correct); banded
+        # units are derived from the raw unit, not this rounded /10 value.
         components.append(
             _emit(
                 "weather",
@@ -1642,22 +2258,31 @@ def score_priority(
                 weather.source,
                 (
                     f"{weather.condition or 'n/a'}, {float(rain_value):.1f} mm now, "
-                    f"{float(weather.forecast_precip_mm or 0.0):.1f} mm forecast"
+                    f"{float(weather.forecast_precip_mm or 0.0):.1f} mm forecast, "
+                    f"{float(weather.recent_precip_mm or 0.0):.1f} mm recent, "
+                    f"{weather.precip_probability_pct or 0.0:.0f}% forecast probability"
                 ),
                 weather.explanation
                 or (
-                    "Real Open-Meteo current + forecast conditions"
+                    "Real Open-Meteo current + recent + forecast precipitation and "
+                    "forecast probability, category-aware and banded"
                     if state_available
                     else "Weather data unavailable (no coordinates or upstream failure)"
                 ),
                 details={
                     "condition": weather.condition,
                     "rain_mm_now": (  # noqa: E501
-                    weather.rain_mm
-                    if weather.rain_mm is not None
-                    else weather.precipitation_mm
-                ),
+                        weather.rain_mm
+                        if weather.rain_mm is not None
+                        else weather.precipitation_mm
+                    ),
                     "forecast_precip_max_mm": weather.forecast_precip_mm,
+                    "recent_precip_max_mm": weather.recent_precip_mm,
+                    "forecast_precipitation_probability_pct": weather.precip_probability_pct,
+                    "band": band_label,
+                    "category_multiplier": _WEATHER_CATEGORY_MULTIPLIERS.get(
+                        (category or "").upper()
+                    ),
                 },
             )
         )
@@ -1800,6 +2425,5 @@ __all__ = [
     "sensitive_exposure_unit",
     "severity_dimensions",
     "severity_unit",
-    "severity_unit_context",
     "weather_unit",
 ]

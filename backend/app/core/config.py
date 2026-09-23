@@ -168,7 +168,8 @@ class Settings(BaseSettings):
     GIS_OVERPASS_MIRRORS: str = (
         "https://overpass-api.de/api/interpreter,"
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter,"
-        "https://overpass.kumi.systems/api/interpreter"
+        "https://overpass.kumi.systems/api/interpreter,"
+        "https://overpass.openstreetmap.fr/api/interpreter"
     )
     # Retry budget per mirror before trying the next one.
     GIS_OVERPASS_MAX_RETRIES: int = 0
@@ -223,10 +224,16 @@ class Settings(BaseSettings):
     # is defined here — do not invent one.
     WEATHER_BASE_URL: str = "https://api.open-meteo.com/v1/forecast"
     # Per-request timeout (seconds) and retry budget for Open-Meteo calls.
+    # Retries use exponential backoff (0.5s/1s/2s/4s) so brief upstream
+    # outages are absorbed instead of degrading a context run to no-weather.
     WEATHER_TIMEOUT_SECONDS: float = 10.0
-    WEATHER_MAX_RETRIES: int = 2
+    WEATHER_MAX_RETRIES: int = 4
     # Number of forecast days requested (1..16) for the weather_context.forecast.
     WEATHER_FORECAST_DAYS: int = 3
+    # Number of PAST days requested (0..92) so the priority weather collector can
+    # score RECENT rainfall (daily precipitation_sum for the trailing past days)
+    # alongside current + forecast conditions. 0 keeps the request as today only.
+    WEATHER_PAST_DAYS: int = 3
     # Redis cache for external API responses (weather). Hit/miss/TTL semantics:
     # on a cache hit the TTL is checked by Redis; on a miss we fetch live, store
     # with this TTL, and surface `cache_hit=True`. When Redis is unreachable we
@@ -256,8 +263,8 @@ class Settings(BaseSettings):
     # Deterministic, component-maxima scoring — the priority engine NEVER lets an
     # LLM determine the numeric score. The six components have FIXED MAXIMUM
     # points (configurable here, defaults sum to 100):
-    #   severity 25 · infrastructure 20 · affected population 20 ·
-    #   recurrence 15 · weather 10 · evidence confidence 10.
+    #   severity 25 · infrastructure 30 (incl. verified explicit-facility match)
+    #   affected population 15 · recurrence 10 · weather 10 · evidence 10.
     # Time-to-resolve is NOT a factor: the score expresses risk only, while SLA
     # tracking runs as a SEPARATE engine against the ``sla_policies`` rulebook —
     # a breached SLA never raises the risk score.
@@ -269,20 +276,27 @@ class Settings(BaseSettings):
     # so missing data never inflates a score.
     PRIORITY_WEIGHT_SEVERITY: float = 25.0
     # "infrastructure" = verified critical-facility proximity (PostGIS registry,
-    # distance-decayed, TYPE x DISTANCE x RELEVANCE).
-    PRIORITY_WEIGHT_INFRASTRUCTURE: float = 20.0
+    # distance-decayed, TYPE x DISTANCE x RELEVANCE). It scores the FULL maximum
+    # (30/30) when the complaint text EXPLICITLY names a facility (hospital /
+    # school / police / fire / transit / …), the registry VERIFIES a facility of
+    # that type within the configured search radius and the complaint category is
+    # relevant — otherwise it scores contextually and honestly.
+    PRIORITY_WEIGHT_INFRASTRUCTURE: float = 30.0
     # "population" = affected population & report pressure (real complaint
     # density 250/500/1000 m x 7d/30d, unique reporters, unresolved nearby,
     # geographic spread, sensitive facilities).
-    PRIORITY_WEIGHT_POPULATION: float = 20.0
+    PRIORITY_WEIGHT_POPULATION: float = 10.0
     # Historical recurrence / incident pattern (same category + area, 7d/30d).
-    PRIORITY_WEIGHT_HISTORY: float = 15.0
-    # Weather / environmental risk (live current + forecast precipitation,
-    # category-aware: drainage/flooding strong, garbage/streetlighting weak).
+    PRIORITY_WEIGHT_HISTORY: float = 5.0
+    # Weather / environmental risk (live current + RECENT + forecast precip
+    # + precipitation probability, banded 0-10, category-aware: drainage/
+    # flooding strong, garbage/streetlighting weak).
     PRIORITY_WEIGHT_WEATHER: float = 10.0
     # Evidence confidence (verified GPS, description, photos, AI agreement,
     # structured category, corroborating reports) — never an invented AI score.
-    PRIORITY_WEIGHT_EVIDENCE: float = 10.0
+    # 20 points: a verified AI classification maps 1:1 (98 % -> 20/20), non-AI
+    # signals cap at 0.85.
+    PRIORITY_WEIGHT_EVIDENCE: float = 20.0
     # Bucket boundaries for the 0..100 score (inclusive upper cutoff):
     #   [80, 100] -> P1_CRITICAL, [60, 80) -> P2_HIGH,
     #   [40, 60)  -> P3_MEDIUM,   [0, 40)   -> P4_LOW.
@@ -293,10 +307,13 @@ class Settings(BaseSettings):
     # at least this many points versus the previous computed score. Recalculation
     # therefore happens whenever significant context changes.
     PRIORITY_CHANGE_THRESHOLD: float = 15.0
-    # Severe-weather thresholds used to derive the weather risk unit.
+    # Weather-risk calibration: mm of CURRENT rain and mm of MAX FORECAST rain
+    # that reach the midpoint of the weather banded scale, and the forecast
+    # precipitation-probability (%) beyond which the forecast signal is trusted
+    # (both drive the category-aware banded weather unit, never a raw boolean).
     PRIORITY_WEATHER_RAIN_MM: float = 5.0
-    # Forecast precipitation (mm) in the next-days window that counts as risk.
     PRIORITY_WEATHER_FORECAST_RAIN_MM: float = 5.0
+    PRIORITY_WEATHER_PROBABILITY_PCT: float = 60.0
     # Distance-decay bands (metres) for the infrastructure component (calibration
     # v4): 0-50 / 50-100 / 100-250 / 250-500 m. A verified facility counts at its
     # full inside-band weight, progressively less further out, and nothing beyond
@@ -336,12 +353,13 @@ class Settings(BaseSettings):
     # engine's documented defaults so a partial override keeps the rest.
     PRIORITY_FACILITY_BASE_RELEVANCE: dict[str, float] | None = None
     PRIORITY_CATEGORY_FACILITY_FACTORS: dict[str, dict[str, float]] | None = None
-    # Deterministic multi-dimension severity: the stored triage severity label
-    # is the HARM base; real context signals (emergency-access proximity —
-    # dominant, with 0.90/0.70 floors at ≤50 m/≤100 m — public safety,
-    # corroborating reports, weather) may add at most this much 0..1 unit on
-    # top. The boost is bounded so context alone can never over-state severity.
-    PRIORITY_SEVERITY_MAX_BOOST: float = 0.30
+    # Deterministic five-part severity model. The stored triage severity label
+    # is the BASE sub-score only (LOW 3/10, MEDIUM 6/10, HIGH 9/10,
+    # CRITICAL 10/10); Safety/Harm (5), Public accessibility (3), Critical
+    # infrastructure impact (4) and Environmental/weather (3) escalate from
+    # verified evidence with their own caps. The triage label is the base —
+    # never a cap — so a MEDIUM with real critical context can reach the full
+    # severity weight, and an empty context leaves the base untouched.
     # Band (metres) that counts as "emergency facility impacted" for both the
     # Infrastructure Access Impact detail and the EMERGENCY_ACCESS_RISK
     # amplifier (category + proximity evidence required; never fired blindly).
@@ -500,6 +518,11 @@ class Settings(BaseSettings):
     # Minimum registered infra assets required before the infrastructure model
     # is trained/served (same INSUFFICIENT_DATA gating otherwise).
     INFRA_MIN_ASSETS: int = 5
+    # Separate Part 37 history gate: even with a real registered fleet, forecasts
+    # stay off until enough REAL maintenance history (complaints / repairs that
+    # are spatially AND categorically linked to a registered asset) accumulates.
+    # 0 disables the gate (used by fast pipeline tests).
+    INFRA_MIN_HISTORY_RECORDS: int = 20
 
     # ===== Predictive Civic Hotspots (Part 23, Part 36) =====
     # Grid cell size in decimal degrees (~1.1 km at this latitude).

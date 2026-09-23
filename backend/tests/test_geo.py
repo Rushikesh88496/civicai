@@ -47,6 +47,11 @@ _SETTINGS = get_settings()
 _SEED_LAT = 18.4634
 _SEED_LON = 73.8912
 
+# A point guaranteed to hold no registry rows, for tests that exercise the
+# genuinely-empty-database behavior (≈500 km from every Pune facility).
+_REMOTE_LAT = 17.4327
+_REMOTE_LON = 78.3885
+
 
 def _unique_email(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}@example.com"
@@ -215,9 +220,15 @@ async def test_find_nearby_places_returns_created_facilities():
     try:
         async with async_session_factory() as db:
             places = await svc.find_nearby_places(
-                db, _SEED_LAT, _SEED_LON, _SETTINGS.GIS_CRITICAL_RADIUS_M
+                db,
+                _SEED_LAT,
+                _SEED_LON,
+                _SETTINGS.GIS_CRITICAL_RADIUS_M,
+                limit=1000,
             )
         names = {p.name for p in places}
+        # The live registry legitimately holds real facilities near the seed, so
+        # a generous limit guarantees the three test rows are within the result.
         assert {"Pune Civic Hospital", "Kondhwa Vidyalaya", "Kondhwa Bus Stop"} <= names
         hospital = next(p for p in places if p.name == "Pune Civic Hospital")
         assert hospital.is_demo is True
@@ -270,12 +281,14 @@ async def test_find_nearby_places_radius_is_clamped():
 
 
 async def test_no_facilities_with_overpass_disabled_returns_empty():
-    # conftest disables live Overpass by default → an empty DB means the lookup
-    # returns nothing (the UI shows "Nearby infrastructure data unavailable").
+    # conftest disables live Overpass by default → no registry rows near the
+    # lookup point means the lookup returns nothing (the UI shows "Nearby
+    # infrastructure data unavailable"). The remote point avoids the real Pune
+    # facilities now legitimately held in the live registry table.
     svc = get_geo_service()
     async with async_session_factory() as db:
         places = await svc.find_nearby_places(
-            db, _SEED_LAT, _SEED_LON, 2000.0, category=CriticalLocationCategory.SCHOOL
+            db, _REMOTE_LAT, _REMOTE_LON, 2000.0, category=CriticalLocationCategory.SCHOOL
         )
     assert places == []
 
@@ -301,7 +314,7 @@ async def test_overpass_fallback_used_when_db_empty(monkeypatch):
     monkeypatch.setattr(svc, "_overpass_find", fake_overpass)
     async with async_session_factory() as db:
         places = await svc.find_nearby_places(
-            db, _SEED_LAT, _SEED_LON, 2000.0, category=CriticalLocationCategory.SCHOOL
+            db, _REMOTE_LAT, _REMOTE_LON, 2000.0, category=CriticalLocationCategory.SCHOOL
         )
     assert places and places[0].name == "Live Pune School"
     assert places[0].is_demo is False

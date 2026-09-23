@@ -865,10 +865,11 @@ class InfrastructureRegistry:
                     logger.warning("Registry cache payload invalid (%s): %s", cache_key, exc)
 
         registry_has = await self._registry_counts(db, cats)
-        summaries: list[NearbyCategorySummary] = []
-        live_used = False
-        for category in cats:
-            summary = await self.resolve_category(
+
+        async def resolve(
+            category: CriticalLocationCategory,
+        ) -> NearbyCategorySummary:
+            return await self.resolve_category(
                 db,
                 latitude=latitude,
                 longitude=longitude,
@@ -879,9 +880,16 @@ class InfrastructureRegistry:
                 registry_has=registry_has,
                 geo_service=geo_service,
             )
-            if summary.status == InfrastructureDataStatus.PENDING_VERIFICATION:
-                live_used = True
-            summaries.append(summary)
+
+        # Categories resolve concurrently; the uncovered ones may each fall back
+        # to a live Overpass fetch, so sequential resolution used to multiply the
+        # mirror timeouts by the category count.
+        summaries: list[NearbyCategorySummary] = list(
+            await asyncio.gather(*(resolve(c) for c in cats))
+        )
+        live_used = any(
+            s.status == InfrastructureDataStatus.PENDING_VERIFICATION for s in summaries
+        )
 
         states = {s.status for s in summaries}
         if InfrastructureDataStatus.DATA_UNAVAILABLE in states:

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import HTTPException, status
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -52,6 +52,7 @@ from app.ml.readiness import PredictionStatus
 from app.models import (
     Complaint,
     ComplaintLocation,
+    CriticalLocation,
     InfrastructureAsset,
     InfrastructureModel,
     InfrastructurePrediction,
@@ -61,12 +62,16 @@ from app.models import (
     WorkOrder,
 )
 from app.models.enums import (
+    CriticalLocationCategory,
     InfrastructureCategory,
+    InfrastructureDataStatus,
     PredictionReviewStatus,
     PreventiveWorkOrderStatus,
 )
 from app.schemas.infrastructure import (
     AssetPrediction,
+    AssetRegistryCategoryCounts,
+    AssetRegistrySyncOut,
     InfrastructureAssetIn,
     InfrastructureAssetOut,
     InfrastructureModelInfo,
@@ -88,6 +93,38 @@ _DISCLAIMER = (
 _EXPECTED_REVIEW_DECISIONS = {
     PredictionReviewStatus.APPROVED.value,
     PredictionReviewStatus.REJECTED.value,
+}
+
+# --------------------------------------------------------------------------- #
+# Real asset registry provenance + legitimate history linkage (Part 37)
+# --------------------------------------------------------------------------- #
+# Source markers carried onto every asset registered from the verified facility
+# registry, mirroring the CriticalLocation provenance.
+_ASSET_SOURCE = "openstreetmap"
+_ASSET_SOURCE_DATASET = "OpenStreetMap (Overpass API, Pune, Maharashtra)"
+
+# Only critical-location categories with a faithful maintainable asset kind are
+# registered. Facility categories without an exact InfrastructureCategory match
+# (hospitals, schools, police/fire stations, bus stops, transport) are left out
+# deliberately: an asset is only created when the source data genuinely
+# describes a maintainable municipal asset.
+_REGISTRY_TO_ASSET: dict[CriticalLocationCategory, InfrastructureCategory] = {
+    CriticalLocationCategory.ROAD: InfrastructureCategory.ROAD,
+}
+
+# Historical complaints only count toward an asset when their category genuinely
+# relates to the asset kind (spatial proximity alone is not enough). Empty means
+# the asset kind has no legitimate complaint category, so its history honestly
+# stays at zero rather than inheriting unrelated signal.
+_RELEVANT_COMPLAINT_CATEGORIES: dict[str, frozenset[str]] = {
+    "ROAD": frozenset({"ROAD"}),
+    "BRIDGE": frozenset({"ROAD"}),
+    "WATER_MAIN": frozenset({"WATER", "WATER_LEAK"}),
+    "SEWER": frozenset(),
+    "DRAINAGE": frozenset({"DRAINAGE", "FLOODING"}),
+    "STREET_LIGHTING": frozenset({"STREET_LIGHTING"}),
+    "PARK": frozenset({"PARKS"}),
+    "PUBLIC_BUILDING": frozenset(),
 }
 
 
@@ -140,31 +177,65 @@ async def get_status(
     row = await db.scalar(
         select(InfrastructureModel).where(InfrastructureModel.is_active.is_(True))
     )
+    model_info = _model_info(row) if row is not None else None
+
+    # Part 31 fleet gate: no registered fleet, no forecasts.
+    if registered < settings.INFRA_MIN_ASSETS:
+        return InfrastructureStatus(
+            trained=row is not None,
+            prediction_status=PredictionStatus.INSUFFICIENT_DATA,
+            model=model_info,
+            message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
+            registered_assets=registered,
+            minimum_assets=settings.INFRA_MIN_ASSETS,
+            history_records=0,
+            minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
+        )
+
+    # Part 37 history gate: a real fleet is not enough on its own — forecasts
+    # stay off until REAL maintenance history has accumulated for those assets.
+    history_records, complaints, repairs = await _linked_history(db, settings)
+    if history_records < settings.INFRA_MIN_HISTORY_RECORDS:
+        return InfrastructureStatus(
+            trained=row is not None,
+            prediction_status=PredictionStatus.INSUFFICIENT_DATA,
+            model=model_info,
+            message=_infra_history_gate_message(
+                history_records,
+                complaints,
+                repairs,
+                settings.INFRA_MIN_HISTORY_RECORDS,
+            ),
+            registered_assets=registered,
+            minimum_assets=settings.INFRA_MIN_ASSETS,
+            history_records=history_records,
+            minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
+        )
+
     if row is None:
         return InfrastructureStatus(
             trained=False,
             prediction_status=PredictionStatus.INSUFFICIENT_DATA,
             model=None,
-            message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
+            message=(
+                "Enough real assets and maintenance history are registered, but no "
+                "active infrastructure model exists yet. Retrain the model to enable "
+                "forecasts."
+            ),
             registered_assets=registered,
             minimum_assets=settings.INFRA_MIN_ASSETS,
-        )
-    if registered < settings.INFRA_MIN_ASSETS:
-        return InfrastructureStatus(
-            trained=True,
-            prediction_status=PredictionStatus.INSUFFICIENT_DATA,
-            model=_model_info(row),
-            message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
-            registered_assets=registered,
-            minimum_assets=settings.INFRA_MIN_ASSETS,
+            history_records=history_records,
+            minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
         )
     return InfrastructureStatus(
         trained=True,
         prediction_status=PredictionStatus.READY,
-        model=_model_info(row),
+        model=model_info,
         message="Active predictive infrastructure model, forecasts are being served.",
         registered_assets=registered,
         minimum_assets=settings.INFRA_MIN_ASSETS,
+        history_records=history_records,
+        minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
     )
 
 
@@ -173,6 +244,18 @@ def _infra_gate_message(registered: int, minimum: int) -> str:
         "The infrastructure model is not ready yet: "
         f"{registered}/{minimum} registered assets are required. Register real "
         "assets in the asset registry before forecasts are enabled."
+    )
+
+
+def _infra_history_gate_message(
+    history_records: int, complaints: int, repairs: int, minimum: int
+) -> str:
+    return (
+        "Assets registered, but there is not enough maintenance history to train the "
+        f"prediction model yet. {history_records}/{minimum} linked complaint/repair "
+        f"records are required ({complaints} legitimate complaints, {repairs} repairs); "
+        "only complaints and repairs that are close to a matching asset — spatially "
+        "and by category — count."
     )
 
 
@@ -192,6 +275,27 @@ async def train(
             message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
             registered_assets=registered,
             minimum_assets=settings.INFRA_MIN_ASSETS,
+            history_records=0,
+            minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
+        )
+
+    # Part 37 gate: training additionally requires enough REAL legitimately
+    # linked maintenance history — a registered fleet alone is not a model.
+    history_records, complaints, repairs = await _linked_history(db, settings)
+    if history_records < settings.INFRA_MIN_HISTORY_RECORDS:
+        return InfrastructureTrainingOut(
+            trained=False,
+            status=PredictionStatus.INSUFFICIENT_DATA,
+            message=_infra_history_gate_message(
+                history_records,
+                complaints,
+                repairs,
+                settings.INFRA_MIN_HISTORY_RECORDS,
+            ),
+            registered_assets=registered,
+            minimum_assets=settings.INFRA_MIN_ASSETS,
+            history_records=history_records,
+            minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
         )
 
     started = time.monotonic()
@@ -236,6 +340,8 @@ async def train(
         message="Infrastructure model trained on the configured asset corpus.",
         registered_assets=registered,
         minimum_assets=settings.INFRA_MIN_ASSETS,
+        history_records=history_records,
+        minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
     )
 
 
@@ -257,6 +363,10 @@ def _asset_out(asset: InfrastructureAsset) -> InfrastructureAssetOut:
         installed_at=asset.installed_at,
         condition_note=asset.condition_note,
         is_active=asset.is_active,
+        source=asset.source,
+        source_dataset=asset.source_dataset,
+        source_url=asset.source_url,
+        source_id=asset.source_id,
         created_at=asset.created_at,
     )
 
@@ -305,6 +415,186 @@ async def register_asset(
     return _asset_out(asset)
 
 
+async def _resolve_asset_wards(
+    db: AsyncSession,
+    records: list[CriticalLocation],
+) -> dict[str, uuid.UUID | None]:
+    """Map registry record id -> ward via PostGIS point-in-polygon (bulk).
+
+    Ward assignment is geographic containment against the real ward-boundary
+    polygons — never a nearest-centroid guess — and the source coordinates are
+    never rewritten.
+    """
+    if not records:
+        return {}
+    points = [
+        (str(r.id), float(r.latitude), float(r.longitude))
+        for r in records
+        if r.latitude is not None and r.longitude is not None
+    ]
+    if not points:
+        return {}
+    entries = ", ".join(
+        f"('{key}', ST_SetSRID(ST_MakePoint({lon!r}, {lat!r}), 4326))"
+        for key, lat, lon in points
+    )
+    sql = (
+        "SELECT p.k AS k, wb.ward_id AS ward_id FROM "
+        f"(VALUES {entries}) AS p(k, geom) "
+        "JOIN ward_boundaries wb ON ST_Contains(wb.geom, p.geom)"
+    )
+    rows = (await db.execute(text(sql))).all()
+    result: dict[str, uuid.UUID | None] = {key: None for key, *_ in points}
+    for row in rows:
+        result[row.k] = row.ward_id
+    return result
+
+
+async def sync_assets_from_registry(
+    db: AsyncSession,
+    settings: Settings | None = None,
+) -> AssetRegistrySyncOut:
+    """Register REAL maintainable assets from the verified facility registry.
+
+    Reads the facility registry (``critical_locations``) records that map to a
+    maintainable asset kind (currently ROAD), assigns wards by PostGIS
+    point-in-polygon and upserts assets keyed on ``(source, source_id)`` — so it
+    is idempotent and never fabricates an asset, coordinate or install date.
+    """
+    settings = settings or get_settings()
+
+    rows = (
+        (
+            await db.execute(
+                select(CriticalLocation)
+                .where(
+                    CriticalLocation.verification_status
+                    == InfrastructureDataStatus.FOUND,
+                    CriticalLocation.is_active.is_(True),
+                    CriticalLocation.category.in_(
+                        list(_REGISTRY_TO_ASSET.keys())
+                    ),
+                    CriticalLocation.latitude.is_not(None),
+                    CriticalLocation.longitude.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # Intra-run dedup on (source_id, coords) — never register the same real
+    # record twice; the DIFFERENT source_id across re-syncs is handled below.
+    seen: set[tuple[str, str]] = set()
+    candidates: list[CriticalLocation] = []
+    unlocated = 0
+    for row in rows:
+        if not row.source or not row.source_id:
+            unlocated += 1
+            continue
+        key = (row.source_id, f"{row.latitude:.6f},{row.longitude:.6f}")
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(row)
+
+    ward_map = await _resolve_asset_wards(db, candidates)
+
+    existing_rows = (
+        (
+            await db.execute(
+                select(InfrastructureAsset).where(
+                    InfrastructureAsset.source.is_not(None),
+                    InfrastructureAsset.source_id.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Keyed on the record's OWN (source, source_id) so each registry record maps
+    # to exactly one asset regardless of where the record came from — re-running
+    # a sync over the current fleet updates or skips instead of re-inserting.
+    existing = {(row.source, row.source_id): row for row in existing_rows}
+
+    by_category: dict[str, AssetRegistryCategoryCounts] = {}
+    inserted = updated = skipped = 0
+
+    for record in candidates:
+        category = _REGISTRY_TO_ASSET[record.category]
+        counts = by_category.setdefault(
+            category.value,
+            AssetRegistryCategoryCounts(
+                category=record.category.value, asset_category=category.value
+            ),
+        )
+        counts.available += 1
+        ward_id = ward_map.get(str(record.id)) or None
+        key = (record.source, record.source_id)
+        asset = existing.get(key)
+        if asset is not None:
+            changed = (
+                asset.name != record.name
+                or asset.latitude != record.latitude
+                or asset.longitude != record.longitude
+                or asset.address != record.address
+                or asset.ward_id != ward_id
+                or not asset.is_active
+            )
+            asset.name = record.name
+            asset.latitude = record.latitude
+            asset.longitude = record.longitude
+            asset.address = record.address
+            asset.ward_id = ward_id
+            asset.is_active = True
+            if changed:
+                counts.updated += 1
+                updated += 1
+            else:
+                counts.skipped_duplicate += 1
+                skipped += 1
+            continue
+        counts.registered += 1
+        inserted += 1
+        db.add(
+            InfrastructureAsset(
+                name=record.name,
+                category=category,
+                ward_id=ward_id,
+                latitude=record.latitude,
+                longitude=record.longitude,
+                address=record.address,
+                installed_at=None,
+                condition_note=None,
+                is_active=True,
+                source=record.source,
+                source_dataset=record.source_dataset or _ASSET_SOURCE_DATASET,
+                source_url=record.source_url,
+                source_id=record.source_id,
+            )
+        )
+
+    await db.commit()
+    registered_total = await _asset_count(db)
+    message = (
+        f"Registered {inserted} new + updated {updated} real assets from the verified "
+        f"facility registry (skipped {skipped} unchanged, {unlocated} unlocated). "
+        f"Total registered assets: {registered_total}. Source: {_ASSET_SOURCE_DATASET}. "
+        "Installation dates are not present in the source data and were left unset."
+    )
+    return AssetRegistrySyncOut(
+        source=_ASSET_SOURCE,
+        source_dataset=_ASSET_SOURCE_DATASET,
+        inserted=inserted,
+        updated=updated,
+        skipped_duplicate=skipped,
+        unlocated=unlocated,
+        registered_total=registered_total,
+        by_category=list(by_category.values()),
+        message=message,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Live inference
 # --------------------------------------------------------------------------- #
@@ -317,32 +607,56 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def _count_near(
-    lat: float | None,
-    lon: float | None,
-    points: list[tuple[float, float]],
+def _history_rows_for_asset(
+    asset: InfrastructureAsset,
     radius_km: float,
-) -> int:
-    if lat is None or lon is None:
-        return 0
-    return sum(1 for plat, plon in points if _haversine_km(lat, lon, plat, plon) <= radius_km)
+    complaints: list[tuple[uuid.UUID, str, float, float]],
+    repairs: list[tuple[uuid.UUID, str, float, float]],
+) -> tuple[list[tuple[uuid.UUID, str, float, float]], list[tuple[uuid.UUID, str, float, float]]]:
+    """Only history that is both spatially near AND categorically relevant."""
+    relevant = _RELEVANT_COMPLAINT_CATEGORIES.get(asset.category.value, frozenset())
+    if asset.latitude is None or asset.longitude is None:
+        return [], []
+    near_c = [
+        r
+        for r in complaints
+        if r[1] in relevant
+        and _haversine_km(asset.latitude, asset.longitude, r[2], r[3]) <= radius_km
+    ]
+    near_r = [
+        r
+        for r in repairs
+        if r[1] in relevant
+        and _haversine_km(asset.latitude, asset.longitude, r[2], r[3]) <= radius_km
+    ]
+    return near_c, near_r
 
 
-async def _live_history(
+async def _history_signals(
     db: AsyncSession,
     assets: list[InfrastructureAsset],
     settings: Settings,
-) -> tuple[dict[uuid.UUID, dict], dict[uuid.UUID, float]]:
-    """Per-asset {complaints_90d, repairs_12m} + ward resident counts."""
+) -> tuple[dict[uuid.UUID, dict], set[uuid.UUID], set[uuid.UUID]]:
+    """Per-asset {complaints_90d, repairs_12m} + globally linked record ids.
+
+    A record only counts when it is close to the asset (``INFRA_RADIUS_M``) AND
+    its complaint category genuinely relates to the asset kind — so unrelated
+    complaints never inflate an asset's history (or the readiness gate).
+    """
     now = datetime.now(UTC)
     radius_km = settings.INFRA_RADIUS_M / 1000.0
 
-    complaint_points: list[tuple[float, float]] = []
+    complaints: list[tuple[uuid.UUID, str, float, float]] = []
     complaints_since = now - timedelta(days=settings.INFRA_COMPLAINTS_LOOKBACK_DAYS)
-    complaint_rows = (
+    c_rows = (
         await db.execute(
-            select(ComplaintLocation.latitude, ComplaintLocation.longitude)
-            .join(Complaint, Complaint.id == ComplaintLocation.complaint_id)
+            select(
+                Complaint.id,
+                Complaint.category,
+                ComplaintLocation.latitude,
+                ComplaintLocation.longitude,
+            )
+            .join(ComplaintLocation, ComplaintLocation.complaint_id == Complaint.id)
             .where(
                 Complaint.created_at >= complaints_since,
                 ComplaintLocation.latitude.is_not(None),
@@ -350,14 +664,21 @@ async def _live_history(
             )
         )
     ).all()
-    complaint_points = [(float(r[0]), float(r[1])) for r in complaint_rows]
+    for row in c_rows:
+        cat = row.category.value if hasattr(row.category, "value") else str(row.category)
+        complaints.append((row.id, cat, float(row.latitude), float(row.longitude)))
 
-    repair_points: list[tuple[float, float]] = []
+    repairs: list[tuple[uuid.UUID, str, float, float]] = []
     repairs_since = now - timedelta(days=settings.INFRA_REPAIRS_LOOKBACK_DAYS)
-    repair_rows = (
+    r_rows = (
         await db.execute(
-            select(ComplaintLocation.latitude, ComplaintLocation.longitude)
-            .join(Complaint, Complaint.id == ComplaintLocation.complaint_id)
+            select(
+                Complaint.id,
+                Complaint.category,
+                ComplaintLocation.latitude,
+                ComplaintLocation.longitude,
+            )
+            .join(ComplaintLocation, ComplaintLocation.complaint_id == Complaint.id)
             .join(WorkOrder, WorkOrder.complaint_id == Complaint.id)
             .where(
                 WorkOrder.created_at >= repairs_since,
@@ -366,18 +687,27 @@ async def _live_history(
             )
         )
     ).all()
-    repair_points = [(float(r[0]), float(r[1])) for r in repair_rows]
+    for row in r_rows:
+        cat = row.category.value if hasattr(row.category, "value") else str(row.category)
+        repairs.append((row.id, cat, float(row.latitude), float(row.longitude)))
 
     counts: dict[uuid.UUID, dict] = {}
+    linked_complaints: set[uuid.UUID] = set()
+    linked_repairs: set[uuid.UUID] = set()
     for asset in assets:
+        near_c, near_r = _history_rows_for_asset(asset, radius_km, complaints, repairs)
         counts[asset.id] = {
-            "complaints_90d": _count_near(
-                asset.latitude, asset.longitude, complaint_points, radius_km
-            ),
-            "repairs_12m": _count_near(asset.latitude, asset.longitude, repair_points, radius_km),
+            "complaints_90d": len(near_c),
+            "repairs_12m": len(near_r),
         }
+        linked_complaints.update(r[0] for r in near_c)
+        linked_repairs.update(r[0] for r in near_r)
 
-    residents: dict[uuid.UUID, float] = {}
+    return counts, linked_complaints, linked_repairs
+
+
+async def _ward_residents(db: AsyncSession) -> dict[str, float]:
+    """Ward id -> number of registered social users (population-density proxy)."""
     res_rows = (
         await db.execute(
             select(Ward.id, func.count(User.id).label("residents"))
@@ -385,8 +715,29 @@ async def _live_history(
             .group_by(Ward.id)
         )
     ).all()
-    residents = {str(wid): float(c) for wid, c in res_rows}
-    return counts, residents
+    return {str(wid): float(c) for wid, c in res_rows}
+
+
+async def _linked_history(
+    db: AsyncSession,
+    settings: Settings,
+) -> tuple[int, int, int]:
+    """``(records, complaints, repairs)`` of real history linked to any asset."""
+    assets = (
+        (
+            await db.execute(
+                select(InfrastructureAsset).where(InfrastructureAsset.is_active.is_(True))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    _counts, linked_complaints, linked_repairs = await _history_signals(db, assets, settings)
+    return (
+        len(linked_complaints | linked_repairs),
+        len(linked_complaints),
+        len(linked_repairs),
+    )
 
 
 async def get_predictions(
@@ -409,6 +760,30 @@ async def get_predictions(
             message=_infra_gate_message(registered, settings.INFRA_MIN_ASSETS),
             registered_assets=registered,
             minimum_assets=settings.INFRA_MIN_ASSETS,
+            history_records=0,
+            minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
+        )
+
+    # Part 37 gate: real maintenance history must exist for the fleet — a
+    # registered fleet alone is not a prediction.
+    history_records, complaints, repairs = await _linked_history(db, settings)
+    if history_records < settings.INFRA_MIN_HISTORY_RECORDS:
+        return InfrastructurePredictions(
+            ai_prediction=True,
+            disclaimer=_DISCLAIMER,
+            prediction_status=PredictionStatus.INSUFFICIENT_DATA,
+            model=None,
+            assets=[],
+            message=_infra_history_gate_message(
+                history_records,
+                complaints,
+                repairs,
+                settings.INFRA_MIN_HISTORY_RECORDS,
+            ),
+            registered_assets=registered,
+            minimum_assets=settings.INFRA_MIN_ASSETS,
+            history_records=history_records,
+            minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
         )
 
     row = await db.scalar(
@@ -439,7 +814,8 @@ async def get_predictions(
         .all()
     )
 
-    counts, residents = await _live_history(db, assets, settings)
+    counts, linked_complaints, linked_repairs = await _history_signals(db, assets, settings)
+    residents = await _ward_residents(db)
     rain_mm, rain_available = await fetch_infra_citywide_rainfall(settings)
 
     reference = datetime.now(UTC)
@@ -540,6 +916,8 @@ async def get_predictions(
         message="Forecasts served from the trained infrastructure model.",
         registered_assets=registered,
         minimum_assets=settings.INFRA_MIN_ASSETS,
+        history_records=history_records,
+        minimum_history=settings.INFRA_MIN_HISTORY_RECORDS,
     )
 
 

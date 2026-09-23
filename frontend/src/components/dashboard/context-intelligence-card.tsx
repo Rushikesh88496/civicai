@@ -287,6 +287,25 @@ export function ContextIntelligenceCard({ complaintId }: Props) {
                   ) : null
                 }
               />
+              {weather && !weather.available && !inProgress && (
+                <div className="flex flex-col gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] leading-snug text-amber-700">
+                      Weather could not be fetched during the last enrichment
+                      run.
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={runEnrichment}
+                      disabled={running}
+                      className="shrink-0"
+                    >
+                      <RefreshCw className="mr-1 h-3 w-3" /> Retry
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               <Tile
                 icon={MapPin}

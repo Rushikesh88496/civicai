@@ -231,6 +231,7 @@ class PriorityDataService:
                         category=cat_value,
                         distance_m=place.distance_m,
                         verification=place.verification_status.value,
+                        record_id=place.id,
                     )
                 )
         facilities.sort(key=lambda f: (f.distance_m if f.distance_m is not None else float("inf")))
@@ -300,10 +301,14 @@ class PriorityDataService:
             rain_mm=weather.rain_mm,
             precipitation_mm=weather.precipitation_mm,
             forecast_precip_mm=forecast_precip,
+            recent_precip_mm=weather.recent_precipitation_sum_mm,
+            precip_probability_pct=weather.forecast_precipitation_probability_max_pct,
             threshold_mm=float(settings.PRIORITY_WEATHER_RAIN_MM),
             status="AVAILABLE",
             calculated_at=now,
-            explanation="Real Open-Meteo current + next-days forecast conditions.",
+            explanation=(
+                "Real Open-Meteo current + recent + next-days forecast conditions."
+            ),
         )
 
     async def _collect_historical(

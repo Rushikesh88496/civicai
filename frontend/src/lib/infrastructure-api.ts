@@ -35,6 +35,11 @@ export interface InfrastructureAsset {
   installed_at?: string | null;
   condition_note?: string | null;
   is_active: boolean;
+  // Provenance for assets synced from the verified facility registry (Part 37).
+  source?: string | null;
+  source_dataset?: string | null;
+  source_url?: string | null;
+  source_id?: string | null;
   created_at: string;
 }
 
@@ -68,6 +73,8 @@ export interface InfrastructurePredictions {
   message: string;
   registered_assets: number;
   minimum_assets: number;
+  history_records: number;
+  minimum_history: number;
 }
 
 export interface InfrastructureStatus {
@@ -77,16 +84,24 @@ export interface InfrastructureStatus {
   message: string;
   registered_assets: number;
   minimum_assets: number;
+  history_records: number;
+  minimum_history: number;
 }
 
 export interface InfrastructureTrainingOut {
   trained: boolean;
-  version: number;
-  model: InfrastructureModelInfo;
+  status: string;
+  version?: number | null;
+  model: InfrastructureModelInfo | null;
   metrics: Record<string, unknown>;
   config: Record<string, unknown>;
   rows: number;
   duration_seconds: number;
+  message: string;
+  registered_assets: number;
+  minimum_assets: number;
+  history_records: number;
+  minimum_history: number;
 }
 
 export interface InfrastructureReviewOut {
@@ -122,6 +137,42 @@ export async function fetchInfrastructureStatus(): Promise<InfrastructureStatus>
 
 export async function fetchInfrastructurePredictions(): Promise<InfrastructurePredictions> {
   return infraFetch<InfrastructurePredictions>("/api/v1/infrastructure/predictions");
+}
+
+export async function fetchInfrastructureAssets(): Promise<InfrastructureAsset[]> {
+  return infraFetch<InfrastructureAsset[]>("/api/v1/infrastructure/assets");
+}
+
+// --------------------------------------------------------------------------- //
+// Real asset registry sync (Part 37) — predictive assets from the verified
+// facility registry, provenance-keyed and idempotent.
+// --------------------------------------------------------------------------- //
+
+export interface AssetRegistryCategoryCountsOut {
+  category: string;
+  asset_category?: string | null;
+  available: number;
+  registered: number;
+  updated: number;
+  skipped_duplicate: number;
+}
+
+export interface AssetRegistrySyncOut {
+  source: string;
+  source_dataset?: string | null;
+  inserted: number;
+  updated: number;
+  skipped_duplicate: number;
+  unlocated: number;
+  registered_total: number;
+  by_category: AssetRegistryCategoryCountsOut[];
+  message: string;
+}
+
+export async function syncInfrastructureAssets(): Promise<AssetRegistrySyncOut> {
+  return infraFetch<AssetRegistrySyncOut>("/api/v1/infrastructure/assets/sync", {
+    method: "POST",
+  });
 }
 
 export async function trainInfrastructureModel(): Promise<InfrastructureTrainingOut> {

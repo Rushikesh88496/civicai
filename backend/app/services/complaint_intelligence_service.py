@@ -88,6 +88,10 @@ async def ensure_intelligence_pipeline(
     if user.role is None or user.role.name not in _OPERATIONAL_ROLES:
         return outcome
 
+    # An interrupted process crash can leave RUNNING rows stuck forever; reclaim
+    # them so the pipeline re-runs instead of treating them as fresh work.
+    await agent_run_service.reap_stale_runs(db, complaint_id=complaint_id)
+
     from app.services import context_service, priority_service
 
     # --- Context enrichment: run when never run, or the last run failed. ------

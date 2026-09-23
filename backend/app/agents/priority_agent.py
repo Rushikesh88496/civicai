@@ -255,6 +255,7 @@ async def _compute_node(state: PriorityState) -> dict[str, object]:
     score, bucket, comp_dicts, readiness, amp_dicts = score_priority(
         category=bundle.category,
         severity=bundle.severity,
+        complaint_description=complaint.description,
         infrastructure=bundle.infrastructure,
         weather=bundle.weather,
         historical=bundle.historical,
@@ -275,10 +276,12 @@ async def _compute_node(state: PriorityState) -> dict[str, object]:
         infra_cluster_weight=float(settings.PRIORITY_INFRA_CLUSTER_WEIGHT),
         infra_access_bonus_50m=float(settings.PRIORITY_INFRA_ACCESS_BONUS_50_M),
         infra_access_bonus_100m=float(settings.PRIORITY_INFRA_ACCESS_BONUS_100_M),
+        weather_probability_threshold_pct=float(
+            settings.PRIORITY_WEATHER_PROBABILITY_PCT
+        ),
         facility_base_relevance=settings.PRIORITY_FACILITY_BASE_RELEVANCE,
         category_facility_factors=settings.PRIORITY_CATEGORY_FACILITY_FACTORS,
         population_subweights=settings.PRIORITY_POPULATION_SUBWEIGHTS,
-        severity_max_boost=float(settings.PRIORITY_SEVERITY_MAX_BOOST),
         emergency_access_band_m=float(
             settings.PRIORITY_AMPLIFIER_EMERGENCY_ACCESS_BAND_M
         ),

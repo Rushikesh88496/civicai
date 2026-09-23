@@ -132,55 +132,73 @@ function fmtScoreTime(iso: string): string {
   });
 }
 
-const SEVERITY_DIM_LABEL: Record<string, string> = {
-  accessibility: "Access impact",
-  public_impact: "Public impact",
-  public_safety: "Public safety",
-  environmental: "Weather context",
-};
-
 function detailLines(c: PriorityComponent): string[] {
   const d = c.details;
   if (!d || Object.keys(d).length === 0) return [];
   const lines: string[] = [];
-  if (c.key === "infrastructure" && Array.isArray(d.contributing_facilities)) {
-    const facs = (d.contributing_facilities as Array<{
-      name: string;
-      category: string;
-      distance_m: number | null;
-      verification: string;
-      relevance: number;
-      contribution: number;
-    }>).slice(0, 4);
-    facs.forEach((f) =>
-      lines.push(
-        `${f.name} (${f.category.replace(/_/g, " ")}${
-          f.distance_m != null ? `, ${Math.round(f.distance_m)} m` : ""
-        } · relevance ${Math.round((f.relevance ?? 0) * 100)}%)`
-      )
-    );
-    const access = d.access_impact as
-      | {
-          category_type?: string;
-          emergency_access_impacted?: boolean;
-          emergency_facilities_within_band?: Array<{
-            name: string;
-            category: string;
-            distance_m: number | null;
-          }>;
-        }
-      | undefined;
-    if (access) {
-      if (access.emergency_access_impacted) {
-        const near = access.emergency_facilities_within_band?.[0];
+  if (c.key === "infrastructure") {
+    const det = d as Record<string, unknown>;
+    const explicit = det.explicit_facility_mentioned as string | undefined;
+    const matchedName = det.matched_facility_name as string | undefined;
+    const matchedType = det.matched_facility_type as string | undefined;
+    const matchedDist = det.matched_distance_m as number | null | undefined;
+    const ruleApplied = det.explicit_rule_applied === true;
+    if (explicit) {
+      if (ruleApplied && matchedName) {
         lines.push(
-          "Access impact: emergency access at risk" +
-            (near && near.distance_m != null
-              ? ` — ${near.name} (${Math.round(near.distance_m)} m)`
-              : "")
+          `Explicit "${explicit.replace(/_/g, " ").toLowerCase()}" mention → verified ${
+            matchedType ? matchedType.replace(/_/g, " ").toLowerCase() : "facility"
+          } match: ${matchedName}${
+            matchedDist != null ? ` (${Math.round(matchedDist)} m)` : ""
+          } — full 30/30`
         );
-      } else if (access.category_type === "access-affecting") {
-        lines.push("Access-affecting category; no emergency facility in band");
+      } else {
+        lines.push(
+          `Explicit "${explicit
+            .replace(/_/g, " ")
+            .toLowerCase()}" mentioned — no verified in-range match, contextual score only`
+        );
+      }
+    }
+    if (Array.isArray(d.contributing_facilities)) {
+      const facs = (d.contributing_facilities as Array<{
+        name: string;
+        category: string;
+        distance_m: number | null;
+        verification: string;
+        relevance: number;
+        contribution: number;
+      }>).slice(0, 4);
+      facs.forEach((f) =>
+        lines.push(
+          `${f.name} (${f.category.replace(/_/g, " ")}${
+            f.distance_m != null ? `, ${Math.round(f.distance_m)} m` : ""
+          } · relevance ${Math.round((f.relevance ?? 0) * 100)}%)`
+        )
+      );
+      const access = d.access_impact as
+        | {
+            category_type?: string;
+            emergency_access_impacted?: boolean;
+            emergency_facilities_within_band?: Array<{
+              name: string;
+              category: string;
+              distance_m: number | null;
+            }>;
+          }
+        | undefined;
+      if (access) {
+        if (access.emergency_access_impacted) {
+          const near = access.emergency_facilities_within_band?.[0];
+          lines.push(
+            "Access impact: emergency access at risk" +
+              (near && near.distance_m != null
+                ? ` — ${near.name} (${Math.round(near.distance_m)} m)`
+                : "")
+          );
+        } else if (access.category_type === "access-affecting") {
+          lines.push("Access-affecting category; no emergency facility in band");
+        }
       }
     }
   }
@@ -244,22 +262,22 @@ function detailLines(c: PriorityComponent): string[] {
     }
   }
   if (c.key === "severity") {
-    const dims = d.dimensions as Record<string, number> | undefined;
-    if (dims) {
-      Object.entries(dims)
-        .filter(([, v]) => (v as number) > 0)
-        .forEach(([key, v]) =>
-          lines.push(
-            `${SEVERITY_DIM_LABEL[key] ?? key.replace(/_/g, " ")}: ${Math.round(
-              (v as number) * 100
-            )}%`
-          )
+    const subs = d.subcomponents as
+      | Record<
+          string,
+          { label: string; max: number; score: number | null; unit: number }
+        >
+      | undefined;
+    if (subs) {
+      Object.entries(subs).forEach(([, s]) => {
+        if (s.score != null && s.score > 0) lines.push(`${s.label}: ${s.score}/${s.max}`);
+      });
+      if (subs.base) {
+        lines.push(
+          `AI triage (${String(d.triage_input ?? "").toUpperCase()}) sets the base, not a cap — escalators need verified evidence`
         );
+      }
     }
-    if (d.base_unit != null)
-      lines.push(
-        `Base (stored triage): ${String(d.triage_input ?? "").toUpperCase()} — context boost is bounded`
-      );
   }
   if (c.key === "historical") {
     if (d.same_category_30d != null)
@@ -284,8 +302,20 @@ function detailLines(c: PriorityComponent): string[] {
     if (d.vision_mismatch) lines.push("Vision AI flagged a mismatch");
   }
   if (c.key === "weather") {
-    if (d.forecast_precip_max_mm != null)
-      lines.push(`${d.forecast_precip_max_mm} mm forecast peak`);
+    const det = d as Record<string, unknown>;
+    const band = det.band as string | undefined;
+    const forecast = det.forecast_precip_max_mm as number | null | undefined;
+    const recent = det.recent_precip_max_mm as number | null | undefined;
+    const prob = det.forecast_precipitation_probability_pct as number | null | undefined;
+    const rainNow = det.rain_mm_now as number | null | undefined;
+    if (band) lines.push(`Band: ${band}`);
+    if (forecast != null)
+      lines.push(`${forecast} mm forecast peak`);
+    const signals: string[] = [];
+    if (rainNow != null) signals.push(`${rainNow} mm now`);
+    if (recent != null) signals.push(`${recent} mm recent`);
+    if (prob != null) signals.push(`${Math.round(prob)}% forecast probability`);
+    if (signals.length > 0) lines.push(signals.join(" · "));
   }
   return lines.slice(0, 6);
 }

@@ -48,6 +48,12 @@ class InfrastructureAssetOut(BaseModel):
     installed_at: date | None = None
     condition_note: str | None = None
     is_active: bool = True
+    # Real provenance, when the asset was synced from the verified facility
+    # registry (None for manually registered assets).
+    source: str | None = None
+    source_dataset: str | None = None
+    source_url: str | None = None
+    source_id: str | None = None
     created_at: datetime
 
 
@@ -94,6 +100,10 @@ class InfrastructurePredictions(BaseModel):
     message: str = ""
     registered_assets: int = 0
     minimum_assets: int = 5
+    # Part 37 history gate: how many REAL, legitimately-linked complaint/repair
+    # records exist vs the configured minimum (separate from the asset fleet).
+    history_records: int = 0
+    minimum_history: int = 0
 
 
 class InfrastructureTrainingOut(BaseModel):
@@ -108,6 +118,8 @@ class InfrastructureTrainingOut(BaseModel):
     message: str = ""
     registered_assets: int = 0
     minimum_assets: int = 5
+    history_records: int = 0
+    minimum_history: int = 0
 
 
 class InfrastructureStatus(BaseModel):
@@ -117,6 +129,8 @@ class InfrastructureStatus(BaseModel):
     message: str = ""
     registered_assets: int = 0
     minimum_assets: int = 5
+    history_records: int = 0
+    minimum_history: int = 0
 
 
 class InfrastructureReviewIn(BaseModel):
@@ -152,3 +166,30 @@ class PreventiveWorkOrderOut(BaseModel):
     approved_at: datetime | None = None
     note: str | None = None
     created_at: datetime
+
+
+class AssetRegistryCategoryCounts(BaseModel):
+    """Per-category result of a real asset-registry sync (Part 37)."""
+
+    category: str
+    # Registered-asset category this maps to (the asset kind actually created).
+    asset_category: str | None = None
+    # Real verified facility-registry records available in that category.
+    available: int = 0
+    registered: int = 0
+    updated: int = 0
+    skipped_duplicate: int = 0
+
+
+class AssetRegistrySyncOut(BaseModel):
+    """Idempotent, provenance-keyed sync of real assets (Part 37)."""
+
+    source: str = "openstreetmap"
+    source_dataset: str | None = None
+    inserted: int = 0
+    updated: int = 0
+    skipped_duplicate: int = 0
+    unlocated: int = 0
+    registered_total: int = 0
+    by_category: list[AssetRegistryCategoryCounts] = Field(default_factory=list)
+    message: str = ""

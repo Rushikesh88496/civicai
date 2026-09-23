@@ -8,7 +8,7 @@ duplicate commit logic.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -85,6 +85,44 @@ async def finalize_run(
     # Notify command-center WebSocket clients that activity changed (best-effort).
     await publish_command_center_refresh()
     return run
+
+
+async def reap_stale_runs(
+    db: AsyncSession,
+    *,
+    complaint_id: uuid.UUID | None = None,
+    agent: str | None = None,
+    stale_seconds: int = 300,
+) -> int:
+    """Mark RUNNING agent runs older than ``stale_seconds`` as FAILED.
+
+    A process crash / restart can leave an ``agent_runs`` row stuck in RUNNING
+    forever. Without a sweep the result endpoints would report an eternal
+    in-progress state (the UI's "Computing…" spinner never resolves) and the
+    auto-intelligence pipeline would treat the row as fresh — never re-running
+    the interrupted stage. This idempotent sweep flips stale rows to FAILED so
+    callers surface an honest error and retry. Returns the number of runs
+    reclaimed.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=max(1, int(stale_seconds)))
+    stmt = select(AgentRun).where(
+        AgentRun.status == AgentStatus.RUNNING,
+        AgentRun.started_at < cutoff,
+    )
+    if complaint_id is not None:
+        stmt = stmt.where(AgentRun.complaint_id == complaint_id)
+    if agent is not None:
+        stmt = stmt.where(AgentRun.agent == agent)
+    rows = (await db.execute(stmt)).scalars().all()
+    if not rows:
+        return 0
+    now = datetime.now(UTC)
+    for run in rows:
+        run.status = AgentStatus.FAILED
+        run.error = "Run marked failed — interrupted or stale RUNNING."
+        run.ended_at = now
+    await db.commit()
+    return len(rows)
 
 
 async def get_latest_run(db: AsyncSession, complaint_id: uuid.UUID) -> AgentRun | None:

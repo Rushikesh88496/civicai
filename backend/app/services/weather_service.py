@@ -30,8 +30,14 @@ _CURRENT_FIELDS = [
     "rain",
     "weather_code",
     "wind_speed_10m",
+    "precipitation_probability",
 ]
-_DAILY_FIELDS = ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"]
+_DAILY_FIELDS = [
+    "temperature_2m_max",
+    "temperature_2m_min",
+    "precipitation_sum",
+    "precipitation_probability_max",
+]
 
 # Rough WMO weather-code -> human label (subset adequate for the UI card).
 _WMO_CODES: dict[int, str] = {
@@ -81,6 +87,7 @@ async def fetch_weather(
     3. Open-Meteo unreachable/garbage -> ``available=False``, graceful.
     """
     retrieved = datetime.now(UTC)
+    past_days = max(0, int(settings.WEATHER_PAST_DAYS))
     params = {
         "latitude": latitude,
         "longitude": longitude,
@@ -89,12 +96,17 @@ async def fetch_weather(
         "forecast_days": settings.WEATHER_FORECAST_DAYS,
         "timezone": "auto",
     }
+    if past_days > 0:
+        params["past_days"] = past_days
     key = cache_key(settings, "weather", f"{latitude:.5f},{longitude:.5f}")
 
     # 1) Cache hit.
     cached_payload, is_hit = await cache_get_json(settings, key)
     if is_hit and isinstance(cached_payload, dict) and cached_payload.get("_payload"):
-        return _parse_weather_payload(cached_payload["_payload"], cached=True), None
+        return (
+            _parse_weather_payload(cached_payload["_payload"], cached=True, past_days=past_days),
+            None,
+        )
 
     # 2) Live call, retried up to the configured budget.
     retries = max(0, int(settings.WEATHER_MAX_RETRIES))
@@ -126,11 +138,11 @@ async def fetch_weather(
                 last_exc = exc
                 if attempt == retries:
                     break
-                await asyncio.sleep(0.2 * (attempt + 1))
+                await asyncio.sleep(min(4.0, 0.5 * (2**attempt)))
         if last_exc is not None:
             raise last_exc
 
-        weather = _parse_weather_payload(payload, cached=False)
+        weather = _parse_weather_payload(payload, cached=False, past_days=past_days)
         if weather.available:
             await cache_set_json(
                 settings,
@@ -150,7 +162,9 @@ async def fetch_weather(
         return WeatherContext(available=False), None
 
 
-def _parse_weather_payload(payload: dict[str, Any], *, cached: bool) -> WeatherContext:
+def _parse_weather_payload(
+    payload: dict[str, Any], *, cached: bool, past_days: int = 0
+) -> WeatherContext:
     """Map an Open-Meteo JSON payload onto a ``WeatherContext``."""
     current = payload.get("current", {}) or {}
     daily = payload.get("daily", {}) or {}
@@ -159,15 +173,31 @@ def _parse_weather_payload(payload: dict[str, Any], *, cached: bool) -> WeatherC
     precipitation = _num(values.get("precipitation"))
     rain = _num(values.get("rain"))
     wind = _num(values.get("wind_speed_10m"))
+    prob_current = _num(values.get("precipitation_probability"))
     wcode = values.get("weather_code")
     code = int(wcode) if isinstance(wcode, (int, float)) else None
 
-    forecast: list[WeatherForecastDay] = []
     dates = daily.get("time") or []
     tmax = daily.get("temperature_2m_max") or []
     tmin = daily.get("temperature_2m_min") or []
     psum = daily.get("precipitation_sum") or []
+    pprob = daily.get("precipitation_probability_max") or []
+
+    # With past_days=N the first N daily rows are the trailing past-days window
+    # (ordered most-recent past day first); today + forecast follow.
+    past_len = int(past_days)
+    recent_sum = 0.0
+    recent_rows = dates[:past_len] if past_len > 0 else []
+    for i in range(len(recent_rows)):
+        value = _num(psum[i]) if i < len(psum) else None
+        if value is not None:
+            recent_sum += max(0.0, value)
+
+    forecast: list[WeatherForecastDay] = []
     for i, d in enumerate(dates):
+        if i < past_len:
+            # Past-day rows are not part of the forecast the UI shows today.
+            continue
         forecast.append(
             WeatherForecastDay(
                 date=str(d),
@@ -177,7 +207,19 @@ def _parse_weather_payload(payload: dict[str, Any], *, cached: bool) -> WeatherC
             )
         )
 
-    provided = any(v is not None for v in (temperature, precipitation, rain, wind, code))
+    forecast_prob_values = [
+        value
+        for i in range(past_len, len(dates))
+        if i < len(pprob)
+        for value in [_num(pprob[i])]
+        if value is not None
+    ]
+    forecast_prob_max = max(forecast_prob_values) if forecast_prob_values else None
+
+    provided = any(
+        v is not None
+        for v in (temperature, precipitation, rain, wind, code, prob_current)
+    )
     return WeatherContext(
         temperature_c=temperature,
         precipitation_mm=precipitation,
@@ -185,6 +227,9 @@ def _parse_weather_payload(payload: dict[str, Any], *, cached: bool) -> WeatherC
         wind_speed_kmh=wind,
         weather_code=code,
         condition=_WMO_CODES.get(code) if code is not None else None,
+        precipitation_probability_pct=prob_current,
+        forecast_precipitation_probability_max_pct=forecast_prob_max,
+        recent_precipitation_sum_mm=recent_sum if recent_rows else None,
         cached=cached,
         retrieved_at=datetime.now(UTC),
         available=provided,

@@ -26,7 +26,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, or_, select, text
 from starlette.testclient import TestClient
 
 from app.core.config import get_settings
@@ -43,6 +43,7 @@ from app.ml.infra_features import (
 from app.models import (
     Complaint,
     ComplaintLocation,
+    CriticalLocation,
     InfrastructureAsset,
     InfrastructureModel,
     InfrastructurePrediction,
@@ -51,7 +52,13 @@ from app.models import (
     User,
     UserProfile,
 )
-from app.models.enums import ComplaintCategory, InfrastructureRiskLevel, RoleName
+from app.models.enums import (
+    ComplaintCategory,
+    CriticalLocationCategory,
+    InfrastructureDataStatus,
+    InfrastructureRiskLevel,
+    RoleName,
+)
 from app.schemas.auth import RegisterIn
 from app.services import auth_service
 from tests.helpers import any_active_ward_id
@@ -151,6 +158,9 @@ async def _fast_settings(tmp_path, monkeypatch):
         # Part 31 gating: behaviour tests are about the pipeline, not the fleet
         # gate, so the minimum asset fleet is lowered to zero here.
         ("INFRA_MIN_ASSETS", 0),
+        # Part 37 history gate: same idea — behaviour tests disable the history
+        # minimum so they exercise the pipeline, not the readiness gate.
+        ("INFRA_MIN_HISTORY_RECORDS", 0),
     ):
         monkeypatch.setattr(_SETTINGS, attr, value)
     yield
@@ -163,7 +173,16 @@ async def _cleanup():
         await db.execute(delete(PreventiveWorkOrder))
         await db.execute(delete(InfrastructurePrediction))
         await db.execute(delete(InfrastructureModel))
-        await db.execute(delete(InfrastructureAsset))
+        # Delete ONLY test-created assets: the real fleet synced from the
+        # verified facility registry carries source='openstreetmap' and must
+        # survive the suite. Manual (API) test assets carry source=NULL.
+        await db.execute(
+            delete(InfrastructureAsset).where(
+                or_(InfrastructureAsset.source.is_(None), InfrastructureAsset.source == "test")
+            )
+        )
+        # Test-created registry records that feed the asset-sync tests.
+        await db.execute(delete(CriticalLocation).where(CriticalLocation.source == "test"))
         await db.execute(delete(ComplaintLocation))
         await db.execute(delete(Complaint))
         await db.execute(delete(User).where(User.email.like("%-%@example.com")))
@@ -257,8 +276,9 @@ async def test_rbac_forbids_non_city_roles(client: TestClient):
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_gating_refuses_serving_without_fleet(client: TestClient, monkeypatch):
-    # Defaults are lowered to 0 by the fixture; re-raise to pin the gate.
-    monkeypatch.setattr(_SETTINGS, "INFRA_MIN_ASSETS", 1000)
+    # Defaults are lowered to 0 by the fixture; re-raise to pin the fleet gate
+    # above any registered fleet (the real synced registry or test assets).
+    monkeypatch.setattr(_SETTINGS, "INFRA_MIN_ASSETS", 10**9)
     token = await _officer_token()
     headers = _auth(token)
 
@@ -267,8 +287,7 @@ async def test_gating_refuses_serving_without_fleet(client: TestClient, monkeypa
     data = r.json()
     assert data["prediction_status"] == "INSUFFICIENT_DATA"
     assert data["model"] is None and data["assets"] == []
-    assert data["registered_assets"] == 0
-    assert data["message"] and "assets" in data["message"]
+    assert data["message"] and "registered assets are required" in data["message"]
 
     st = await client.get(f"{_BASE}/status", headers=headers)
     assert st.json()["trained"] is False
@@ -335,9 +354,8 @@ async def test_missing_data_still_predicts_and_flags_unavailability(client: Test
     assert r.status_code == 200
     data = r.json()
     assert data["ai_prediction"] is True
-    assert data["assets_assessed"] == 1
-    entry = data["assets"][0]
-    assert entry["asset"]["id"] == asset["id"]
+    assert data["assets_assessed"] >= 1
+    entry = next(a for a in data["assets"] if a["asset"]["id"] == asset["id"])
     assert 0.0 <= entry["failure_probability"] <= 1.0
     assert entry["risk_level"] in {lv.value for lv in InfrastructureRiskLevel}
     assert any("unavailable" in f.lower() for f in entry["supporting_factors"])
@@ -349,7 +367,7 @@ async def test_missing_data_still_predicts_and_flags_unavailability(client: Test
 @pytest.mark.asyncio
 async def test_normal_quiet_asset_is_low_risk(client: TestClient):
     token = await _officer_token()
-    await _register_asset(
+    asset = await _register_asset(
         client,
         token,
         {
@@ -362,7 +380,7 @@ async def test_normal_quiet_asset_is_low_risk(client: TestClient):
     )
     r = await client.get(f"{_BASE}/predictions", headers=_auth(token))
     assert r.status_code == 200
-    entry = r.json()["assets"][0]
+    entry = next(a for a in r.json()["assets"] if a["asset"]["id"] == asset["id"])
     assert entry["risk_level"] == InfrastructureRiskLevel.LOW.value
     assert entry["failure_probability"] < _SETTINGS.INFRA_RISK_MEDIUM
     assert "inspection" in entry["recommended_inspection"].lower()
@@ -387,7 +405,9 @@ async def test_high_risk_old_asset_with_many_complaints(client: TestClient):
         },
     )
     for _ in range(12):
-        await _insert_complaint(user_id=citizen_id)
+        # WATER_MAIN assets only count WATER/WATER_LEAK complaints (spatially AND
+        # categorically linked), so the inserted history must be relevant.
+        await _insert_complaint(user_id=citizen_id, category="WATER_LEAK")
 
     r = await client.get(f"{_BASE}/predictions", headers=_auth(token))
     assert r.status_code == 200
@@ -422,10 +442,6 @@ async def test_predictions_lazy_train_and_reuse_version(client: TestClient):
     r2 = await client.get(f"{_BASE}/predictions", headers=headers)
     assert r2.json()["model"]["version"] == data["model"]["version"]
 
-    async with async_session_factory() as db:
-        n = await db.scalar(select(func.count(InfrastructurePrediction.id)))
-        assert n == 0  # no assets, no stored predictions
-
 
 # --------------------------------------------------------------------------- #
 # Review workflow + preventive work order
@@ -441,7 +457,9 @@ async def test_review_and_preventive_work_order_flow(client: TestClient):
     )
 
     data = (await client.get(f"{_BASE}/predictions", headers=headers)).json()
-    prediction_id = data["assets"][0]["id"]
+    prediction_id = next(
+        a["id"] for a in data["assets"] if a["asset"]["name"] == "Reviewed Main"
+    )
 
     r = await client.post(
         f"{_BASE}/predictions/{prediction_id}/review",
@@ -464,7 +482,7 @@ async def test_review_and_preventive_work_order_flow(client: TestClient):
 
     # Second prediction (fresh run) -> reject invalid decision.
     data2 = (await client.get(f"{_BASE}/predictions", headers=headers)).json()
-    pred2 = data2["assets"][0]["id"]
+    pred2 = next(a["id"] for a in data2["assets"] if a["asset"]["name"] == "Reviewed Main")
     bad = await client.post(
         f"{_BASE}/predictions/{pred2}/review", json={"decision": "MAYBE"}, headers=headers
     )
@@ -481,3 +499,143 @@ async def test_review_and_preventive_work_order_flow(client: TestClient):
         f"{_BASE}/predictions/{pred2}/work-orders", json={"department": "WATER"}, headers=headers
     )
     assert denied.status_code == 400
+
+
+# --------------------------------------------------------------------------- #
+# Part 37: real asset registry sync (provenance-keyed, ROAD only)
+# --------------------------------------------------------------------------- #
+async def _ward_point(ward_id: uuid.UUID) -> tuple[float, float]:
+    """A point strictly inside a ward polygon (PostGIS ST_PointOnSurface)."""
+    async with async_session_factory() as db:
+        row = (
+            await db.execute(
+                text(
+                    "SELECT ST_Y(ST_PointOnSurface(geom)) AS lat, "
+                    "ST_X(ST_PointOnSurface(geom)) AS lon "
+                    "FROM ward_boundaries WHERE ward_id = :w"
+                ).bindparams(w=ward_id)
+            )
+        ).first()
+    assert row is not None, "ward boundary missing"
+    return float(row.lat), float(row.lon)
+
+
+async def _ward_with_boundary() -> uuid.UUID:
+    """A ward that actually owns a boundary polygon (suite-order independent)."""
+    async with async_session_factory() as db:
+        row = (
+            await db.execute(text("SELECT ward_id FROM ward_boundaries LIMIT 1"))
+        ).first()
+    assert row is not None, "no ward boundaries seeded"
+    return row.ward_id
+
+
+async def _seed_found_registry_record(
+    name: str,
+    category: CriticalLocationCategory,
+    lat: float,
+    lon: float,
+    source_id: str,
+) -> None:
+    async with async_session_factory() as db:
+        db.add(
+            CriticalLocation(
+                name=name,
+                category=category,
+                latitude=lat,
+                longitude=lon,
+                is_demo=False,
+                source="test",
+                source_dataset="test dataset",
+                source_url=None,
+                source_id=source_id,
+                verification_status=InfrastructureDataStatus.FOUND,
+                is_active=True,
+            )
+        )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_asset_sync_registers_found_assets_and_dedups(client: TestClient):
+    token = await _officer_token()
+    headers = _auth(token)
+
+    ward_id = await _ward_with_boundary()
+    lat, lon = await _ward_point(ward_id)
+    road_sid = f"test-sync-{uuid.uuid4().hex[:10]}"
+    hosp_sid = f"test-sync-{uuid.uuid4().hex[:10]}-hosp"
+    await _seed_found_registry_record(
+        "Sync Test Road", CriticalLocationCategory.ROAD, lat, lon, road_sid
+    )
+    # HOSPITAL has no faithful maintainable asset kind -> must never register.
+    await _seed_found_registry_record(
+        "Test Hospital", CriticalLocationCategory.HOSPITAL, lat, lon, hosp_sid
+    )
+
+    r = await client.post(f"{_BASE}/assets/sync", headers=headers)
+    assert r.status_code == 200
+    out = r.json()
+    assert out["source"] == "openstreetmap"
+    assert out["inserted"] >= 1
+    assert any(c["category"] == "ROAD" for c in out["by_category"])
+    assert "facility registry" in out["message"]
+
+    async with async_session_factory() as db:
+        asset = await db.scalar(
+            select(InfrastructureAsset).where(InfrastructureAsset.source_id == road_sid)
+        )
+        assert asset is not None
+        assert asset.source == "test"
+        assert asset.source_id == road_sid
+        assert asset.installed_at is None  # never fabricate an install date
+        assert asset.ward_id is not None  # ward resolved by PostGIS containment
+        hosp = await db.scalar(
+            select(InfrastructureAsset).where(InfrastructureAsset.source_id == hosp_sid)
+        )
+        assert hosp is None
+
+    # Re-running is idempotent: nothing new is inserted.
+    r2 = await client.post(f"{_BASE}/assets/sync", headers=headers)
+    out2 = r2.json()
+    assert out2["inserted"] == 0
+    assert out2["skipped_duplicate"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_history_gate_blocks_until_real_linked_history(client: TestClient, monkeypatch):
+    # _fast_settings disabled the history gate; re-pin it above any history so
+    # the gate (not the pipeline) decides the response.
+    monkeypatch.setattr(_SETTINGS, "INFRA_MIN_HISTORY_RECORDS", 10**9)
+    token = await _officer_token()
+    headers = _auth(token)
+    await _register_asset(
+        client,
+        token,
+        {"name": "Gate Road", "category": "ROAD", "latitude": _ASSET_LAT, "longitude": _ASSET_LON},
+    )
+
+    r = await client.get(f"{_BASE}/predictions", headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["prediction_status"] == "INSUFFICIENT_DATA"
+    assert data["assets"] == []
+    assert "maintenance history" in data["message"]
+    assert data["registered_assets"] >= 1
+    assert data["minimum_history"] == 10**9
+
+    st = (await client.get(f"{_BASE}/status", headers=headers)).json()
+    assert st["prediction_status"] == "INSUFFICIENT_DATA"
+    assert st["minimum_history"] == 10**9
+    before = st["history_records"]
+
+    citizen_id = await _citizen(_unique_email("infra-gate-cit"))
+    # A relevant complaint near the asset counts against the gate.
+    await _insert_complaint(user_id=citizen_id, category="ROAD")
+    mid = (await client.get(f"{_BASE}/status", headers=headers)).json()["history_records"]
+    assert mid > before
+
+    # An unrelated category near the SAME asset must not count (category gate).
+    await _insert_complaint(user_id=citizen_id, category="WATER")
+    after = (await client.get(f"{_BASE}/status", headers=headers)).json()["history_records"]
+    assert after == mid

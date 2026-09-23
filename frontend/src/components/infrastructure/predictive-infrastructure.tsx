@@ -319,6 +319,7 @@ export function PredictiveInfrastructure() {
 
   if (predictions.prediction_status === "INSUFFICIENT_DATA") {
     const p = predictions;
+    const assetsGateBlocked = p.registered_assets < p.minimum_assets;
     return (
       <div className="space-y-6">
         <div>
@@ -338,19 +339,37 @@ export function PredictiveInfrastructure() {
           <CardContent className="py-10">
             <EmptyState
               icon={<HardHat className="h-8 w-8 text-slate-400" />}
-              title="Not enough infrastructure data to predict yet"
-              description={p.message || "The model only runs once real assets are registered."}
+              title={
+                assetsGateBlocked
+                  ? "Not enough infrastructure assets to predict yet"
+                  : "Assets registered, but not enough maintenance history yet"
+              }
+              description={p.message || "The model only runs once real data is on record."}
             />
-            <div className="mx-auto mt-6 max-w-md text-center">
+            <div className="mx-auto mt-6 grid max-w-md gap-3 sm:grid-cols-2">
               <Stat
                 label="Registered assets"
                 value={String(p.registered_assets)}
                 suffix={`/ ${p.minimum_assets} required`}
               />
+              <Stat
+                label="Linked maintenance history"
+                value={String(p.history_records)}
+                suffix={`/ ${p.minimum_history} records`}
+              />
             </div>
             <p className="mx-auto mt-6 max-w-md text-center text-sm text-slate-500">
-              Once enough assets are on record, per-asset failure risk and recommended inspections
-              appear here automatically. Until then no forecast is shown.
+              {assetsGateBlocked ? (
+                <>
+                  Register real assets in the asset registry to reach the fleet minimum. Until then,
+                  no forecast is shown.
+                </>
+              ) : (
+                <>
+                  Only maintenance records that are close to a matching asset — spatially and by
+                  category — count toward the history minimum. Until then, no forecast is shown.
+                </>
+              )}
             </p>
           </CardContent>
         </Card>

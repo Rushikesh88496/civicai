@@ -40,6 +40,7 @@ from app.models.enums import (
     RoleName,
 )
 from app.schemas.infrastructure import (
+    AssetRegistrySyncOut,
     InfrastructureAssetIn,
     InfrastructureAssetOut,
     InfrastructurePredictions,
@@ -113,6 +114,41 @@ async def create_asset(
 ) -> InfrastructureAssetOut:
     _require_city(user)
     return await infra_service.register_asset(db, payload)
+
+
+@router.post("/assets/sync", response_model=AssetRegistrySyncOut)
+async def sync_assets(
+    user: User = Depends(require_roles(*_CITY_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> AssetRegistrySyncOut:
+    """Register REAL maintainable assets from the verified facility registry.
+
+    Pulls the registry records that map to a maintainable asset kind (currently
+    ROAD), assigns wards by PostGIS point-in-polygon and upserts
+    ``infrastructure_assets`` keyed on ``(source, source_id)``. Idempotent:
+    re-running only updates drifted fields or skips unchanged rows. Never
+    fabricates assets, coordinates or install dates.
+    """
+    _require_city(user)
+    out = await infra_service.sync_assets_from_registry(db)
+
+    await audit_service.record_audit(
+        db,
+        actor_id=user.id,
+        action="infrastructure.asset_registry.sync",
+        entity_type="infrastructure_assets",
+        after={
+            "source": out.source,
+            "inserted": out.inserted,
+            "updated": out.updated,
+            "skipped_duplicate": out.skipped_duplicate,
+            "unlocated": out.unlocated,
+            "registered_total": out.registered_total,
+        },
+    )
+    await db.commit()
+    logger.info("Asset registry sync by %s: %s", user.email, out.message)
+    return out
 
 
 @router.get("/predictions", response_model=InfrastructurePredictions)

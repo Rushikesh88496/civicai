@@ -535,6 +535,9 @@ async def test_find_nearby_live_candidates_are_pending_not_verified(monkeypatch)
     async def fake_counts(db, categories):
         return {}
 
+    async def fake_nearby(db, latitude, longitude, radius_m, categories, limit):
+        return {}
+
     class FakeGeo:
         async def _fetch_overpass(self, lat, lon, radius, category, limit=20, client=None):
             return (
@@ -555,6 +558,7 @@ async def test_find_nearby_live_candidates_are_pending_not_verified(monkeypatch)
             )
 
     monkeypatch.setattr(svc, "_registry_counts", fake_counts)
+    monkeypatch.setattr(svc, "_nearby_from_registry", fake_nearby)
     async with async_session_factory() as db:
         out, _ = await svc.find_nearby(
             db,

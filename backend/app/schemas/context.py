@@ -47,6 +47,12 @@ class WeatherContext(BaseModel):
     wind_speed_kmh: float | None = None
     weather_code: int | None = None
     condition: str | None = None
+    # Current precipitation-probability (%) at the retrieval instant.
+    precipitation_probability_pct: float | None = None
+    # Highest precipitation-probability (%) over the forecast window.
+    forecast_precipitation_probability_max_pct: float | None = None
+    # Total precipitation (mm) over the recent trailing days (past window).
+    recent_precipitation_sum_mm: float | None = None
     # True when the response came from the Redis cache (freshness indicator).
     cached: bool = False
     retrieved_at: datetime | None = None
